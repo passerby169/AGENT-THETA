@@ -49,6 +49,7 @@ logs/
 *.sqlite
 *.sqlite3
 theta_project/.theta_agent/
+theta_project/docs/dev_tmp_docs/
 
 # Generated data, model weights, and training output
 theta_project/Hypha/

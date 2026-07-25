@@ -1,0 +1,12 @@
+{
+  "plan": {
+    "datasetId": "demo-dataset",
+    "modelId": "lda",
+    "mode": "unsupervised",
+    "numTopics": 8,
+    "batchSize": 64,
+    "epochs": 20,
+    "textColumn": "content"
+  },
+  "rationale": "Local governed CLI demonstration."
+}
