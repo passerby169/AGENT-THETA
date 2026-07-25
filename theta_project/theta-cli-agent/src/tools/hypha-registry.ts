@@ -1,8 +1,13 @@
 import { ToolRegistry } from '@hypha/tools';
 import { thetaModelCatalogHandler, thetaModelCatalogToolSpec } from './model-catalog-tool.js';
 import { thetaModelRecommendHandler, thetaModelRecommendToolSpec } from './model-recommend-tool.js';
+import { thetaPlanApproveHandler, thetaPlanApproveToolSpec } from './plan-approve-tool.js';
 import { thetaPlanCreateHandler, thetaPlanCreateToolSpec } from './plan-create-tool.js';
 import { thetaPlanValidateHandler, thetaPlanValidateToolSpec } from './plan-validate-tool.js';
+import {
+  thetaTrainingDryRunHandler,
+  thetaTrainingDryRunToolSpec,
+} from './training-dry-run-tool.js';
 
 export const registerThetaModelCatalogTool = (registry: ToolRegistry): ToolRegistry => {
   registry.register(thetaModelCatalogToolSpec, thetaModelCatalogHandler, { replace: true });
@@ -15,5 +20,7 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   registry.register(thetaModelRecommendToolSpec, thetaModelRecommendHandler, { replace: true });
   registry.register(thetaPlanValidateToolSpec, thetaPlanValidateHandler, { replace: true });
   registry.register(thetaPlanCreateToolSpec, thetaPlanCreateHandler, { replace: true });
+  registry.register(thetaPlanApproveToolSpec, thetaPlanApproveHandler, { replace: true });
+  registry.register(thetaTrainingDryRunToolSpec, thetaTrainingDryRunHandler, { replace: true });
   return registry;
 };

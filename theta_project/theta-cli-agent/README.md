@@ -41,6 +41,13 @@ After reviewing the example plan, explicitly approve the local write:
 npm run cli -- demo --approve
 ```
 
+Run the complete planning lifecycle. This approves the stored plan and derives
+training commands, but still does not start training:
+
+```powershell
+npm run cli -- demo --approve --approve-plan
+```
+
 ## Commands
 
 List the THETA model catalog:
@@ -73,6 +80,19 @@ Create the plan after explicit approval:
 npm run cli -- plan create --file fixtures/training-plan.json --approve
 ```
 
+Approve the stored business plan. Use the `planId` and `planHash` returned by
+the previous command:
+
+```powershell
+npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
+```
+
+Preview the exact training commands and expected artifacts:
+
+```powershell
+npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
+```
+
 Add `--json` to any command for machine-readable output.
 
 ## Governance Boundary
@@ -90,3 +110,7 @@ CLI command
 
 `plan create` is a write operation. Without `--approve`, it returns
 `human_review_required` and no local state is written.
+
+`plan approve` is a separate governed write. It records business approval for
+the immutable `planId + planHash` pair. `training dry-run` reads that record and
+returns commands and artifacts without spawning a training process.

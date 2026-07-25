@@ -3,8 +3,13 @@ import { GovernedToolRunner, type ToolCallContext, type ToolCallResult } from '@
 import { createThetaHyphaToolRegistry } from './hypha-registry.js';
 import type { ThetaModelCatalogInput, ThetaModelCatalogOutput } from './model-catalog-tool.js';
 import type { ThetaModelRecommendInput, ThetaModelRecommendOutput } from './model-recommend-tool.js';
+import type { ThetaPlanApproveInput, ThetaPlanApproveOutput } from './plan-approve-tool.js';
 import type { ThetaPlanCreateInput, ThetaPlanCreateOutput } from './plan-create-tool.js';
 import type { ThetaPlanValidateInput, ThetaPlanValidateOutput } from './plan-validate-tool.js';
+import type {
+  ThetaTrainingDryRunInput,
+  ThetaTrainingDryRunOutput,
+} from './training-dry-run-tool.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 
 export interface ThetaHyphaRunnerOptions {
@@ -139,4 +144,65 @@ export const runApprovedThetaPlanCreate = async (
   return runner.approveAndResume(invocationId, options.userId ?? 'local_user') as Promise<
     ToolCallResult<ThetaPlanCreateOutput>
   >;
+};
+
+export const requestThetaPlanApprove = async (
+  input: ThetaPlanApproveInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaPlanApproveOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.planApprove,
+    input,
+    context: createThetaToolCallContext('theta-plan-approve-request', 'plan_approve', {
+      ...options,
+      idempotencyKey: options.idempotencyKey ?? 'theta-plan-approve-request',
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.planApprove],
+    }),
+  }) as Promise<ToolCallResult<ThetaPlanApproveOutput>>;
+};
+
+export const runApprovedThetaPlanApprove = async (
+  input: ThetaPlanApproveInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaPlanApproveOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  const invocationId = options.invocationId ?? 'theta-plan-approve-approved';
+  const context = createThetaToolCallContext('theta-plan-approve-approved', 'plan_approve', {
+    ...options,
+    invocationId,
+    idempotencyKey: options.idempotencyKey ?? 'theta-plan-approve-approved',
+    permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.planApprove],
+  });
+  const requested = await runner.run({
+    toolId: THETA_TOOL_IDS.planApprove,
+    input,
+    context,
+  });
+
+  if (requested.status !== 'human_review_required') {
+    return requested as ToolCallResult<ThetaPlanApproveOutput>;
+  }
+
+  return runner.approveAndResume(invocationId, options.userId ?? 'local_user') as Promise<
+    ToolCallResult<ThetaPlanApproveOutput>
+  >;
+};
+
+export const runThetaTrainingDryRun = async (
+  input: ThetaTrainingDryRunInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingDryRunOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.trainingDryRun,
+    input,
+    context: createThetaToolCallContext('theta-training-dry-run', 'training_dry_run', {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.planRead,
+        THETA_PERMISSION_SCOPES.trainingRead,
+      ],
+    }),
+  }) as Promise<ToolCallResult<ThetaTrainingDryRunOutput>>;
 };

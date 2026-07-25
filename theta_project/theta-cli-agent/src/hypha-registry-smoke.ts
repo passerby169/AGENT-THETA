@@ -12,9 +12,11 @@ if (!spec) {
 if (
   !registry.getSpec(THETA_TOOL_IDS.modelRecommend) ||
   !registry.getSpec(THETA_TOOL_IDS.planValidate) ||
-  !registry.getSpec(THETA_TOOL_IDS.planCreate)
+  !registry.getSpec(THETA_TOOL_IDS.planCreate) ||
+  !registry.getSpec(THETA_TOOL_IDS.planApprove) ||
+  !registry.getSpec(THETA_TOOL_IDS.trainingDryRun)
 ) {
-  throw new Error('Expected model.recommend, plan.validate and plan.create to be registered.');
+  throw new Error('Expected model, plan, and training dry-run tools to be registered.');
 }
 
 console.log(

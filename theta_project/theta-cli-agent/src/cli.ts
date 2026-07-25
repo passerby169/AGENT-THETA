@@ -5,13 +5,17 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
+  requestThetaPlanApprove,
   requestThetaPlanCreate,
+  runApprovedThetaPlanApprove,
   runApprovedThetaPlanCreate,
   runThetaModelCatalog,
   runThetaModelRecommend,
   runThetaPlanValidate,
+  runThetaTrainingDryRun,
 } from './tools/hypha-runner.js';
 import type { ThetaModelRecommendInput } from './tools/model-recommend-tool.js';
+import type { ThetaPlanApproveInput } from './tools/plan-approve-tool.js';
 import type { ThetaPlanCreateInput } from './tools/plan-create-tool.js';
 import type { ThetaPlanValidateInput } from './tools/plan-validate-tool.js';
 
@@ -49,9 +53,16 @@ Commands:
   plan create --file <file> [--rationale <text>] [--approve]
       Request plan creation. State is written only when --approve is explicit.
 
-  demo [--approve]
+  plan approve --plan-id <id> --plan-hash <hash> --approved-by <user> [--approve]
+      Approve a stored plan. The operation also requires explicit --approve.
+
+  training dry-run --plan-id <id> --plan-hash <hash>
+      Show training commands and expected artifacts without starting training.
+
+  demo [--approve] [--approve-plan]
       Run a local end-to-end showcase. Without --approve, the write stops at
-      the Hypha human-review gate.
+      the Hypha human-review gate. Add both flags for the complete approved
+      plan and training dry-run lifecycle.
 
 Global options:
   --json      Print machine-readable JSON.
@@ -63,6 +74,8 @@ Examples:
   npm run cli -- plan validate --file fixtures/training-plan.json
   npm run cli -- plan create --file fixtures/training-plan.json
   npm run cli -- plan create --file fixtures/training-plan.json --approve
+  npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
+  npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
   npm run cli -- demo
 `;
 
@@ -239,6 +252,11 @@ const planInvocationKey = (input: ThetaPlanCreateInput): string => {
   return `theta-cli-plan-create-${digest}`;
 };
 
+const approvalInvocationKey = (input: ThetaPlanApproveInput): string => {
+  const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex').slice(0, 16);
+  return `theta-cli-plan-approve-${digest}`;
+};
+
 const createPlanCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const input = await readPlanInput(parsed);
   const rationale = stringFlag(parsed, 'rationale');
@@ -281,6 +299,80 @@ const createPlanCommand = async (parsed: ParsedArguments, output: CliOutput): Pr
   );
 };
 
+const approvePlanCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
+  const approvalNote = stringFlag(parsed, 'note');
+  const input: ThetaPlanApproveInput = {
+    planId: requiredStringFlag(parsed, 'plan-id'),
+    planHash: requiredStringFlag(parsed, 'plan-hash'),
+    approvedBy: requiredStringFlag(parsed, 'approved-by'),
+    ...(approvalNote === undefined ? {} : { approvalNote }),
+  };
+  const invocationKey = approvalInvocationKey(input);
+  const options = {
+    invocationId: invocationKey,
+    idempotencyKey: invocationKey,
+  };
+
+  if (!hasFlag(parsed, 'approve')) {
+    const result = await requestThetaPlanApprove(input, options);
+    const gate = {
+      status: result.status,
+      toolId: result.toolId,
+      approvalRequired: result.status === 'human_review_required',
+      message: 'Review the approval request, then rerun this command with --approve.',
+    };
+    writeResult(gate, parsed, output, () =>
+      [
+        `Plan approval status: ${result.status}`,
+        'No approval record was written.',
+        'After review, rerun with --approve.',
+      ].join('\n')
+    );
+    return;
+  }
+
+  const result = await runApprovedThetaPlanApprove(input, options);
+  const approved = requireCompleted(result, 'Approved plan approval');
+  writeResult(approved, parsed, output, () =>
+    [
+      'Plan approved through Hypha governance.',
+      `Approval ID: ${approved.approvalId}`,
+      `Plan ID: ${approved.planId}`,
+      `Approved by: ${approved.approvedBy}`,
+    ].join('\n')
+  );
+};
+
+const trainingDryRunCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput
+): Promise<void> => {
+  const result = await runThetaTrainingDryRun({
+    planId: requiredStringFlag(parsed, 'plan-id'),
+    planHash: requiredStringFlag(parsed, 'plan-hash'),
+  });
+  const dryRun = requireCompleted(result, 'Training dry run');
+  writeResult(dryRun, parsed, output, () => {
+    const commands = dryRun.commands.map(
+      (command, index) =>
+        `  ${index + 1}. ${command.step}: ${command.argv.join(' ')}\n     cwd: ${command.cwd}`
+    );
+    const artifacts = dryRun.expectedArtifacts.map(
+      (artifact) => `  - ${artifact.kind}: ${artifact.path}`
+    );
+    return [
+      `Training dry run for ${dryRun.planId}`,
+      `Plan valid: ${dryRun.valid ? 'yes' : 'no'}`,
+      `Business approval present: ${dryRun.approved ? 'yes' : 'no'}`,
+      'Commands:',
+      ...commands,
+      'Expected artifacts:',
+      ...artifacts,
+      'No training process was started.',
+    ].join('\n');
+  });
+};
+
 const demoProfile: Record<string, unknown> = {
   rowCount: 240,
   columns: ['content', 'created_at', 'source'],
@@ -304,6 +396,9 @@ const demoPlan: ThetaPlanCreateInput = {
 };
 
 const demoCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
+  if (hasFlag(parsed, 'approve-plan') && !hasFlag(parsed, 'approve')) {
+    throw new Error('--approve-plan requires --approve so the plan exists before business approval.');
+  }
   const catalog = requireCompleted(await runThetaModelCatalog(), 'Demo model catalog');
   const recommendation = requireCompleted(
     await runThetaModelRecommend({
@@ -328,6 +423,41 @@ const demoCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<
   const creationResult = hasFlag(parsed, 'approve')
     ? await runApprovedThetaPlanCreate(demoPlan, options)
     : await requestThetaPlanCreate(demoPlan, options);
+  let planApprovalStatus = 'not_requested';
+  let approvalId: string | null = null;
+  let dryRunApproved: boolean | null = null;
+  let commandCount = 0;
+
+  if (
+    hasFlag(parsed, 'approve-plan') &&
+    creationResult.status === 'completed' &&
+    creationResult.output
+  ) {
+    const approvalInput: ThetaPlanApproveInput = {
+      planId: creationResult.output.planId,
+      planHash: creationResult.output.planHash,
+      approvedBy: 'local_user',
+      approvalNote: 'THETA CLI complete governed demonstration.',
+    };
+    const approvalKey = approvalInvocationKey(approvalInput);
+    const approvalResult = await runApprovedThetaPlanApprove(approvalInput, {
+      invocationId: approvalKey,
+      idempotencyKey: approvalKey,
+    });
+    const approval = requireCompleted(approvalResult, 'Demo plan approval');
+    planApprovalStatus = approvalResult.status;
+    approvalId = approval.approvalId;
+
+    const dryRun = requireCompleted(
+      await runThetaTrainingDryRun({
+        planId: creationResult.output.planId,
+        planHash: creationResult.output.planHash,
+      }),
+      'Demo training dry run'
+    );
+    dryRunApproved = dryRun.approved;
+    commandCount = dryRun.commands.length;
+  }
 
   const result = {
     runner: 'Hypha GovernedToolRunner',
@@ -337,6 +467,11 @@ const demoCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<
     planCreationStatus: creationResult.status,
     planId: creationResult.output?.planId ?? null,
     stateWritten: creationResult.status === 'completed',
+    planApprovalStatus,
+    approvalId,
+    dryRunApproved,
+    trainingCommandCount: commandCount,
+    trainingStarted: false,
   };
   writeResult(result, parsed, output, () =>
     [
@@ -348,6 +483,11 @@ const demoCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<
       result.stateWritten
         ? `   Local state written for ${String(result.planId)}.`
         : '   No state written. Add --approve after reviewing the plan.',
+      `5. Business plan approval: ${result.planApprovalStatus}`,
+      result.dryRunApproved === null
+        ? '6. Training dry run: not requested'
+        : `6. Training dry run: ${result.trainingCommandCount} commands, approved=${result.dryRunApproved}`,
+      '7. Training process started: no',
     ].join('\n')
   );
 };
@@ -382,6 +522,14 @@ export const runCli = async (
     }
     if (command === 'plan' && subcommand === 'create') {
       await createPlanCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'plan' && subcommand === 'approve') {
+      await approvePlanCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'training' && subcommand === 'dry-run') {
+      await trainingDryRunCommand(parsed, output);
       return 0;
     }
     if (command === 'demo' && subcommand === undefined) {

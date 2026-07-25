@@ -65,6 +65,24 @@ const cases: CommandCase[] = [
     },
   },
   {
+    args: [
+      'plan',
+      'approve',
+      '--plan-id',
+      'plan_gate_only',
+      '--plan-hash',
+      'hash_gate_only',
+      '--approved-by',
+      'local_user',
+    ],
+    verify: (output) => {
+      const gate = asRecord(output);
+      if (gate.approvalRequired !== true || gate.status !== 'human_review_required') {
+        throw new Error('plan approve command bypassed the Hypha approval gate.');
+      }
+    },
+  },
+  {
     args: ['demo'],
     verify: (output) => {
       const demo = asRecord(output);
