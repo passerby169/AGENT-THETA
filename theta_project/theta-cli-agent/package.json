@@ -10,12 +10,14 @@
     "theta": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cli": "node dist/cli.js",
     "demo": "node dist/cli.js demo",
     "hypha:check": "node ../scripts/check-hypha-version.mjs",
     "hypha:build": "npm --prefix ../Hypha run build:packages",
+    "smoke:architecture-boundary": "node dist/architecture-boundary-smoke.js",
+    "smoke:hypha-dataset-tools": "node dist/hypha-dataset-tools-smoke.js",
     "smoke:hypha-import": "node dist/hypha-import-smoke.js",
     "smoke:hypha-registry": "node dist/hypha-registry-smoke.js",
     "smoke:hypha-runner": "node dist/hypha-runner-smoke.js",

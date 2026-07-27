@@ -30,6 +30,24 @@ const asRecord = (value: unknown): Record<string, unknown> => {
 
 const cases: CommandCase[] = [
   {
+    args: ['dataset', 'inspect', '--file', 'fixtures/sample.jsonl'],
+    verify: (output) => {
+      const profile = asRecord(output);
+      if (profile.rowCount !== 3 || !Array.isArray(profile.columns)) {
+        throw new Error('dataset inspect command returned an invalid profile.');
+      }
+    },
+  },
+  {
+    args: ['dataset', 'detect-columns', '--file', 'fixtures/sample.jsonl'],
+    verify: (output) => {
+      const detected = asRecord(output);
+      if (detected.recommendedTextColumn !== 'text') {
+        throw new Error('dataset detect-columns command returned the wrong recommendation.');
+      }
+    },
+  },
+  {
     args: ['models'],
     verify: (output) => {
       const catalog = asRecord(output);
@@ -42,7 +60,10 @@ const cases: CommandCase[] = [
     args: ['recommend', '--profile', 'fixtures/data-profile.json'],
     verify: (output) => {
       const recommendation = asRecord(output);
-      if (!Array.isArray(recommendation.recommendations) || recommendation.recommendations.length === 0) {
+      if (
+        !Array.isArray(recommendation.recommendations) ||
+        recommendation.recommendations.length === 0
+      ) {
         throw new Error('recommend command returned no recommendations.');
       }
     },
@@ -105,14 +126,7 @@ const cases: CommandCase[] = [
     },
   },
   {
-    args: [
-      'training',
-      'cancel',
-      '--run-id',
-      'run_gate_only',
-      '--reason',
-      'CLI gate verification',
-    ],
+    args: ['training', 'cancel', '--run-id', 'run_gate_only', '--reason', 'CLI gate verification'],
     verify: (output) => {
       const gate = asRecord(output);
       if (

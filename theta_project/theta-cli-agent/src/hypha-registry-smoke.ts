@@ -3,13 +3,18 @@ import { createThetaHyphaToolRegistry } from './tools/hypha-registry.js';
 
 const registry = createThetaHyphaToolRegistry();
 const spec = registry.getSpec(THETA_TOOL_IDS.modelCatalog);
-const registeredToolIds = registry.list().map((tool) => tool.id).sort();
+const registeredToolIds = registry
+  .list()
+  .map((tool) => tool.id)
+  .sort();
 
 if (!spec) {
   throw new Error(`${THETA_TOOL_IDS.modelCatalog} was not registered.`);
 }
 
 if (
+  !registry.getSpec(THETA_TOOL_IDS.datasetInspect) ||
+  !registry.getSpec(THETA_TOOL_IDS.datasetDetectColumns) ||
   !registry.getSpec(THETA_TOOL_IDS.modelRecommend) ||
   !registry.getSpec(THETA_TOOL_IDS.planValidate) ||
   !registry.getSpec(THETA_TOOL_IDS.planCreate) ||
@@ -19,7 +24,7 @@ if (
   !registry.getSpec(THETA_TOOL_IDS.trainingStatus) ||
   !registry.getSpec(THETA_TOOL_IDS.trainingCancel)
 ) {
-  throw new Error('Expected model, plan, and training control tools to be registered.');
+  throw new Error('Expected dataset, model, plan, and training control tools to be registered.');
 }
 
 console.log(

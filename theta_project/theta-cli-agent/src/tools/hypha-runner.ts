@@ -1,8 +1,13 @@
 import { InMemoryEventStore, type PolicyEngine } from '@hypha/core';
 import { GovernedToolRunner, type ToolCallContext, type ToolCallResult } from '@hypha/tools';
 import { createThetaHyphaToolRegistry } from './hypha-registry.js';
+import type { ThetaDatasetDetectColumnsOutput } from './dataset-detect-columns-tool.js';
+import type { ThetaDatasetFileInput, ThetaDatasetInspectOutput } from './dataset-inspect-tool.js';
 import type { ThetaModelCatalogInput, ThetaModelCatalogOutput } from './model-catalog-tool.js';
-import type { ThetaModelRecommendInput, ThetaModelRecommendOutput } from './model-recommend-tool.js';
+import type {
+  ThetaModelRecommendInput,
+  ThetaModelRecommendOutput,
+} from './model-recommend-tool.js';
 import type { ThetaPlanApproveInput, ThetaPlanApproveOutput } from './plan-approve-tool.js';
 import type { ThetaPlanCreateInput, ThetaPlanCreateOutput } from './plan-create-tool.js';
 import type { ThetaPlanValidateInput, ThetaPlanValidateOutput } from './plan-validate-tool.js';
@@ -10,9 +15,15 @@ import type {
   ThetaTrainingDryRunInput,
   ThetaTrainingDryRunOutput,
 } from './training-dry-run-tool.js';
-import type { ThetaTrainingCancelInput, ThetaTrainingCancelOutput } from './training-cancel-tool.js';
+import type {
+  ThetaTrainingCancelInput,
+  ThetaTrainingCancelOutput,
+} from './training-cancel-tool.js';
 import type { ThetaTrainingStartInput, ThetaTrainingStartOutput } from './training-start-tool.js';
-import type { ThetaTrainingStatusInput, ThetaTrainingStatusOutput } from './training-status-tool.js';
+import type {
+  ThetaTrainingStatusInput,
+  ThetaTrainingStatusOutput,
+} from './training-status-tool.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 
 export interface ThetaHyphaRunnerOptions {
@@ -57,7 +68,9 @@ const thetaCliPolicyEngine: PolicyEngine = {
         allowed: false,
         policyId: 'theta-cli-training-controls',
         ruleId: 'deny-unlisted-external-effects',
-        reason: `Capability ${context.capabilityId ?? 'unknown'} is not an approved THETA training control.`,
+        reason: `Capability ${
+          context.capabilityId ?? 'unknown'
+        } is not an approved THETA training control.`,
       };
     }
 
@@ -98,6 +111,36 @@ export const createThetaToolCallContext = (
     source: 'theta-cli-agent',
   },
 });
+
+export const runThetaDatasetInspect = async (
+  input: ThetaDatasetFileInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaDatasetInspectOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.datasetInspect,
+    input,
+    context: createThetaToolCallContext('theta-dataset-inspect', 'dataset_inspect', {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.datasetRead],
+    }),
+  }) as Promise<ToolCallResult<ThetaDatasetInspectOutput>>;
+};
+
+export const runThetaDatasetDetectColumns = async (
+  input: ThetaDatasetFileInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaDatasetDetectColumnsOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.datasetDetectColumns,
+    input,
+    context: createThetaToolCallContext('theta-dataset-detect-columns', 'dataset_detect_columns', {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.datasetRead],
+    }),
+  }) as Promise<ToolCallResult<ThetaDatasetDetectColumnsOutput>>;
+};
 
 export const runThetaModelCatalog = async (
   input: ThetaModelCatalogInput = {},

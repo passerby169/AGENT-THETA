@@ -1,4 +1,9 @@
 import { ToolRegistry } from '@hypha/tools';
+import {
+  thetaDatasetDetectColumnsHandler,
+  thetaDatasetDetectColumnsToolSpec,
+} from './dataset-detect-columns-tool.js';
+import { thetaDatasetInspectHandler, thetaDatasetInspectToolSpec } from './dataset-inspect-tool.js';
 import { thetaModelCatalogHandler, thetaModelCatalogToolSpec } from './model-catalog-tool.js';
 import { thetaModelRecommendHandler, thetaModelRecommendToolSpec } from './model-recommend-tool.js';
 import { thetaPlanApproveHandler, thetaPlanApproveToolSpec } from './plan-approve-tool.js';
@@ -19,6 +24,10 @@ export const registerThetaModelCatalogTool = (registry: ToolRegistry): ToolRegis
 
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   const registry = new ToolRegistry();
+  registry.register(thetaDatasetInspectToolSpec, thetaDatasetInspectHandler, { replace: true });
+  registry.register(thetaDatasetDetectColumnsToolSpec, thetaDatasetDetectColumnsHandler, {
+    replace: true,
+  });
   registerThetaModelCatalogTool(registry);
   registry.register(thetaModelRecommendToolSpec, thetaModelRecommendHandler, { replace: true });
   registry.register(thetaPlanValidateToolSpec, thetaPlanValidateHandler, { replace: true });

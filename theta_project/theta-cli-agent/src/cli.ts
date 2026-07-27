@@ -13,12 +13,15 @@ import {
   runApprovedThetaPlanCreate,
   runApprovedThetaTrainingCancel,
   runApprovedThetaTrainingStart,
+  runThetaDatasetDetectColumns,
+  runThetaDatasetInspect,
   runThetaModelCatalog,
   runThetaModelRecommend,
   runThetaPlanValidate,
   runThetaTrainingDryRun,
   runThetaTrainingStatus,
 } from './tools/hypha-runner.js';
+import type { ThetaDatasetFileInput } from './tools/dataset-inspect-tool.js';
 import type { ThetaModelRecommendInput } from './tools/model-recommend-tool.js';
 import type { ThetaPlanApproveInput } from './tools/plan-approve-tool.js';
 import type { ThetaPlanCreateInput } from './tools/plan-create-tool.js';
@@ -48,6 +51,12 @@ Usage:
   npm run cli -- <command> [options]
 
 Commands:
+  dataset inspect --file <path> [--sample-size <number>]
+      Inspect an allowed local dataset through Hypha governance.
+
+  dataset detect-columns --file <path> [--sample-size <number>]
+      Detect text, time, and metadata column candidates.
+
   models
       List models exposed by THETA through Hypha governance.
 
@@ -85,6 +94,8 @@ Global options:
   -h, --help  Show help.
 
 Examples:
+  npm run cli -- dataset inspect --file fixtures/sample.jsonl
+  npm run cli -- dataset detect-columns --file fixtures/sample.jsonl
   npm run cli -- models
   npm run cli -- recommend --profile fixtures/data-profile.json
   npm run cli -- plan validate --file fixtures/training-plan.json
@@ -203,13 +214,67 @@ const writeResult = (
   output.write(hasFlag(parsed, 'json') ? JSON.stringify(value, null, 2) : render());
 };
 
+const datasetInput = (parsed: ParsedArguments): ThetaDatasetFileInput => {
+  const sampleSize = integerFlag(parsed, 'sample-size');
+  return {
+    filePath: resolve(process.cwd(), requiredStringFlag(parsed, 'file')),
+    ...(sampleSize === undefined ? {} : { sampleSize }),
+  };
+};
+
+const inspectDatasetCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
+  const result = await runThetaDatasetInspect(datasetInput(parsed));
+  const profile = requireCompleted(result, 'Dataset inspection');
+  writeResult(profile, parsed, output, () => {
+    const rows = profile.columnProfiles.map(
+      (column) =>
+        `  ${column.name}: ${column.inferredType}, missing ${(
+          column.missingSampleRatio * 100
+        ).toFixed(1)}%, avg length ${column.avgLength}`
+    );
+    return [
+      `Dataset: ${profile.fileName}`,
+      `Rows: ${profile.rowCount}`,
+      `Columns: ${profile.columns.join(', ')}`,
+      `Sample rows returned: ${profile.sampleRows.length}`,
+      'Column profiles:',
+      ...rows,
+    ].join('\n');
+  });
+};
+
+const detectDatasetColumnsCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput
+): Promise<void> => {
+  const result = await runThetaDatasetDetectColumns(datasetInput(parsed));
+  const detected = requireCompleted(result, 'Dataset column detection');
+  writeResult(detected, parsed, output, () => {
+    const candidates = detected.textColumns.map(
+      (column) => `  ${column.name}: ${(column.score * 100).toFixed(0)}% - ${column.reason}`
+    );
+    return [
+      `Recommended text column: ${detected.recommendedTextColumn ?? 'none'}`,
+      `Time columns: ${detected.timeColumns.map((column) => column.name).join(', ') || 'none'}`,
+      `Metadata columns: ${
+        detected.metadataColumns.map((column) => column.name).join(', ') || 'none'
+      }`,
+      'Text candidates:',
+      ...candidates,
+      ...detected.warnings.map((warning) => `Warning: ${warning}`),
+    ].join('\n');
+  });
+};
+
 const catalogCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const result = await runThetaModelCatalog();
   const catalog = requireCompleted(result, 'Model catalog');
   writeResult(catalog, parsed, output, () => {
     const rows = catalog.models.map(
       (model) =>
-        `  ${model.id.padEnd(10)} ${model.name} [${model.type}]${model.runnable === false ? ' (unavailable)' : ''}`
+        `  ${model.id.padEnd(10)} ${model.name} [${model.type}]${
+          model.runnable === false ? ' (unavailable)' : ''
+        }`
     );
     return [`THETA models (${catalog.models.length})`, ...rows].join('\n');
   });
@@ -374,10 +439,7 @@ const approvePlanCommand = async (parsed: ParsedArguments, output: CliOutput): P
   );
 };
 
-const trainingDryRunCommand = async (
-  parsed: ParsedArguments,
-  output: CliOutput
-): Promise<void> => {
+const trainingDryRunCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const result = await runThetaTrainingDryRun({
     planId: requiredStringFlag(parsed, 'plan-id'),
     planHash: requiredStringFlag(parsed, 'plan-hash'),
@@ -404,10 +466,7 @@ const trainingDryRunCommand = async (
   });
 };
 
-const trainingStartCommand = async (
-  parsed: ParsedArguments,
-  output: CliOutput
-): Promise<void> => {
+const trainingStartCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const startIdentity = {
     planId: requiredStringFlag(parsed, 'plan-id'),
     planHash: requiredStringFlag(parsed, 'plan-hash'),
@@ -456,10 +515,7 @@ const trainingStartCommand = async (
   );
 };
 
-const trainingStatusCommand = async (
-  parsed: ParsedArguments,
-  output: CliOutput
-): Promise<void> => {
+const trainingStatusCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const logLimit = integerFlag(parsed, 'log-limit');
   const result = await runThetaTrainingStatus({
     trainingRunId: requiredStringFlag(parsed, 'run-id'),
@@ -484,10 +540,7 @@ const trainingStatusCommand = async (
   });
 };
 
-const trainingCancelCommand = async (
-  parsed: ParsedArguments,
-  output: CliOutput
-): Promise<void> => {
+const trainingCancelCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const input: ThetaTrainingCancelInput = {
     trainingRunId: requiredStringFlag(parsed, 'run-id'),
     reason: requiredStringFlag(parsed, 'reason'),
@@ -554,7 +607,9 @@ const demoPlan: ThetaPlanCreateInput = {
 
 const demoCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   if (hasFlag(parsed, 'approve-plan') && !hasFlag(parsed, 'approve')) {
-    throw new Error('--approve-plan requires --approve so the plan exists before business approval.');
+    throw new Error(
+      '--approve-plan requires --approve so the plan exists before business approval.'
+    );
   }
   const catalog = requireCompleted(await runThetaModelCatalog(), 'Demo model catalog');
   const recommendation = requireCompleted(
@@ -665,6 +720,14 @@ export const runCli = async (
       throw new Error(`Unexpected arguments: ${extraPositionals.join(' ')}`);
     }
 
+    if (command === 'dataset' && subcommand === 'inspect') {
+      await inspectDatasetCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'dataset' && subcommand === 'detect-columns') {
+      await detectDatasetColumnsCommand(parsed, output);
+      return 0;
+    }
     if (command === 'models' && subcommand === undefined) {
       await catalogCommand(parsed, output);
       return 0;

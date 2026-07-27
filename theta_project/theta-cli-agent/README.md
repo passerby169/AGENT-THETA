@@ -50,6 +50,27 @@ npm run cli -- demo --approve --approve-plan
 
 ## Commands
 
+Inspect an allowed local dataset:
+
+```powershell
+npm run cli -- dataset inspect --file fixtures/sample.jsonl
+```
+
+Detect text, time, and metadata column candidates:
+
+```powershell
+npm run cli -- dataset detect-columns --file fixtures/sample.jsonl
+```
+
+Dataset reads default to `fixtures/` and `../THETA/data/`. Add trusted roots
+explicitly with the platform path delimiter, and optionally lower the file-size
+limit from its 100 MB default:
+
+```powershell
+$env:THETA_ALLOWED_DATA_ROOTS = 'E:\trusted-data;E:\research-inputs'
+$env:THETA_MAX_DATASET_BYTES = '52428800'
+```
+
 List the THETA model catalog:
 
 ```powershell
@@ -135,6 +156,11 @@ CLI command
   -> THETA Python Bridge
   -> local THETA state
 ```
+
+Dataset paths are resolved to their canonical filesystem location before the
+Bridge starts. The governed handlers reject missing files, directory escapes,
+symlink escapes, unsupported suffixes, non-regular files, and oversized files.
+Raw sample rows and sample values are excluded from Hypha audit event payloads.
 
 `plan create` is a write operation. Without `--approve`, it returns
 `human_review_required` and no local state is written.
