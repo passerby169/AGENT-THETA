@@ -24,6 +24,7 @@
     "smoke:hypha-plan-create-approval": "node dist/hypha-plan-create-approval-smoke.js",
     "smoke:hypha-plan-create-approved": "node dist/hypha-plan-create-approved-smoke.js",
     "smoke:hypha-plan-lifecycle": "node dist/hypha-plan-lifecycle-smoke.js",
+    "smoke:hypha-training-controls": "node dist/hypha-training-controls-smoke.js",
     "smoke:cli": "node dist/cli-smoke.js"
   },
   "dependencies": {

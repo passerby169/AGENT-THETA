@@ -1,4 +1,4 @@
-import { InMemoryEventStore } from '@hypha/core';
+import { InMemoryEventStore, type PolicyEngine } from '@hypha/core';
 import { GovernedToolRunner, type ToolCallContext, type ToolCallResult } from '@hypha/tools';
 import { createThetaHyphaToolRegistry } from './hypha-registry.js';
 import type { ThetaModelCatalogInput, ThetaModelCatalogOutput } from './model-catalog-tool.js';
@@ -10,6 +10,9 @@ import type {
   ThetaTrainingDryRunInput,
   ThetaTrainingDryRunOutput,
 } from './training-dry-run-tool.js';
+import type { ThetaTrainingCancelInput, ThetaTrainingCancelOutput } from './training-cancel-tool.js';
+import type { ThetaTrainingStartInput, ThetaTrainingStartOutput } from './training-start-tool.js';
+import type { ThetaTrainingStatusInput, ThetaTrainingStatusOutput } from './training-status-tool.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 
 export interface ThetaHyphaRunnerOptions {
@@ -25,10 +28,51 @@ export interface ThetaHyphaRuntime {
   trace: InMemoryEventStore;
 }
 
+const thetaTrainingControlToolIds = new Set<string>([
+  THETA_TOOL_IDS.trainingStart,
+  THETA_TOOL_IDS.trainingCancel,
+]);
+
+const thetaCliPolicyEngine: PolicyEngine = {
+  async evaluate(context) {
+    if (
+      context.sideEffectLevel === 'external_effect' &&
+      context.capabilityId &&
+      thetaTrainingControlToolIds.has(context.capabilityId)
+    ) {
+      return {
+        allowed: true,
+        requiresHumanReview: true,
+        policyId: 'theta-cli-training-controls',
+        ruleId: 'allow-approved-training-control',
+        reason: 'THETA training external effects require explicit human approval.',
+      };
+    }
+
+    if (
+      context.sideEffectLevel === 'external_effect' ||
+      context.sideEffectLevel === 'irreversible'
+    ) {
+      return {
+        allowed: false,
+        policyId: 'theta-cli-training-controls',
+        ruleId: 'deny-unlisted-external-effects',
+        reason: `Capability ${context.capabilityId ?? 'unknown'} is not an approved THETA training control.`,
+      };
+    }
+
+    return {
+      allowed: true,
+      policyId: 'theta-cli-training-controls',
+      ruleId: 'allow-local-capability',
+    };
+  },
+};
+
 export const createThetaHyphaRuntime = (): ThetaHyphaRuntime => {
   const registry = createThetaHyphaToolRegistry();
   const trace = new InMemoryEventStore();
-  const runner = new GovernedToolRunner(registry, trace);
+  const runner = new GovernedToolRunner(registry, trace, thetaCliPolicyEngine);
   return { runner, trace };
 };
 
@@ -205,4 +249,106 @@ export const runThetaTrainingDryRun = async (
       ],
     }),
   }) as Promise<ToolCallResult<ThetaTrainingDryRunOutput>>;
+};
+
+export const requestThetaTrainingStart = async (
+  input: ThetaTrainingStartInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingStartOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.trainingStart,
+    input,
+    context: createThetaToolCallContext('theta-training-start-request', 'training_start', {
+      ...options,
+      idempotencyKey: options.idempotencyKey ?? input.idempotencyKey,
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.trainingWrite],
+    }),
+  }) as Promise<ToolCallResult<ThetaTrainingStartOutput>>;
+};
+
+export const runApprovedThetaTrainingStart = async (
+  input: ThetaTrainingStartInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingStartOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  const invocationId = options.invocationId ?? `theta-training-start-${input.idempotencyKey}`;
+  const context = createThetaToolCallContext('theta-training-start-approved', 'training_start', {
+    ...options,
+    invocationId,
+    idempotencyKey: options.idempotencyKey ?? input.idempotencyKey,
+    permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.trainingWrite],
+  });
+  const requested = await runner.run({
+    toolId: THETA_TOOL_IDS.trainingStart,
+    input,
+    context,
+  });
+
+  if (requested.status !== 'human_review_required') {
+    return requested as ToolCallResult<ThetaTrainingStartOutput>;
+  }
+
+  return runner.approveAndResume(invocationId, options.userId ?? 'local_user') as Promise<
+    ToolCallResult<ThetaTrainingStartOutput>
+  >;
+};
+
+export const runThetaTrainingStatus = async (
+  input: ThetaTrainingStatusInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingStatusOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.trainingStatus,
+    input,
+    context: createThetaToolCallContext('theta-training-status', 'training_status', {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.trainingRead],
+    }),
+  }) as Promise<ToolCallResult<ThetaTrainingStatusOutput>>;
+};
+
+export const requestThetaTrainingCancel = async (
+  input: ThetaTrainingCancelInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingCancelOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.trainingCancel,
+    input,
+    context: createThetaToolCallContext('theta-training-cancel-request', 'training_cancel', {
+      ...options,
+      idempotencyKey: options.idempotencyKey ?? `theta-training-cancel-${input.trainingRunId}`,
+      permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.trainingWrite],
+    }),
+  }) as Promise<ToolCallResult<ThetaTrainingCancelOutput>>;
+};
+
+export const runApprovedThetaTrainingCancel = async (
+  input: ThetaTrainingCancelInput,
+  options: ThetaHyphaRunnerOptions = {}
+): Promise<ToolCallResult<ThetaTrainingCancelOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  const defaultKey = `theta-training-cancel-${input.trainingRunId}`;
+  const invocationId = options.invocationId ?? defaultKey;
+  const context = createThetaToolCallContext('theta-training-cancel-approved', 'training_cancel', {
+    ...options,
+    invocationId,
+    idempotencyKey: options.idempotencyKey ?? defaultKey,
+    permissionScopes: options.permissionScopes ?? [THETA_PERMISSION_SCOPES.trainingWrite],
+  });
+  const requested = await runner.run({
+    toolId: THETA_TOOL_IDS.trainingCancel,
+    input,
+    context,
+  });
+
+  if (requested.status !== 'human_review_required') {
+    return requested as ToolCallResult<ThetaTrainingCancelOutput>;
+  }
+
+  return runner.approveAndResume(invocationId, options.userId ?? 'local_user') as Promise<
+    ToolCallResult<ThetaTrainingCancelOutput>
+  >;
 };

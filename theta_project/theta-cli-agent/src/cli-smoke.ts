@@ -83,6 +83,48 @@ const cases: CommandCase[] = [
     },
   },
   {
+    args: [
+      'training',
+      'start',
+      '--plan-id',
+      'plan_gate_only',
+      '--plan-hash',
+      'hash_gate_only',
+      '--approval-id',
+      'approval_gate_only',
+    ],
+    verify: (output) => {
+      const gate = asRecord(output);
+      if (
+        gate.approvalRequired !== true ||
+        gate.status !== 'human_review_required' ||
+        gate.processStarted !== false
+      ) {
+        throw new Error('training start command bypassed the Hypha approval gate.');
+      }
+    },
+  },
+  {
+    args: [
+      'training',
+      'cancel',
+      '--run-id',
+      'run_gate_only',
+      '--reason',
+      'CLI gate verification',
+    ],
+    verify: (output) => {
+      const gate = asRecord(output);
+      if (
+        gate.approvalRequired !== true ||
+        gate.status !== 'human_review_required' ||
+        gate.cancellationRecorded !== false
+      ) {
+        throw new Error('training cancel command bypassed the Hypha approval gate.');
+      }
+    },
+  },
+  {
     args: ['demo'],
     verify: (output) => {
       const demo = asRecord(output);

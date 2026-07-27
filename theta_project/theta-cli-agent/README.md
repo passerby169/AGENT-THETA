@@ -93,6 +93,34 @@ Preview the exact training commands and expected artifacts:
 npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
 ```
 
+Request a real training start. The first command stops at the Hypha approval
+gate and does not start a process:
+
+```powershell
+npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id>
+```
+
+After reviewing the resolved plan, approval, commands, and expected artifacts,
+repeat with `--approve` to start the background process:
+
+```powershell
+npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id> --approve
+```
+
+Read training progress, recent logs, artifacts, and events:
+
+```powershell
+npm run cli -- training status --run-id <id> --log-limit 80
+```
+
+Request cancellation. Cancellation is not recorded until `--approve` is
+explicit:
+
+```powershell
+npm run cli -- training cancel --run-id <id> --reason "User requested cancellation"
+npm run cli -- training cancel --run-id <id> --reason "User requested cancellation" --approve
+```
+
 Add `--json` to any command for machine-readable output.
 
 ## Governance Boundary
@@ -114,3 +142,7 @@ CLI command
 `plan approve` is a separate governed write. It records business approval for
 the immutable `planId + planHash` pair. `training dry-run` reads that record and
 returns commands and artifacts without spawning a training process.
+
+`training start` and `training cancel` are external-effect tools. Both require
+the `theta:training:write` permission, an idempotency key, and Hypha human
+approval. `training status` is read-only and exposes the event-backed run view.

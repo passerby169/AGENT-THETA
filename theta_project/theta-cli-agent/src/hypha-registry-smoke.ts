@@ -14,9 +14,12 @@ if (
   !registry.getSpec(THETA_TOOL_IDS.planValidate) ||
   !registry.getSpec(THETA_TOOL_IDS.planCreate) ||
   !registry.getSpec(THETA_TOOL_IDS.planApprove) ||
-  !registry.getSpec(THETA_TOOL_IDS.trainingDryRun)
+  !registry.getSpec(THETA_TOOL_IDS.trainingDryRun) ||
+  !registry.getSpec(THETA_TOOL_IDS.trainingStart) ||
+  !registry.getSpec(THETA_TOOL_IDS.trainingStatus) ||
+  !registry.getSpec(THETA_TOOL_IDS.trainingCancel)
 ) {
-  throw new Error('Expected model, plan, and training dry-run tools to be registered.');
+  throw new Error('Expected model, plan, and training control tools to be registered.');
 }
 
 console.log(

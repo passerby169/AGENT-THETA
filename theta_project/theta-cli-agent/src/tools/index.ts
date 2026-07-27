@@ -28,3 +28,15 @@ export type {
   ThetaTrainingDryRunInput,
   ThetaTrainingDryRunOutput,
 } from './training-dry-run-tool.js';
+export type {
+  ThetaTrainingCancelInput,
+  ThetaTrainingCancelOutput,
+} from './training-cancel-tool.js';
+export type {
+  ThetaTrainingStartInput,
+  ThetaTrainingStartOutput,
+} from './training-start-tool.js';
+export type {
+  ThetaTrainingStatusInput,
+  ThetaTrainingStatusOutput,
+} from './training-status-tool.js';

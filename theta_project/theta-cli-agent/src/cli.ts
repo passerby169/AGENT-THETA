@@ -7,17 +7,24 @@ import { pathToFileURL } from 'node:url';
 import {
   requestThetaPlanApprove,
   requestThetaPlanCreate,
+  requestThetaTrainingCancel,
+  requestThetaTrainingStart,
   runApprovedThetaPlanApprove,
   runApprovedThetaPlanCreate,
+  runApprovedThetaTrainingCancel,
+  runApprovedThetaTrainingStart,
   runThetaModelCatalog,
   runThetaModelRecommend,
   runThetaPlanValidate,
   runThetaTrainingDryRun,
+  runThetaTrainingStatus,
 } from './tools/hypha-runner.js';
 import type { ThetaModelRecommendInput } from './tools/model-recommend-tool.js';
 import type { ThetaPlanApproveInput } from './tools/plan-approve-tool.js';
 import type { ThetaPlanCreateInput } from './tools/plan-create-tool.js';
 import type { ThetaPlanValidateInput } from './tools/plan-validate-tool.js';
+import type { ThetaTrainingCancelInput } from './tools/training-cancel-tool.js';
+import type { ThetaTrainingStartInput } from './tools/training-start-tool.js';
 
 interface ParsedArguments {
   positionals: string[];
@@ -59,6 +66,15 @@ Commands:
   training dry-run --plan-id <id> --plan-hash <hash>
       Show training commands and expected artifacts without starting training.
 
+  training start --plan-id <id> --plan-hash <hash> --approval-id <id> [--approve]
+      Start a real background training process only when --approve is explicit.
+
+  training status --run-id <id> [--log-limit <number>]
+      Read progress, logs, artifacts, and lifecycle events for a training run.
+
+  training cancel --run-id <id> --reason <text> [--approve]
+      Request cooperative cancellation only when --approve is explicit.
+
   demo [--approve] [--approve-plan]
       Run a local end-to-end showcase. Without --approve, the write stops at
       the Hypha human-review gate. Add both flags for the complete approved
@@ -76,6 +92,9 @@ Examples:
   npm run cli -- plan create --file fixtures/training-plan.json --approve
   npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
   npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
+  npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id>
+  npm run cli -- training status --run-id <id>
+  npm run cli -- training cancel --run-id <id> --reason "User requested cancellation"
   npm run cli -- demo
 `;
 
@@ -257,6 +276,18 @@ const approvalInvocationKey = (input: ThetaPlanApproveInput): string => {
   return `theta-cli-plan-approve-${digest}`;
 };
 
+const trainingStartInvocationKey = (
+  input: Omit<ThetaTrainingStartInput, 'idempotencyKey'>
+): string => {
+  const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex').slice(0, 16);
+  return `theta-cli-training-start-${digest}`;
+};
+
+const trainingCancelInvocationKey = (input: ThetaTrainingCancelInput): string => {
+  const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex').slice(0, 16);
+  return `theta-cli-training-cancel-${digest}`;
+};
+
 const createPlanCommand = async (parsed: ParsedArguments, output: CliOutput): Promise<void> => {
   const input = await readPlanInput(parsed);
   const rationale = stringFlag(parsed, 'rationale');
@@ -371,6 +402,132 @@ const trainingDryRunCommand = async (
       'No training process was started.',
     ].join('\n');
   });
+};
+
+const trainingStartCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput
+): Promise<void> => {
+  const startIdentity = {
+    planId: requiredStringFlag(parsed, 'plan-id'),
+    planHash: requiredStringFlag(parsed, 'plan-hash'),
+    approvalId: requiredStringFlag(parsed, 'approval-id'),
+  };
+  const generatedKey = trainingStartInvocationKey(startIdentity);
+  const idempotencyKey = stringFlag(parsed, 'idempotency-key') ?? generatedKey;
+  const input: ThetaTrainingStartInput = {
+    ...startIdentity,
+    idempotencyKey,
+  };
+  const options = {
+    invocationId: idempotencyKey,
+    idempotencyKey,
+  };
+
+  if (!hasFlag(parsed, 'approve')) {
+    const result = await requestThetaTrainingStart(input, options);
+    const gate = {
+      status: result.status,
+      toolId: result.toolId,
+      approvalRequired: result.status === 'human_review_required',
+      processStarted: false,
+      message: 'Review the run details, then rerun this command with --approve.',
+    };
+    writeResult(gate, parsed, output, () =>
+      [
+        `Training start status: ${result.status}`,
+        'No training process was started.',
+        'After review, rerun with --approve.',
+      ].join('\n')
+    );
+    return;
+  }
+
+  const result = await runApprovedThetaTrainingStart(input, options);
+  const started = requireCompleted(result, 'Approved training start');
+  writeResult(started, parsed, output, () =>
+    [
+      'Training start approved through Hypha governance.',
+      `Run ID: ${started.trainingRunId}`,
+      `Status: ${started.status}`,
+      `Process started: ${started.processStarted ? 'yes' : 'no'}`,
+      `PID: ${String(started.pid ?? 'not reported')}`,
+    ].join('\n')
+  );
+};
+
+const trainingStatusCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput
+): Promise<void> => {
+  const logLimit = integerFlag(parsed, 'log-limit');
+  const result = await runThetaTrainingStatus({
+    trainingRunId: requiredStringFlag(parsed, 'run-id'),
+    ...(logLimit === undefined ? {} : { logLimit }),
+  });
+  const status = requireCompleted(result, 'Training status');
+  writeResult(status, parsed, output, () => {
+    if (!status.found) {
+      return [`Training run: ${status.trainingRunId}`, 'Status: not found'].join('\n');
+    }
+    return [
+      `Training run: ${status.trainingRunId}`,
+      `Status: ${status.status}`,
+      `Progress: ${String(status.progress ?? 0)}%`,
+      `Current step: ${status.currentStep ?? 'unknown'}`,
+      `PID: ${String(status.pid ?? 'not running')}`,
+      `Artifacts: ${status.artifacts.length}`,
+      `Events: ${status.events?.length ?? 0}`,
+      `Recent log lines: ${status.logs.length}`,
+      ...status.logs.map((line) => `  ${line}`),
+    ].join('\n');
+  });
+};
+
+const trainingCancelCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput
+): Promise<void> => {
+  const input: ThetaTrainingCancelInput = {
+    trainingRunId: requiredStringFlag(parsed, 'run-id'),
+    reason: requiredStringFlag(parsed, 'reason'),
+  };
+  const invocationKey = trainingCancelInvocationKey(input);
+  const options = {
+    invocationId: invocationKey,
+    idempotencyKey: invocationKey,
+  };
+
+  if (!hasFlag(parsed, 'approve')) {
+    const result = await requestThetaTrainingCancel(input, options);
+    const gate = {
+      status: result.status,
+      toolId: result.toolId,
+      approvalRequired: result.status === 'human_review_required',
+      cancellationRecorded: false,
+      message: 'Review the cancellation reason, then rerun this command with --approve.',
+    };
+    writeResult(gate, parsed, output, () =>
+      [
+        `Training cancellation status: ${result.status}`,
+        'No cancellation was recorded.',
+        'After review, rerun with --approve.',
+      ].join('\n')
+    );
+    return;
+  }
+
+  const result = await runApprovedThetaTrainingCancel(input, options);
+  const cancelled = requireCompleted(result, 'Approved training cancellation');
+  writeResult(cancelled, parsed, output, () =>
+    [
+      'Training cancellation processed through Hypha governance.',
+      `Run ID: ${cancelled.trainingRunId}`,
+      `Status: ${cancelled.status}`,
+      `Changed: ${cancelled.changed ? 'yes' : 'no'}`,
+      `Message: ${cancelled.message}`,
+    ].join('\n')
+  );
 };
 
 const demoProfile: Record<string, unknown> = {
@@ -530,6 +687,18 @@ export const runCli = async (
     }
     if (command === 'training' && subcommand === 'dry-run') {
       await trainingDryRunCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'training' && subcommand === 'start') {
+      await trainingStartCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'training' && subcommand === 'status') {
+      await trainingStatusCommand(parsed, output);
+      return 0;
+    }
+    if (command === 'training' && subcommand === 'cancel') {
+      await trainingCancelCommand(parsed, output);
       return 0;
     }
     if (command === 'demo' && subcommand === undefined) {

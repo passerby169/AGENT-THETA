@@ -8,6 +8,9 @@ import {
   thetaTrainingDryRunHandler,
   thetaTrainingDryRunToolSpec,
 } from './training-dry-run-tool.js';
+import { thetaTrainingCancelHandler, thetaTrainingCancelToolSpec } from './training-cancel-tool.js';
+import { thetaTrainingStartHandler, thetaTrainingStartToolSpec } from './training-start-tool.js';
+import { thetaTrainingStatusHandler, thetaTrainingStatusToolSpec } from './training-status-tool.js';
 
 export const registerThetaModelCatalogTool = (registry: ToolRegistry): ToolRegistry => {
   registry.register(thetaModelCatalogToolSpec, thetaModelCatalogHandler, { replace: true });
@@ -22,5 +25,8 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   registry.register(thetaPlanCreateToolSpec, thetaPlanCreateHandler, { replace: true });
   registry.register(thetaPlanApproveToolSpec, thetaPlanApproveHandler, { replace: true });
   registry.register(thetaTrainingDryRunToolSpec, thetaTrainingDryRunHandler, { replace: true });
+  registry.register(thetaTrainingStartToolSpec, thetaTrainingStartHandler, { replace: true });
+  registry.register(thetaTrainingStatusToolSpec, thetaTrainingStatusHandler, { replace: true });
+  registry.register(thetaTrainingCancelToolSpec, thetaTrainingCancelHandler, { replace: true });
   return registry;
 };
