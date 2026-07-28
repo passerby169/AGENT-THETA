@@ -31,6 +31,10 @@ import type { ThetaTrainingCancelInput } from "./tools/training-cancel-tool.js";
 import type { ThetaTrainingDryRunInput } from "./tools/training-dry-run-tool.js";
 import type { ThetaTrainingStartInput } from "./tools/training-start-tool.js";
 import { runThetaWorkflowCliCommand } from "./theta-workflow-cli.js";
+import {
+  agentCommandNames,
+  runThetaAgentCliCommand,
+} from "./agent-cli.js";
 
 interface ParsedArguments {
   positionals: string[];
@@ -54,6 +58,24 @@ Usage:
   npm run cli -- <command> [options]
 
 Commands:
+  doctor [--json]
+      Check the local THETA, Hypha, Python, runtime, and artifact environment.
+
+  start --file <dataset> [--run-id <id>] [--runtime-db <path>]
+      Start the durable event-first Agent workflow.
+
+  resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
+      Resume a durable Run without reconstructing state in the CLI.
+
+  status --run-id <id> [--runtime-db <path>]
+      Read the current Run projection from canonical events.
+
+  audit export --run-id <id> [--runtime-db <path>] [--json]
+      Export orchestration events and governed tool trace to the terminal.
+
+  repl [--run-id <id>] [--runtime-db <path>]
+      Open the deterministic command REPL. Free-form model chat is disabled.
+
   dataset inspect --file <path> [--sample-size <number>]
       Inspect an allowed local dataset through Hypha governance.
 
@@ -748,6 +770,11 @@ export const runCli = async (
     if (hasFlag(parsed, "help") || parsed.positionals.length === 0) {
       output.write(helpText);
       return 0;
+    }
+
+    const topLevelCommand = parsed.positionals[0];
+    if (topLevelCommand && agentCommandNames.has(topLevelCommand)) {
+      return runThetaAgentCliCommand(args, output);
     }
 
     const [command, subcommand, ...extraPositionals] = parsed.positionals;

@@ -44,6 +44,8 @@ for (const file of files) {
   const isToolHandler = relativeFile.startsWith('tools/') && relativeFile.endsWith('-tool.ts');
   const isBridgeAdapter = relativeFile === 'tools/bridge.ts';
   const isSmoke = relativeFile.endsWith('-smoke.ts');
+  const isAgentCli = relativeFile === 'agent-cli.ts';
+  const isConversationLayer = relativeFile.startsWith('conversation/');
 
   if (source.includes('callThetaBridge') && !isToolHandler && !isBridgeAdapter) {
     throw new Error(`Bridge call escaped a governed Tool Handler: ${relativeFile}`);
@@ -55,6 +57,17 @@ for (const file of files) {
     !isSmoke
   ) {
     throw new Error(`Direct process execution escaped the Bridge Adapter: ${relativeFile}`);
+  }
+  if (
+    (isAgentCli || isConversationLayer) &&
+    (source.includes('callThetaBridge') ||
+      source.includes('createThetaWorkflowRuntime') ||
+      source.includes("from 'node:fs") ||
+      source.includes('from "node:fs'))
+  ) {
+    throw new Error(
+      `CLI/conversation layer bypassed a service boundary: ${relativeFile}`
+    );
   }
   if (
     source.includes('hypha-compatible') ||
@@ -71,6 +84,7 @@ console.log(
     status: 'ok',
     checkedFiles: files.length,
     bridgeBoundary: 'governed-tool-handler-only',
+    conversationBoundary: 'structured-command-and-workflow-service-only',
     legacyGovernanceFiles: 0,
   })
 );

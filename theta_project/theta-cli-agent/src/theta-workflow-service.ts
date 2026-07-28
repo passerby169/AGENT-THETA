@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { createRuntimeOrchestrationProjectionDefinition } from "@hypha/core";
 import type {
   EventCreateInput,
   FrameworkEvent,
@@ -120,6 +121,20 @@ export interface ThetaWorkflowRunResult {
   pendingActionRef?: string;
   pendingReason?: string;
   statePath: string[];
+  output?: RuntimeJsonValue;
+}
+
+export interface ThetaWorkflowStatus {
+  runId: string;
+  runtimeDb: string;
+  status: RuntimeOrchestrationProjection["runStatus"];
+  currentState?: string;
+  pendingActionRef?: string;
+  pendingReason?: string;
+  statePath: string[];
+  eventCount: number;
+  lastEventType: string;
+  lastEventAt: string;
   output?: RuntimeJsonValue;
 }
 
@@ -315,6 +330,43 @@ export class ThetaWorkflowService {
         runId,
         runtimeDb,
         result,
+        await terminalOutput(runtime, scope),
+      );
+    } finally {
+      runtime.close();
+    }
+  }
+
+  async status(
+    runId: string,
+    runtimeDb = defaultThetaWorkflowDb(),
+  ): Promise<ThetaWorkflowStatus> {
+    const resolvedRunId = required(runId, "runId");
+    const resolvedDb = path.resolve(runtimeDb);
+    const scope = runtimeScope(resolvedRunId);
+    const runtime = await createThetaWorkflowRuntime({ filename: resolvedDb });
+    try {
+      const events = await runtime.events.read({
+        scope: streamScope(scope),
+      });
+      const last = events.at(-1);
+      if (!last) {
+        throw new Error(`Run not found: ${resolvedRunId}`);
+      }
+      const projection = (
+        await runtime.projections.update(
+          createRuntimeOrchestrationProjectionDefinition(resolvedRunId),
+          runtime.projectionStore,
+          streamScope(scope),
+        )
+      ).state;
+      return toStatusResult(
+        resolvedRunId,
+        resolvedDb,
+        projection,
+        events.length,
+        last.type,
+        last.timestamp,
         await terminalOutput(runtime, scope),
       );
     } finally {
@@ -1660,6 +1712,34 @@ const toRunResult = (
     ? { pendingReason: result.projection.pendingWait.reason }
     : {}),
   statePath: result.projection.statePath,
+  ...(output === undefined ? {} : { output }),
+});
+
+const toStatusResult = (
+  runId: string,
+  runtimeDb: string,
+  projection: RuntimeOrchestrationProjection,
+  eventCount: number,
+  lastEventType: string,
+  lastEventAt: string,
+  output?: RuntimeJsonValue,
+): ThetaWorkflowStatus => ({
+  runId,
+  runtimeDb,
+  status: projection.runStatus,
+  ...(projection.currentState
+    ? { currentState: projection.currentState }
+    : {}),
+  ...(projection.pendingWait?.pendingActionRef
+    ? { pendingActionRef: projection.pendingWait.pendingActionRef }
+    : {}),
+  ...(projection.pendingWait?.reason
+    ? { pendingReason: projection.pendingWait.reason }
+    : {}),
+  statePath: projection.statePath,
+  eventCount,
+  lastEventType,
+  lastEventAt,
   ...(output === undefined ? {} : { output }),
 });
 

@@ -8,3 +8,7 @@ export * from "./rag/contracts.js";
 export * from "./recommendation/contracts.js";
 export * from "./recommendation/engine.js";
 export * from "./training/contracts.js";
+export * from "./conversation/contracts.js";
+export * from "./conversation/conversation-service.js";
+export * from "./conversation/workflow-executor.js";
+export * from "./doctor-service.js";

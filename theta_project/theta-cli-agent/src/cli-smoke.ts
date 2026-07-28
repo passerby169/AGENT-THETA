@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path, { resolve } from "node:path";
 
 interface CommandCase {
   args: string[];
@@ -7,6 +9,9 @@ interface CommandCase {
 }
 
 const cliPath = resolve(process.cwd(), "dist", "cli.js");
+const root = await mkdtemp(path.join(os.tmpdir(), "theta-agent-cli-smoke-"));
+const runtimeDb = path.join(root, "workflow.sqlite");
+const agentRunId = "theta-agent-cli-run";
 
 const runJsonCommand = (commandCase: CommandCase): void => {
   const result = spawnSync(
@@ -33,6 +38,77 @@ const asRecord = (value: unknown): Record<string, unknown> => {
 };
 
 const cases: CommandCase[] = [
+  {
+    args: ["doctor"],
+    verify: (output) => {
+      const report = asRecord(output);
+      if (
+        !["ready", "degraded"].includes(String(report.status)) ||
+        !Array.isArray(report.checks)
+      ) {
+        throw new Error("doctor did not return an actionable readiness report.");
+      }
+    },
+  },
+  {
+    args: [
+      "start",
+      "--file",
+      "fixtures/sample.jsonl",
+      "--run-id",
+      agentRunId,
+      "--runtime-db",
+      runtimeDb,
+    ],
+    verify: (output) => {
+      const run = asRecord(output);
+      if (
+        run.runId !== agentRunId ||
+        typeof run.currentState !== "string" ||
+        typeof run.pendingActionRef !== "string"
+      ) {
+        throw new Error("top-level start did not create a durable waiting Run.");
+      }
+    },
+  },
+  {
+    args: [
+      "status",
+      "--run-id",
+      agentRunId,
+      "--runtime-db",
+      runtimeDb,
+    ],
+    verify: (output) => {
+      const status = asRecord(output);
+      if (
+        status.runId !== agentRunId ||
+        typeof status.eventCount !== "number" ||
+        Number(status.eventCount) < 1
+      ) {
+        throw new Error("top-level status was not derived from Runtime events.");
+      }
+    },
+  },
+  {
+    args: [
+      "audit",
+      "export",
+      "--run-id",
+      agentRunId,
+      "--runtime-db",
+      runtimeDb,
+    ],
+    verify: (output) => {
+      const audit = asRecord(output);
+      if (
+        !Array.isArray(audit.orchestrationEvents) ||
+        !Array.isArray(audit.toolEvents)
+      ) {
+        throw new Error("audit export did not return both event streams.");
+      }
+    },
+  },
   {
     args: ["dataset", "inspect", "--file", "fixtures/sample.jsonl"],
     verify: (output) => {
@@ -180,6 +256,20 @@ const cases: CommandCase[] = [
 for (const commandCase of cases) {
   runJsonCommand(commandCase);
 }
+
+const repl = spawnSync(process.execPath, [cliPath, "repl"], {
+  cwd: process.cwd(),
+  encoding: "utf8",
+  input: "/exit\n",
+});
+if (
+  repl.status !== 0 ||
+  !repl.stdout.includes("THETA deterministic REPL")
+) {
+  throw new Error(`Deterministic REPL failed: ${repl.stderr || repl.stdout}`);
+}
+
+await rm(root, { recursive: true, force: true });
 
 console.log(
   JSON.stringify({

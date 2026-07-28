@@ -30,6 +30,9 @@ export const thetaWorkflowHelp = `THETA workflow commands:
       Use --answers <json> for research clarification or --columns <json>
       for explicit dataset column confirmation.
 
+  workflow status --run-id <id> [--runtime-db <path>]
+      Derive the current Run state from canonical Runtime events.
+
   workflow trace --run-id <id> [--runtime-db <path>]
       Print canonical orchestration events and governed tool trace events.
 
@@ -105,6 +108,14 @@ export const runThetaWorkflowCliCommand = async (
       });
       write(result, json, output);
       return result.disposition === "failed" ? 2 : 0;
+    }
+    if (parsed.command === "status") {
+      const status = await service.status(
+        requiredFlag(parsed, "run-id"),
+        runtimeDb,
+      );
+      write(status, json, output);
+      return 0;
     }
     if (parsed.command === "trace") {
       const evidence = await service.evidence(
@@ -198,6 +209,14 @@ const write = (
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
+  if (
+    record &&
+    (Array.isArray(record.orchestrationEvents) ||
+      Array.isArray(record.eventTypes))
+  ) {
+    output.write(JSON.stringify(record, null, 2));
+    return;
+  }
   if (record?.runId) {
     output.write(
       [

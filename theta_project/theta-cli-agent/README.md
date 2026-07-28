@@ -39,6 +39,43 @@ Show the command reference:
 npm run cli -- --help
 ```
 
+Check the complete local environment before starting a Run:
+
+```powershell
+npm run cli -- doctor
+```
+
+`doctor` reports `PASS`, `WARN`, or `FAIL` for Node.js, pnpm workspace
+metadata, the pinned Hypha build, DomainPack compilation, Runtime SQLite,
+artifact and dataset roots, THETA configuration, the governed Python model
+catalog, GPU visibility, and optional MiniMax configuration. Every failed
+check includes a concrete remediation.
+
+The operator-facing aliases keep CLI responsibilities limited to arguments,
+terminal I/O, and confirmation:
+
+```powershell
+npm run cli -- start --file fixtures/recommendation-sample.jsonl --run-id theta-run-001
+npm run cli -- status --run-id theta-run-001
+npm run cli -- resume --run-id theta-run-001 --columns fixtures/column-confirmation.json
+npm run cli -- audit export --run-id theta-run-001 --json
+```
+
+These aliases delegate to `ThetaWorkflowService`; they do not read Runtime
+SQLite, call Python, create approvals, or execute tools directly.
+
+For an interactive deterministic loop:
+
+```powershell
+npm run cli -- repl --run-id theta-run-001
+```
+
+The REPL accepts only `/start`, `/status`, `/why`, `/evidence`, `/plan`,
+`/approve`, `/save`, `/back`, and `/exit`. `/why` is derived from canonical
+state, reason codes, policy guards, and event references. `/save` prints a
+deterministic replay fixture to the terminal so file writes remain outside
+the CLI surface. Free-form model chat is intentionally rejected.
+
 Run the safe end-to-end demonstration. This stops at the human-review gate and
 does not write plan state:
 
@@ -274,6 +311,7 @@ npm run smoke:theta-workflow
 npm run smoke:architecture-boundary
 npm run test:python-runtime
 npm run smoke:training-runtime
+npm run smoke:agent-cli
 npm run smoke:cli
 ```
 
