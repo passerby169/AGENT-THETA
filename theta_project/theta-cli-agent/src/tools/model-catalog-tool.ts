@@ -1,7 +1,7 @@
-import type { JsonSchema } from '@hypha/core';
-import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
-import { callThetaBridge } from './bridge.js';
-import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
+import type { JsonSchema } from "@hypha/core";
+import type { ToolCallContext, ToolHandler, ToolSpec } from "@hypha/tools";
+import { callThetaBridge } from "./bridge.js";
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
 export interface ThetaModelCatalogInput {
   includeExperimental?: boolean;
@@ -23,57 +23,59 @@ export interface ThetaModelCatalogOutput {
 }
 
 const modelCatalogInputSchema: JsonSchema = {
-  type: 'object',
+  type: "object",
   properties: {
     includeExperimental: {
-      type: 'boolean',
-      description: 'Include experimental THETA model entries when the bridge exposes them.',
+      type: "boolean",
+      description:
+        "Include experimental THETA model entries when the bridge exposes them.",
     },
   },
   additionalProperties: false,
 };
 
 const modelCatalogOutputSchema: JsonSchema = {
-  type: 'object',
-  required: ['source', 'runnableSource', 'models', 'supportedModelIds'],
+  type: "object",
+  required: ["source", "runnableSource", "models", "supportedModelIds"],
   properties: {
-    source: { type: 'string' },
-    runnableSource: { type: 'string' },
+    source: { type: "string" },
+    runnableSource: { type: "string" },
     models: {
-      type: 'array',
+      type: "array",
       items: {
-        type: 'object',
-        required: ['id', 'name', 'type', 'requires', 'params'],
+        type: "object",
+        required: ["id", "name", "type", "requires", "params"],
         properties: {
-          id: { type: 'string' },
-          name: { type: 'string' },
-          type: { type: 'string' },
-          requires: { type: 'array', items: { type: 'string' } },
-          params: { type: 'object', additionalProperties: true },
-          runnable: { type: 'boolean' },
-          experimental: { type: 'boolean' },
+          id: { type: "string" },
+          name: { type: "string" },
+          type: { type: "string" },
+          requires: { type: "array", items: { type: "string" } },
+          params: { type: "object", additionalProperties: true },
+          runnable: { type: "boolean" },
+          experimental: { type: "boolean" },
         },
         additionalProperties: true,
       },
     },
-    supportedModelIds: { type: 'array', items: { type: 'string' } },
+    supportedModelIds: { type: "array", items: { type: "string" } },
   },
   additionalProperties: false,
 };
 
 export const thetaModelCatalogToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.modelCatalog,
-  version: '1.0.0',
-  displayName: 'List Model Catalog',
-  description: 'Return the normalized THETA model catalog through the governed Hypha tool boundary.',
-  tags: ['theta', 'model'],
+  version: "1.0.0",
+  displayName: "List Model Catalog",
+  description:
+    "Return the normalized THETA model catalog through the governed Hypha tool boundary.",
+  tags: ["theta", "model"],
   inputSchema: modelCatalogInputSchema,
   outputSchema: modelCatalogOutputSchema,
-  sideEffectLevel: 'read',
+  sideEffectLevel: "read",
   permissionScope: [THETA_PERMISSION_SCOPES.modelRead],
   timeoutPolicy: {
     timeoutMs: 30000,
-    onTimeout: 'fail',
+    onTimeout: "fail",
   },
   retryPolicy: {
     maxAttempts: 1,
@@ -83,35 +85,46 @@ export const thetaModelCatalogToolSpec: ToolSpec = {
     includeInput: false,
     includeOutput: true,
   },
-  source: 'local',
+  source: "local",
 };
 
 const ensureModelCatalogOutput = (data: unknown): ThetaModelCatalogOutput => {
-  if (!data || typeof data !== 'object') {
-    throw new Error('model.catalog bridge returned a non-object payload.');
+  if (!data || typeof data !== "object") {
+    throw new Error("model.catalog bridge returned a non-object payload.");
   }
   return data as ThetaModelCatalogOutput;
 };
 
 const normalizeModelCatalogInput = (input: unknown): ThetaModelCatalogInput => {
-  if (!input || typeof input !== 'object') {
+  if (!input || typeof input !== "object") {
     return {};
   }
   return input as ThetaModelCatalogInput;
 };
 
-export const thetaModelCatalogHandler: ToolHandler<unknown, ThetaModelCatalogOutput> = async (
-  input: unknown,
-  context: ToolCallContext
-) => {
-  const response = await callThetaBridge('model.catalog', normalizeModelCatalogInput(input), {
-    runId: context.runId,
-    stepId: context.stepId,
-  });
+export const thetaModelCatalogHandler: ToolHandler<
+  unknown,
+  ThetaModelCatalogOutput
+> = async (input: unknown, context: ToolCallContext) => {
+  const response = await callThetaBridge(
+    "model.catalog",
+    normalizeModelCatalogInput(input),
+    {
+      runId: context.runId,
+      stepId: context.stepId,
+    },
+  );
 
-  if (response.status !== 'ok') {
-    throw new Error(response.error?.message ?? 'model.catalog bridge command failed.');
+  if (response.status !== "ok") {
+    throw new Error(
+      response.error?.message ?? "model.catalog bridge command failed.",
+    );
   }
 
-  return ensureModelCatalogOutput(response.data);
+  const output = ensureModelCatalogOutput(response.data);
+  return {
+    ...output,
+    source: "theta-model-catalog",
+    runnableSource: "theta-run-pipeline",
+  };
 };

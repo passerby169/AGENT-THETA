@@ -1,0 +1,20 @@
+schemaVersion: 1.0.0
+sources:
+  - sourceId: theta-model-catalog
+    path: ../THETA/src/models/models_config/models.yaml
+    type: config
+    authority: L1
+    parser: yaml
+    sourceCommit: 3c681b0d71ae69ede515478fea8784e3d0d03733
+  - sourceId: theta-model-comparison
+    path: ../THETA/doc/models/comparison.md
+    type: documentation
+    authority: L1
+    parser: markdown
+    sourceCommit: 3c681b0d71ae69ede515478fea8784e3d0d03733
+  - sourceId: theta-hardware-guide
+    path: ../THETA/doc/appendix/hardware-requirements.md
+    type: documentation
+    authority: L2
+    parser: markdown
+    sourceCommit: 3c681b0d71ae69ede515478fea8784e3d0d03733

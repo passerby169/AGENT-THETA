@@ -7,7 +7,8 @@ events, and human approval are therefore enforced before the bridge is called.
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 22.5 or newer. The local evidence index uses the built-in
+  `node:sqlite` API and SQLite FTS5.
 - Python available as `python`, or configured through
   `THETA_AGENT_BRIDGE_PYTHON`
 - The sibling `../Hypha` checkout pinned by `../hypha.lock.json`
@@ -19,6 +20,16 @@ npm install
 npm run hypha:check
 npm run build
 ```
+
+Build or incrementally refresh the local evidence index before requesting
+evidence-backed recommendations:
+
+```powershell
+npm run rag:build
+```
+
+The source allowlist is declared in `knowledge/manifest.yaml`. The generated
+SQLite file is stored under the ignored `.theta_agent/` directory.
 
 ## Run
 
@@ -65,7 +76,7 @@ Start a Run. Research intake is deterministic and stops for structured
 clarification when blocking facts are missing:
 
 ```powershell
-npm run cli -- workflow run --file fixtures/sample.jsonl --goal "Discover stable research topics" --run-id theta-run-001
+npm run cli -- workflow run --file fixtures/recommendation-sample.jsonl --goal "Discover stable research topics" --run-id theta-run-001
 ```
 
 Submit research answers through the durable HumanWait:
@@ -93,8 +104,8 @@ approval gates. They never bypass research clarification or column
 confirmation:
 
 ```powershell
-npm run cli -- workflow run --file fixtures/sample.jsonl --approve-plans
-npm run cli -- workflow run --file fixtures/sample.jsonl --approve-plans --approve-training
+npm run cli -- workflow run --file fixtures/recommendation-sample.jsonl --approve-plans
+npm run cli -- workflow run --file fixtures/recommendation-sample.jsonl --approve-plans --approve-training
 ```
 
 Inspect evidence or derive a deterministic replay fixture:
@@ -136,7 +147,10 @@ List the THETA model catalog:
 npm run cli -- models
 ```
 
-Recommend models from a normalized dataset profile:
+Recommend models from a normalized dataset profile. Recommendation is a
+deterministic TypeScript decision: incompatible models are removed by hard
+constraints before scoring, topic count is returned as a range, and each
+parameter includes reason codes, confidence, effects, and evidence references:
 
 ```powershell
 npm run cli -- recommend --profile fixtures/data-profile.json --goal "time trend topic modeling"
@@ -210,6 +224,7 @@ npm run hypha:check
 npm run typecheck
 npm run build
 npm run smoke:research-agent
+npm run smoke:recommendation-golden
 npm run smoke:theta-domain
 npm run smoke:theta-workflow
 npm run smoke:architecture-boundary
@@ -244,6 +259,14 @@ data in canonical events. Column confirmations are bound to that hash; a hash
 change invalidates the confirmation. The hash is checked again immediately
 before training, and a mismatch invalidates the current plan and approvals and
 returns the FSM to dataset inspection.
+
+Evidence retrieval is an explicit governed read from a local SQLite FTS5
+index. Every `EvidenceRef` records authority, relative path, source commit,
+line range, content hash, excerpt, and final score. Missing evidence remains a
+visible `NO_EVIDENCE_AVAILABLE` result and never causes fabricated citations.
+The model catalog still comes from the THETA Bridge, while hard constraints,
+ranking, topic ranges, parameter recommendations, and relative resource
+estimates execute deterministically in TypeScript.
 
 Dataset paths are resolved to their canonical filesystem location before the
 Bridge starts. The governed handlers reject missing files, directory escapes,

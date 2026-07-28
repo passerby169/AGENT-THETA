@@ -12,6 +12,7 @@
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "rag:build": "node dist/rag/build-index.js",
     "cli": "node dist/cli.js",
     "demo": "node dist/cli.js demo",
     "hypha:check": "node ../scripts/check-hypha-version.mjs",
@@ -19,6 +20,7 @@
     "smoke:architecture-boundary": "node dist/architecture-boundary-smoke.js",
     "smoke:theta-domain": "node dist/theta-domain-smoke.js",
     "smoke:research-agent": "node dist/research-agent-smoke.js",
+    "smoke:recommendation-golden": "node dist/recommendation-golden-smoke.js",
     "smoke:theta-workflow": "node dist/theta-workflow-smoke.js",
     "smoke:hypha-dataset-tools": "node dist/hypha-dataset-tools-smoke.js",
     "smoke:hypha-import": "node dist/hypha-import-smoke.js",
@@ -34,20 +36,28 @@
   },
   "dependencies": {
     "@hypha/adapters-local": "file:../Hypha/packages/adapters-local",
+    "@hypha/core": "file:../Hypha/packages/core",
     "@hypha/domain": "file:../Hypha/packages/domain",
     "@hypha/fsm": "file:../Hypha/packages/fsm",
     "@hypha/harness": "file:../Hypha/packages/harness",
-    "@hypha/core": "file:../Hypha/packages/core",
+    "@hypha/inference": "file:../Hypha/packages/inference",
+    "@hypha/kernel": "file:../Hypha/packages/kernel",
+    "@hypha/mcp": "file:../Hypha/packages/mcp",
+    "@hypha/memory": "file:../Hypha/packages/memory",
+    "@hypha/skills": "file:../Hypha/packages/skills",
+    "@hypha/storage": "file:../Hypha/packages/storage",
     "@hypha/tools": "file:../Hypha/packages/tools",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
-    "@types/node": "^20.19.41",
+    "@types/node": "^24.13.3",
     "typescript": "^5.3.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.5.0"
   }
 }

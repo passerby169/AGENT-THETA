@@ -1,4 +1,4 @@
-import type { SpecRef } from '@hypha/core';
+import type { SpecRef } from "@hypha/core";
 import {
   compileDomainPackToHarnessedSystem,
   resolveWorkflowToolExecutionScope,
@@ -6,48 +6,48 @@ import {
   type DomainCompilationResult,
   type DomainPackSpec,
   type WorkflowStateSpec,
-} from '@hypha/domain';
-import type { ToolExecutionScope } from '@hypha/tools';
-import { thetaHyphaToolSpecs } from './tools/hypha-registry.js';
-import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tools/tool-ids.js';
+} from "@hypha/domain";
+import type { ToolExecutionScope } from "@hypha/tools";
+import { thetaHyphaToolSpecs } from "./tools/hypha-registry.js";
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
-export const THETA_DOMAIN_PACK_ID = 'domain.theta.training';
-export const THETA_WORKFLOW_ID = 'workflow.theta.training';
+export const THETA_DOMAIN_PACK_ID = "domain.theta.training";
+export const THETA_WORKFLOW_ID = "workflow.theta.training";
 export const THETA_AGENT_REF: SpecRef = {
-  id: 'agent.theta.cli',
-  version: '1.0.0',
+  id: "agent.theta.cli",
+  version: "1.0.0",
 };
 
 export const THETA_WORKFLOW_STATES = {
-  intake: 'Intake',
-  awaitResearchClarification: 'ResearchClarification',
-  inspectDataset: 'InspectDataset',
-  awaitColumnConfirmation: 'ColumnConfirmation',
-  recommendModel: 'RecommendModel',
-  validatePlan: 'ValidatePlan',
-  awaitPlanCreationApproval: 'AwaitPlanCreationApproval',
-  createPlan: 'CreatePlan',
-  awaitPlanApproval: 'AwaitPlanApproval',
-  approvePlan: 'ApprovePlan',
-  dryRun: 'DryRun',
-  awaitTrainingStartApproval: 'AwaitTrainingStartApproval',
-  verifyDatasetBeforeTraining: 'VerifyDatasetBeforeTraining',
-  startTraining: 'StartTraining',
-  monitorTraining: 'MonitorTraining',
-  completed: 'Completed',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
+  intake: "Intake",
+  awaitResearchClarification: "ResearchClarification",
+  inspectDataset: "InspectDataset",
+  awaitColumnConfirmation: "ColumnConfirmation",
+  recommendModel: "RecommendModel",
+  validatePlan: "ValidatePlan",
+  awaitPlanCreationApproval: "AwaitPlanCreationApproval",
+  createPlan: "CreatePlan",
+  awaitPlanApproval: "AwaitPlanApproval",
+  approvePlan: "ApprovePlan",
+  dryRun: "DryRun",
+  awaitTrainingStartApproval: "AwaitTrainingStartApproval",
+  verifyDatasetBeforeTraining: "VerifyDatasetBeforeTraining",
+  startTraining: "StartTraining",
+  monitorTraining: "MonitorTraining",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
 } as const;
 
 export const THETA_APPROVAL_KEYS = {
-  researchClarification: 'theta.research.clarify',
-  columnConfirmation: 'theta.columns.confirm',
-  planCreate: 'theta.plan.create',
-  planApprove: 'theta.plan.approve',
-  trainingStart: 'theta.training.start',
+  researchClarification: "theta.research.clarify",
+  columnConfirmation: "theta.columns.confirm",
+  planCreate: "theta.plan.create",
+  planApprove: "theta.plan.approve",
+  trainingStart: "theta.training.start",
 } as const;
 
-const toolRef = (id: string): SpecRef => ({ id, version: '1.0.0' });
+const toolRef = (id: string, version = "1.0.0"): SpecRef => ({ id, version });
 
 const state = (
   id: string,
@@ -60,43 +60,43 @@ const state = (
 });
 
 const readonlyPolicy = {
-  id: 'policy.theta.readonly',
-  version: '1.0.0',
-  defaultEffect: 'deny' as const,
+  id: "policy.theta.readonly",
+  version: "1.0.0",
+  defaultEffect: "deny" as const,
   rules: [
     {
-      id: 'policy.theta.readonly.allow',
-      version: '1.0.0',
-      effect: 'allow' as const,
-      sideEffectLevels: ['none', 'read'] as const,
+      id: "policy.theta.readonly.allow",
+      version: "1.0.0",
+      effect: "allow" as const,
+      sideEffectLevels: ["none", "read"] as const,
     },
   ],
 };
 
 const stateWritePolicy = {
-  id: 'policy.theta.state-write',
-  version: '1.0.0',
-  defaultEffect: 'deny' as const,
+  id: "policy.theta.state-write",
+  version: "1.0.0",
+  defaultEffect: "deny" as const,
   rules: [
     {
-      id: 'policy.theta.state-write.allow',
-      version: '1.0.0',
-      effect: 'allow' as const,
-      sideEffectLevels: ['write'] as const,
+      id: "policy.theta.state-write.allow",
+      version: "1.0.0",
+      effect: "allow" as const,
+      sideEffectLevels: ["write"] as const,
     },
   ],
 };
 
 const trainingControlPolicy = {
-  id: 'policy.theta.training-control',
-  version: '1.0.0',
-  defaultEffect: 'deny' as const,
+  id: "policy.theta.training-control",
+  version: "1.0.0",
+  defaultEffect: "deny" as const,
   rules: [
     {
-      id: 'policy.theta.training-control.allow',
-      version: '1.0.0',
-      effect: 'allow' as const,
-      sideEffectLevels: ['external_effect'] as const,
+      id: "policy.theta.training-control.allow",
+      version: "1.0.0",
+      effect: "allow" as const,
+      sideEffectLevels: ["external_effect"] as const,
     },
   ],
 };
@@ -104,15 +104,15 @@ const trainingControlPolicy = {
 const workflowStates: WorkflowStateSpec[] = [
   state(
     THETA_WORKFLOW_STATES.intake,
-    'Build a strict ResearchBrief and detect blocking information gaps.',
+    "Build a strict ResearchBrief and detect blocking information gaps.",
   ),
   state(
     THETA_WORKFLOW_STATES.awaitResearchClarification,
-    'Wait for structured answers to blocking research questions.',
+    "Wait for structured answers to blocking research questions.",
   ),
   state(
     THETA_WORKFLOW_STATES.inspectDataset,
-    'Inspect the dataset without persisting raw rows.',
+    "Inspect the dataset without persisting raw rows.",
     {
       allowedTools: [
         THETA_TOOL_IDS.datasetInspect,
@@ -128,7 +128,7 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
-    'Require explicit confirmation of dataset column roles.',
+    "Require explicit confirmation of dataset column roles.",
     {
       allowedTools: [THETA_TOOL_IDS.datasetInspect],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetInspect)],
@@ -138,26 +138,29 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.recommendModel,
-    'Recommend a model from the sanitized profile.',
+    "Recommend a model from the sanitized profile.",
     {
       allowedTools: [
         THETA_TOOL_IDS.modelCatalog,
+        THETA_TOOL_IDS.ragSearch,
         THETA_TOOL_IDS.modelRecommend,
       ],
       allowedToolRefs: [
         toolRef(THETA_TOOL_IDS.modelCatalog),
-        toolRef(THETA_TOOL_IDS.modelRecommend),
+        toolRef(THETA_TOOL_IDS.ragSearch),
+        toolRef(THETA_TOOL_IDS.modelRecommend, "2.0.0"),
       ],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.modelRead,
         THETA_PERMISSION_SCOPES.datasetRead,
+        THETA_PERMISSION_SCOPES.ragRead,
       ],
       policyRefs: [readonlyPolicy.id],
     },
   ),
   state(
     THETA_WORKFLOW_STATES.validatePlan,
-    'Validate the candidate plan deterministically.',
+    "Validate the candidate plan deterministically.",
     {
       allowedTools: [THETA_TOOL_IDS.planValidate],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.planValidate)],
@@ -170,11 +173,11 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
-    'Wait for explicit approval before writing the canonical plan.',
+    "Wait for explicit approval before writing the canonical plan.",
   ),
   state(
     THETA_WORKFLOW_STATES.createPlan,
-    'Create the approved canonical training plan.',
+    "Create the approved canonical training plan.",
     {
       allowedTools: [THETA_TOOL_IDS.planCreate],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate)],
@@ -185,11 +188,11 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitPlanApproval,
-    'Wait for explicit business approval of the persisted plan.',
+    "Wait for explicit business approval of the persisted plan.",
   ),
   state(
     THETA_WORKFLOW_STATES.approvePlan,
-    'Approve the plan for downstream execution.',
+    "Approve the plan for downstream execution.",
     {
       allowedTools: [THETA_TOOL_IDS.planApprove],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.planApprove)],
@@ -200,7 +203,7 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.dryRun,
-    'Derive commands and expected artifacts without execution.',
+    "Derive commands and expected artifacts without execution.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingDryRun],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingDryRun)],
@@ -213,11 +216,11 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
-    'Wait for explicit approval before starting the external training process.',
+    "Wait for explicit approval before starting the external training process.",
   ),
   state(
     THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
-    'Recompute the dataset hash before applying the training approval.',
+    "Recompute the dataset hash before applying the training approval.",
     {
       allowedTools: [THETA_TOOL_IDS.datasetInspect],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetInspect)],
@@ -227,7 +230,7 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.startTraining,
-    'Start training through the governed Bridge.',
+    "Start training through the governed Bridge.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingStart],
       allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart)],
@@ -238,7 +241,7 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.monitorTraining,
-    'Read training status until a terminal result.',
+    "Read training status until a terminal result.",
     {
       allowedTools: [
         THETA_TOOL_IDS.trainingStatus,
@@ -257,10 +260,10 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.completed,
-    'Return the verified training result.',
+    "Return the verified training result.",
   ),
-  state(THETA_WORKFLOW_STATES.failed, 'Record a normalized failure and stop.'),
-  state(THETA_WORKFLOW_STATES.cancelled, 'Record cancellation and stop.'),
+  state(THETA_WORKFLOW_STATES.failed, "Record a normalized failure and stop."),
+  state(THETA_WORKFLOW_STATES.cancelled, "Record cancellation and stop."),
 ];
 
 const forwardTransitions = [
@@ -332,124 +335,124 @@ const failureTransitions = workflowStates
 
 export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   id: THETA_DOMAIN_PACK_ID,
-  version: '1.0.0',
-  name: 'THETA Local Training Domain',
+  version: "1.0.0",
+  name: "THETA Local Training Domain",
   description:
-    'A governed local dataset-to-training workflow for the THETA CLI Agent.',
+    "A governed local dataset-to-training workflow for the THETA CLI Agent.",
   taskSchemas: [
     {
-      id: 'task.theta.training',
-      version: '1.0.0',
-      taskType: 'theta.training',
+      id: "task.theta.training",
+      version: "1.0.0",
+      taskType: "theta.training",
       inputSchema: {
-        type: 'object',
-        required: ['filePath'],
+        type: "object",
+        required: ["filePath"],
         properties: {
-          filePath: { type: 'string', minLength: 1 },
-          datasetId: { type: 'string' },
-          researchGoal: { type: 'string' },
+          filePath: { type: "string", minLength: 1 },
+          datasetId: { type: "string" },
+          researchGoal: { type: "string" },
           research: {
-            type: 'object',
+            type: "object",
             properties: {
-              researchQuestion: { type: 'string', minLength: 1 },
+              researchQuestion: { type: "string", minLength: 1 },
               dataSources: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
-              collectionMethod: { type: 'string', minLength: 1 },
-              analysisUnit: { type: 'string', minLength: 1 },
+              collectionMethod: { type: "string", minLength: 1 },
+              analysisUnit: { type: "string", minLength: 1 },
               timeRange: {
-                type: 'object',
+                type: "object",
                 properties: {
-                  start: { type: 'string', minLength: 1 },
-                  end: { type: 'string', minLength: 1 },
+                  start: { type: "string", minLength: 1 },
+                  end: { type: "string", minLength: 1 },
                 },
                 additionalProperties: false,
               },
-              language: { type: 'string', minLength: 1 },
+              language: { type: "string", minLength: 1 },
               comparisonGroups: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
-              topicGranularity: { enum: ['broad', 'medium', 'fine'] },
+              topicGranularity: { enum: ["broad", "medium", "fine"] },
               knownBiases: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
               sensitiveData: {
-                type: 'object',
-                required: ['status'],
+                type: "object",
+                required: ["status"],
                 properties: {
-                  status: { enum: ['yes', 'no', 'unknown'] },
+                  status: { enum: ["yes", "no", "unknown"] },
                   categories: {
-                    type: 'array',
-                    items: { type: 'string', minLength: 1 },
+                    type: "array",
+                    items: { type: "string", minLength: 1 },
                   },
                 },
                 additionalProperties: false,
               },
               successCriteria: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
               hardwareLimit: {
-                type: 'object',
-                required: ['device'],
+                type: "object",
+                required: ["device"],
                 properties: {
-                  device: { enum: ['cpu', 'gpu', 'unknown'] },
-                  memoryGb: { type: 'number', exclusiveMinimum: 0 },
+                  device: { enum: ["cpu", "gpu", "unknown"] },
+                  memoryGb: { type: "number", exclusiveMinimum: 0 },
                 },
                 additionalProperties: false,
               },
-              textFieldIntent: { type: 'string', minLength: 1 },
-              trendAnalysis: { type: 'boolean' },
-              offlineOnly: { type: 'boolean' },
+              textFieldIntent: { type: "string", minLength: 1 },
+              trendAnalysis: { type: "boolean" },
+              offlineOnly: { type: "boolean" },
               requestedEmbedding: {
-                enum: ['local', 'remote', 'none', 'unknown'],
+                enum: ["local", "remote", "none", "unknown"],
               },
-              timeLimitHours: { type: 'number', exclusiveMinimum: 0 },
-              expectedRowCount: { type: 'integer', minimum: 0 },
+              timeLimitHours: { type: "number", exclusiveMinimum: 0 },
+              expectedRowCount: { type: "integer", minimum: 0 },
               candidateTimeColumns: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
               candidateGroupColumns: {
-                type: 'array',
-                items: { type: 'string', minLength: 1 },
+                type: "array",
+                items: { type: "string", minLength: 1 },
               },
             },
             additionalProperties: false,
           },
-          constraints: { type: 'object', additionalProperties: true },
-          plan: { type: 'object', additionalProperties: true },
-          sampleSize: { type: 'integer', minimum: 1, maximum: 1000 },
+          constraints: { type: "object", additionalProperties: true },
+          plan: { type: "object", additionalProperties: true },
+          sampleSize: { type: "integer", minimum: 1, maximum: 1000 },
         },
         additionalProperties: false,
       },
-      outputContractRef: 'output.theta.training',
+      outputContractRef: "output.theta.training",
       defaultWorkflowRef: THETA_WORKFLOW_ID,
       riskProfile: {
-        defaultRiskLevel: 'high',
+        defaultRiskLevel: "high",
         escalationPolicyRef: trainingControlPolicy.id,
       },
     },
   ],
   outputContracts: [
     {
-      id: 'output.theta.training',
-      version: '1.0.0',
+      id: "output.theta.training",
+      version: "1.0.0",
       schema: {
-        type: 'object',
-        required: ['runId', 'status', 'modelId', 'planId', 'trainingRunId'],
+        type: "object",
+        required: ["runId", "status", "modelId", "planId", "trainingRunId"],
         properties: {
-          runId: { type: 'string' },
-          status: { type: 'string' },
-          modelId: { type: 'string' },
-          planId: { type: 'string' },
-          trainingRunId: { type: 'string' },
+          runId: { type: "string" },
+          status: { type: "string" },
+          modelId: { type: "string" },
+          planId: { type: "string" },
+          trainingRunId: { type: "string" },
           artifacts: {
-            type: 'array',
-            items: { type: 'object', additionalProperties: true },
+            type: "array",
+            items: { type: "object", additionalProperties: true },
           },
         },
         additionalProperties: true,
@@ -458,9 +461,9 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   ],
   sessionProfiles: [
     {
-      id: 'session.theta.local',
-      version: '1.0.0',
-      defaultMetadata: { runtimeMode: 'single-user', surface: 'cli' },
+      id: "session.theta.local",
+      version: "1.0.0",
+      defaultMetadata: { runtimeMode: "single-user", surface: "cli" },
       defaultPolicyRefs: [
         readonlyPolicy.id,
         stateWritePolicy.id,
@@ -471,7 +474,7 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   workflows: [
     {
       id: THETA_WORKFLOW_ID,
-      version: '1.0.0',
+      version: "1.0.0",
       initialState: THETA_WORKFLOW_STATES.intake,
       terminalStates: [
         THETA_WORKFLOW_STATES.completed,
@@ -490,42 +493,42 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   policies: [readonlyPolicy, stateWritePolicy, trainingControlPolicy],
   evaluationProfiles: [
     {
-      id: 'eval.theta.output-contract',
-      version: '1.0.0',
-      type: 'output_contract',
+      id: "eval.theta.output-contract",
+      version: "1.0.0",
+      type: "output_contract",
       deterministic: true,
     },
   ],
   regressionCases: [
     {
-      id: 'regression.theta.training',
-      version: '1.0.0',
-      fixtureRefs: [{ id: 'fixture.theta.training', version: '1.0.0' }],
+      id: "regression.theta.training",
+      version: "1.0.0",
+      fixtureRefs: [{ id: "fixture.theta.training", version: "1.0.0" }],
       requiredChecks: [
-        'event_types',
-        'state_path',
-        'tool_calls',
-        'policy_decisions',
-        'output_contract',
+        "event_types",
+        "state_path",
+        "tool_calls",
+        "policy_decisions",
+        "output_contract",
       ],
     },
   ],
   deploymentProfile: {
-    id: 'deployment.theta.local',
-    version: '1.0.0',
-    mode: 'local',
-    runtimeMode: 'single-user',
+    id: "deployment.theta.local",
+    version: "1.0.0",
+    mode: "local",
+    runtimeMode: "single-user",
   },
 });
 
 export const compileThetaTrainingDomain = (): DomainCompilationResult =>
   compileDomainPackToHarnessedSystem(thetaTrainingDomainPack, {
     agentRef: THETA_AGENT_REF,
-    taskSchemaId: 'task.theta.training',
+    taskSchemaId: "task.theta.training",
     workflowId: THETA_WORKFLOW_ID,
-    sessionProfileId: 'session.theta.local',
-    evaluationRefs: ['eval.theta.output-contract'],
-    metadata: { owner: 'theta-cli-agent' },
+    sessionProfileId: "session.theta.local",
+    evaluationRefs: ["eval.theta.output-contract"],
+    metadata: { owner: "theta-cli-agent" },
   });
 
 export const resolveThetaStateToolScope = (

@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import path from 'node:path';
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   EventCreateInput,
   FrameworkEvent,
@@ -7,14 +7,14 @@ import type {
   RuntimeJsonValue,
   RuntimeOrchestrationProjection,
   RuntimeScope,
-} from '@hypha/core';
+} from "@hypha/core";
 import type {
   BoundedFSMDriverResult,
   BoundedStateExecutionDecision,
   BoundedStateExecutorInput,
-} from '@hypha/harness';
-import type { ToolCallResult } from '@hypha/tools';
-import { decideResearchGrilling } from './agent/grilling-engine.js';
+} from "@hypha/harness";
+import type { ToolCallResult } from "@hypha/tools";
+import { decideResearchGrilling } from "./agent/grilling-engine.js";
 import {
   RESEARCH_CONTRACT_VERSION,
   columnConfirmationDraftSchema,
@@ -24,34 +24,34 @@ import {
   researchBriefSchema,
   type ColumnConfirmationDraft,
   type DatasetProfile,
-} from './agent/research-contracts.js';
+} from "./agent/research-contracts.js";
 import {
   ResearchService,
   type ResearchAssessment,
-} from './agent/research-service.js';
+} from "./agent/research-service.js";
 import {
   THETA_APPROVAL_KEYS,
   THETA_WORKFLOW_STATES,
   compileThetaTrainingDomain,
   resolveThetaStateToolScope,
-} from './theta-domain.js';
+} from "./theta-domain.js";
 import {
   JsonlToolTraceRecorder,
   createThetaWorkflowRuntime,
   defaultThetaWorkflowDb,
   thetaToolTraceFile,
-} from './theta-workflow-runtime.js';
+} from "./theta-workflow-runtime.js";
 import {
   createThetaGovernedToolRunner,
   createThetaToolCallContext,
-} from './tools/hypha-runner.js';
-import type { ThetaTrainingPlan } from './tools/plan-validate-tool.js';
-import { THETA_TOOL_IDS } from './tools/tool-ids.js';
+} from "./tools/hypha-runner.js";
+import type { ThetaTrainingPlan } from "./tools/plan-validate-tool.js";
+import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
-const USER_ID = 'local_user';
-const WORKSPACE_ID = 'local_workspace';
-const AGENT_ID = 'agent.theta.cli';
-const DRIVER_OWNER = 'theta-cli-workflow-driver';
+const USER_ID = "local_user";
+const WORKSPACE_ID = "local_workspace";
+const AGENT_ID = "agent.theta.cli";
+const DRIVER_OWNER = "theta-cli-workflow-driver";
 const LEASE_TTL_MS = 60_000;
 const STATE_CLAIM_TTL_MS = 30_000;
 const MAX_STEPS = 64;
@@ -103,8 +103,8 @@ export interface ThetaWorkflowToolPort {
 export interface ThetaWorkflowRunResult {
   runId: string;
   runtimeDb: string;
-  disposition: BoundedFSMDriverResult['disposition'];
-  status: RuntimeOrchestrationProjection['runStatus'];
+  disposition: BoundedFSMDriverResult["disposition"];
+  status: RuntimeOrchestrationProjection["runStatus"];
   currentState?: string;
   pendingActionRef?: string;
   pendingReason?: string;
@@ -173,7 +173,7 @@ class GovernedThetaWorkflowToolPort implements ThetaWorkflowToolPort {
       input: request.input,
       context,
     });
-    if (result.status === 'human_review_required' && request.approvedBy) {
+    if (result.status === "human_review_required" && request.approvedBy) {
       result = await this.runner.approveAndResume(
         invocationId,
         request.approvedBy,
@@ -233,7 +233,7 @@ export class ThetaWorkflowService {
   async resume(
     request: ThetaWorkflowResumeRequest,
   ): Promise<ThetaWorkflowRunResult> {
-    const runId = required(request.runId, 'runId');
+    const runId = required(request.runId, "runId");
     const runtimeDb = path.resolve(
       request.runtimeDb ?? defaultThetaWorkflowDb(),
     );
@@ -252,7 +252,7 @@ export class ThetaWorkflowService {
       const hasColumnConfirmation = request.columnConfirmation !== undefined;
       if (hasResearchAnswers && hasColumnConfirmation) {
         throw new Error(
-          'A resume command can submit research answers or a column confirmation, not both.',
+          "A resume command can submit research answers or a column confirmation, not both.",
         );
       }
       if (hasResearchAnswers || hasColumnConfirmation) {
@@ -272,12 +272,12 @@ export class ThetaWorkflowService {
         )
       ) {
         throw new Error(
-          'This human wait requires structured input instead of a bare approval.',
+          "This human wait requires structured input instead of a bare approval.",
         );
       }
       if (
-        result.disposition === 'waiting' &&
-        result.projection.pendingWait?.type === 'human' &&
+        result.disposition === "waiting" &&
+        result.projection.pendingWait?.type === "human" &&
         (request.approve ||
           request.reject ||
           hasResearchAnswers ||
@@ -287,7 +287,7 @@ export class ThetaWorkflowService {
           runtime,
           scope,
           result.projection,
-          request.reject ? 'rejected' : 'approved',
+          request.reject ? "rejected" : "approved",
           request.approvedBy ?? USER_ID,
         );
         result = await this.runDriver(runtime, scope, tools);
@@ -315,7 +315,7 @@ export class ThetaWorkflowService {
     runId: string,
     runtimeDb = defaultThetaWorkflowDb(),
   ): Promise<ThetaWorkflowEvidence> {
-    const resolvedRunId = required(runId, 'runId');
+    const resolvedRunId = required(runId, "runId");
     const resolvedDb = path.resolve(runtimeDb);
     const runtime = await createThetaWorkflowRuntime({ filename: resolvedDb });
     try {
@@ -341,29 +341,29 @@ export class ThetaWorkflowService {
   ): Promise<ThetaWorkflowReplay> {
     const evidence = await this.evidence(runId, runtimeDb);
     const statePath = evidence.orchestrationEvents
-      .filter((event) => event.type === 'fsm.state.entered')
-      .map((event) => stringProperty(event.payload, 'stateId'))
+      .filter((event) => event.type === "fsm.state.entered")
+      .map((event) => stringProperty(event.payload, "stateId"))
       .filter((value): value is string => value !== undefined);
     const toolCalls = unique(
       evidence.toolEvents
-        .filter((event) => event.type === 'tool.call.completed')
-        .map((event) => stringProperty(event.payload, 'toolId'))
+        .filter((event) => event.type === "tool.call.completed")
+        .map((event) => stringProperty(event.payload, "toolId"))
         .filter((value): value is string => value !== undefined),
     );
     const policyDecisions = evidence.toolEvents
-      .filter((event) => event.type === 'tool.policy.checked')
+      .filter((event) => event.type === "tool.policy.checked")
       .map((event) => {
-        const decision = recordProperty(event.payload, 'decision');
+        const decision = recordProperty(event.payload, "decision");
         return (
           stringValue(decision?.ruleId) ??
-          stringProperty(event.payload, 'ruleId') ??
+          stringProperty(event.payload, "ruleId") ??
           event.id
         );
       });
     const terminal = [...evidence.orchestrationEvents]
       .reverse()
-      .find((event) => event.type === 'run.completed');
-    const output = recordProperty(terminal?.payload, 'output') as
+      .find((event) => event.type === "run.completed");
+    const output = recordProperty(terminal?.payload, "output") as
       | RuntimeJsonValue
       | undefined;
     const fixture = {
@@ -376,7 +376,7 @@ export class ThetaWorkflowService {
     };
     return {
       ...fixture,
-      digest: createHash('sha256').update(canonicalJson(fixture)).digest('hex'),
+      digest: createHash("sha256").update(canonicalJson(fixture)).digest("hex"),
     };
   }
 
@@ -425,8 +425,8 @@ export class ThetaWorkflowService {
     for (let count = 0; count < 3; count += 1) {
       const pending = result.projection.pendingWait;
       if (
-        result.disposition !== 'waiting' ||
-        pending?.type !== 'human' ||
+        result.disposition !== "waiting" ||
+        pending?.type !== "human" ||
         !pending.pendingActionRef ||
         requiresStructuredHumanInput(pending.pendingActionRef) ||
         !approvals.has(pending.pendingActionRef)
@@ -437,7 +437,7 @@ export class ThetaWorkflowService {
         runtime,
         scope,
         result.projection,
-        'approved',
+        "approved",
         approvedBy,
       );
       result = await this.runDriver(runtime, scope, tools);
@@ -449,13 +449,13 @@ export class ThetaWorkflowService {
     runtime: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>,
     scope: RuntimeScope,
     projection: RuntimeOrchestrationProjection,
-    decision: 'approved' | 'rejected',
+    decision: "approved" | "rejected",
     principalId: string,
   ): Promise<void> {
     const pending = projection.pendingWait;
-    if (pending?.type !== 'human' || !pending.pendingActionRef) {
+    if (pending?.type !== "human" || !pending.pendingActionRef) {
       throw new Error(
-        'THETA workflow is not waiting for a resolvable human action.',
+        "THETA workflow is not waiting for a resolvable human action.",
       );
     }
     await runtime.humanWaits.resolve({
@@ -479,9 +479,9 @@ export class ThetaWorkflowService {
     request: ThetaWorkflowResumeRequest,
   ): Promise<void> {
     const pending = projection.pendingWait;
-    if (pending?.type !== 'human' || !pending.pendingActionRef) {
+    if (pending?.type !== "human" || !pending.pendingActionRef) {
       throw new Error(
-        'Structured resume input requires a pending human workflow action.',
+        "Structured resume input requires a pending human workflow action.",
       );
     }
     const payload: Record<string, unknown> = {
@@ -500,9 +500,7 @@ export class ThetaWorkflowService {
       );
     }
     if (request.columnConfirmation !== undefined) {
-      if (
-        pending.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation
-      ) {
+      if (pending.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation) {
         throw new Error(
           `Column confirmation cannot resolve ${pending.pendingActionRef}.`,
         );
@@ -510,24 +508,22 @@ export class ThetaWorkflowService {
       const variables = await hydrateVariables(runtime.events, scope);
       const profile = datasetProfileSchema.parse(variables.datasetProfile);
       payload.columnConfirmation = {
-        draft: columnConfirmationDraftSchema.parse(
-          request.columnConfirmation,
-        ),
+        draft: columnConfirmationDraftSchema.parse(request.columnConfirmation),
         datasetSha256: profile.datasetSha256,
       };
     }
     const head = await runtime.events.getStreamHead(streamScope(scope));
-    const submissionId = createHash('sha256')
+    const submissionId = createHash("sha256")
       .update(canonicalJson(payload))
-      .digest('hex')
+      .digest("hex")
       .slice(0, 24);
     await runtime.events.append({
       scope: streamScope(scope),
       events: [
         {
           id: `${scope.runId}:structured-resume:${submissionId}`,
-          type: 'reasoning.decision.recorded',
-          version: '1.0.0',
+          type: "reasoning.decision.recorded",
+          version: "1.0.0",
           userId: scope.userId,
           workspaceId: scope.workspaceId,
           sessionId: scope.sessionId,
@@ -568,7 +564,7 @@ export class ThetaWorkflowService {
 
 const executeThetaState = async (
   execution: BoundedStateExecutorInput,
-  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>['events'],
+  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>["events"],
   tools: ThetaWorkflowToolPort,
 ): Promise<BoundedStateExecutionDecision> => {
   const variables = await hydrateVariables(events, execution.scope);
@@ -592,7 +588,7 @@ const executeThetaState = async (
       case THETA_WORKFLOW_STATES.intake: {
         const input = requireRecord(
           variables.input,
-          'workflow input',
+          "workflow input",
         ) as unknown as ThetaWorkflowInput;
         validateInput(input);
         const assessment = researchService.assess(
@@ -614,8 +610,7 @@ const executeThetaState = async (
           ? execution.projection.lastResume.payload
           : undefined;
         if (
-          resume?.pendingActionRef !==
-          THETA_APPROVAL_KEYS.researchClarification
+          resume?.pendingActionRef !== THETA_APPROVAL_KEYS.researchClarification
         ) {
           const assessment = researchService.assess(
             researchBriefSchema.parse(variables.researchBrief),
@@ -623,16 +618,16 @@ const executeThetaState = async (
           );
           return researchClarificationWait(assessment);
         }
-        if (resume.decision === 'rejected') {
+        if (resume.decision === "rejected") {
           return failed(
-            'RUNTIME_CANCELLED',
-            'Human rejected the research clarification request.',
+            "RUNTIME_CANCELLED",
+            "Human rejected the research clarification request.",
             execution.state.id,
           );
         }
         const answers = requireRecord(
           variables.researchAnswers,
-          'research clarification answers',
+          "research clarification answers",
         );
         const assessment = researchService.assess(
           researchService.applyAnswers(
@@ -645,17 +640,17 @@ const executeThetaState = async (
           assessment,
           execution.projection.stateAttempt,
         );
-        if (grilling.kind === 'unresolved') {
+        if (grilling.kind === "unresolved") {
           return failed(
-            'RUNTIME_INVARIANT_FAILED',
+            "RUNTIME_INVARIANT_FAILED",
             `Blocking research information remains unresolved: ${assessment.gaps
-              .filter((item) => item.severity === 'blocking')
+              .filter((item) => item.severity === "blocking")
               .map((item) => item.field)
-              .join(', ')}.`,
+              .join(", ")}.`,
             execution.state.id,
           );
         }
-        if (grilling.kind === 'ask') {
+        if (grilling.kind === "ask") {
           return researchClarificationWait(assessment);
         }
         return transition(THETA_WORKFLOW_STATES.inspectDataset, {
@@ -664,9 +659,9 @@ const executeThetaState = async (
         });
       }
       case THETA_WORKFLOW_STATES.inspectDataset: {
-        const input = requireRecord(variables.input, 'workflow input');
+        const input = requireRecord(variables.input, "workflow input");
         const toolInput = {
-          filePath: requiredString(input.filePath, 'input.filePath'),
+          filePath: requiredString(input.filePath, "input.filePath"),
           ...(numberValue(input.sampleSize) === undefined
             ? {}
             : { sampleSize: numberValue(input.sampleSize) }),
@@ -683,10 +678,9 @@ const executeThetaState = async (
             candidateTimeColumns: datasetProfile.columnCandidates.time.map(
               (candidate) => candidate.name,
             ),
-            candidateGroupColumns:
-              datasetProfile.columnCandidates.metadata.map(
-                (candidate) => candidate.name,
-              ),
+            candidateGroupColumns: datasetProfile.columnCandidates.metadata.map(
+              (candidate) => candidate.name,
+            ),
           },
         );
         const observedAssessment = researchService.assess(observedBrief, {
@@ -695,8 +689,7 @@ const executeThetaState = async (
         return transition(THETA_WORKFLOW_STATES.awaitColumnConfirmation, {
           datasetProfile,
           researchBrief: runtimeRecord({ ...observedAssessment.brief }),
-          researchAssessment:
-            sanitizeResearchAssessment(observedAssessment),
+          researchAssessment: sanitizeResearchAssessment(observedAssessment),
         });
       }
       case THETA_WORKFLOW_STATES.awaitColumnConfirmation: {
@@ -711,10 +704,10 @@ const executeThetaState = async (
         ) {
           return columnConfirmationWait(datasetProfile);
         }
-        if (resume.decision === 'rejected') {
+        if (resume.decision === "rejected") {
           return failed(
-            'RUNTIME_CANCELLED',
-            'Human rejected the dataset column confirmation.',
+            "RUNTIME_CANCELLED",
+            "Human rejected the dataset column confirmation.",
             execution.state.id,
           );
         }
@@ -725,14 +718,14 @@ const executeThetaState = async (
         if (
           requiredString(
             submission.datasetSha256,
-            'submitted datasetSha256',
+            "submitted datasetSha256",
           ) !== datasetProfile.datasetSha256
         ) {
           return columnConfirmationWait(datasetProfile);
         }
-        const input = requireRecord(variables.input, 'workflow input');
+        const input = requireRecord(variables.input, "workflow input");
         const latestInspection = await invoke(THETA_TOOL_IDS.datasetInspect, {
-          filePath: requiredString(input.filePath, 'input.filePath'),
+          filePath: requiredString(input.filePath, "input.filePath"),
           ...(numberValue(input.sampleSize) === undefined
             ? {}
             : { sampleSize: numberValue(input.sampleSize) }),
@@ -740,16 +733,16 @@ const executeThetaState = async (
         if (
           requiredString(
             latestInspection.datasetSha256,
-            'latest datasetSha256',
+            "latest datasetSha256",
           ) !== datasetProfile.datasetSha256
         ) {
           return transition(THETA_WORKFLOW_STATES.inspectDataset, {
             datasetInvalidation: {
-              reason: 'dataset_hash_changed_before_column_confirmation',
+              reason: "dataset_hash_changed_before_column_confirmation",
               previousDatasetSha256: datasetProfile.datasetSha256,
               detectedDatasetSha256: requiredString(
                 latestInspection.datasetSha256,
-                'latest datasetSha256',
+                "latest datasetSha256",
               ),
             },
             columnConfirmation: null,
@@ -761,8 +754,7 @@ const executeThetaState = async (
           ...draft,
           schemaVersion: RESEARCH_CONTRACT_VERSION,
           datasetSha256: datasetProfile.datasetSha256,
-          confirmedBy:
-            execution.projection.lastResume?.principalId ?? USER_ID,
+          confirmedBy: execution.projection.lastResume?.principalId ?? USER_ID,
           confirmedAt:
             execution.projection.lastResume?.resumedAt ??
             new Date().toISOString(),
@@ -772,65 +764,96 @@ const executeThetaState = async (
         });
       }
       case THETA_WORKFLOW_STATES.recommendModel: {
-        const input = requireRecord(variables.input, 'workflow input');
+        const input = requireRecord(variables.input, "workflow input");
         const datasetProfile = requireRecord(
           variables.datasetProfile,
-          'dataset profile',
+          "dataset profile",
         );
-        const [catalog, recommendation] = await Promise.all([
+        const researchBrief = requireRecord(
+          variables.researchBrief,
+          "research brief",
+        );
+        const columnConfirmation = requireRecord(
+          variables.columnConfirmation,
+          "column confirmation",
+        );
+        const [catalog, evidenceResult] = await Promise.all([
           invoke(THETA_TOOL_IDS.modelCatalog, {}),
-          invoke(THETA_TOOL_IDS.modelRecommend, {
-            dataProfile: datasetProfile,
-            ...(stringValue(input.researchGoal)
-              ? { researchGoal: input.researchGoal }
-              : {}),
-            ...(isRecord(input.constraints)
-              ? { constraints: input.constraints }
-              : {}),
+          invoke(THETA_TOOL_IDS.ragSearch, {
+            query: [
+              stringValue(researchBrief.researchQuestion),
+              stringValue(input.researchGoal),
+              "THETA topic model requirements parameters hardware",
+            ]
+              .filter((item): item is string => Boolean(item))
+              .join(" "),
+            limit: 10,
           }),
         ]);
+        const recommendation = await invoke(THETA_TOOL_IDS.modelRecommend, {
+          dataProfile: datasetProfile,
+          researchBrief,
+          columnConfirmation,
+          evidence: arrayValue(evidenceResult.evidence),
+          ...(stringValue(input.researchGoal)
+            ? { researchGoal: input.researchGoal }
+            : {}),
+          ...(isRecord(input.constraints)
+            ? { constraints: input.constraints }
+            : {}),
+        });
+        if (arrayValue(recommendation.recommendations).length === 0) {
+          return failed(
+            "RUNTIME_INVARIANT_FAILED",
+            `No compatible model remains after hard constraints: ${stringArray(
+              recommendation.warnings,
+            ).join(", ")}`,
+            execution.state.id,
+          );
+        }
         return transition(THETA_WORKFLOW_STATES.validatePlan, {
           modelCatalog: sanitizeCatalog(catalog),
+          evidence: {
+            noEvidence: evidenceResult.noEvidence === true,
+            refs: arrayValue(evidenceResult.evidence) as RuntimeJsonValue[],
+          },
           recommendation: sanitizeRecommendation(recommendation),
           candidatePlan: candidatePlan(
             input,
             datasetProfile,
             recommendation,
-            requireRecord(
-              variables.columnConfirmation,
-              'column confirmation',
-            ),
+            columnConfirmation,
           ),
         });
       }
       case THETA_WORKFLOW_STATES.validatePlan: {
         const candidate = requireRecord(
           variables.candidatePlan,
-          'candidate plan',
+          "candidate plan",
         );
         const validation = await invoke(THETA_TOOL_IDS.planValidate, {
           plan: candidate,
           dataProfile: requireRecord(
             variables.datasetProfile,
-            'dataset profile',
+            "dataset profile",
           ),
         });
         if (validation.valid !== true) {
           return failed(
-            'RUNTIME_INVARIANT_FAILED',
-            `Candidate plan is invalid: ${stringArray(validation.errors).join('; ')}`,
+            "RUNTIME_INVARIANT_FAILED",
+            `Candidate plan is invalid: ${stringArray(validation.errors).join("; ")}`,
             execution.state.id,
           );
         }
         return transition(THETA_WORKFLOW_STATES.awaitPlanCreationApproval, {
           validatedPlan: requireRecord(
             validation.normalizedPlan,
-            'normalized plan',
+            "normalized plan",
           ),
           validation: {
             valid: true,
             warnings: stringArray(validation.warnings),
-            catalogSource: stringValue(validation.catalogSource) ?? 'unknown',
+            catalogSource: stringValue(validation.catalogSource) ?? "unknown",
           },
         });
       }
@@ -849,22 +872,22 @@ const executeThetaState = async (
         const created = await invoke(
           THETA_TOOL_IDS.planCreate,
           {
-            plan: requireRecord(variables.validatedPlan, 'validated plan'),
-            rationale: 'Created by the approved THETA event-first workflow.',
+            plan: requireRecord(variables.validatedPlan, "validated plan"),
+            rationale: "Created by the approved THETA event-first workflow.",
             dataProfile: requireRecord(
               variables.datasetProfile,
-              'dataset profile',
+              "dataset profile",
             ),
           },
           approvedBy,
         );
         return transition(THETA_WORKFLOW_STATES.awaitPlanApproval, {
           planRecord: {
-            planId: requiredString(created.planId, 'created planId'),
-            planHash: requiredString(created.planHash, 'created planHash'),
+            planId: requiredString(created.planId, "created planId"),
+            planHash: requiredString(created.planHash, "created planHash"),
             normalizedPlan: requireRecord(
               created.normalizedPlan,
-              'created normalizedPlan',
+              "created normalizedPlan",
             ),
           },
         });
@@ -877,7 +900,7 @@ const executeThetaState = async (
           THETA_WORKFLOW_STATES.approvePlan,
         );
       case THETA_WORKFLOW_STATES.approvePlan: {
-        const plan = requireRecord(variables.planRecord, 'plan record');
+        const plan = requireRecord(variables.planRecord, "plan record");
         const approvedBy = approvalActor(
           variables,
           THETA_APPROVAL_KEYS.planApprove,
@@ -885,16 +908,16 @@ const executeThetaState = async (
         const approval = await invoke(
           THETA_TOOL_IDS.planApprove,
           {
-            planId: requiredString(plan.planId, 'planId'),
-            planHash: requiredString(plan.planHash, 'planHash'),
+            planId: requiredString(plan.planId, "planId"),
+            planHash: requiredString(plan.planHash, "planHash"),
             approvedBy,
-            approvalNote: 'Approved through the THETA runtime human wait.',
+            approvalNote: "Approved through the THETA runtime human wait.",
           },
           approvedBy,
         );
         return transition(THETA_WORKFLOW_STATES.dryRun, {
           planApproval: {
-            approvalId: requiredString(approval.approvalId, 'approvalId'),
+            approvalId: requiredString(approval.approvalId, "approvalId"),
             approvedBy,
             approvedAt:
               stringValue(approval.approvedAt) ?? new Date().toISOString(),
@@ -902,15 +925,15 @@ const executeThetaState = async (
         });
       }
       case THETA_WORKFLOW_STATES.dryRun: {
-        const plan = requireRecord(variables.planRecord, 'plan record');
+        const plan = requireRecord(variables.planRecord, "plan record");
         const preview = await invoke(THETA_TOOL_IDS.trainingDryRun, {
-          planId: requiredString(plan.planId, 'planId'),
-          planHash: requiredString(plan.planHash, 'planHash'),
+          planId: requiredString(plan.planId, "planId"),
+          planHash: requiredString(plan.planHash, "planHash"),
         });
         if (preview.valid !== true || preview.approved !== true) {
           return failed(
-            'RUNTIME_INVARIANT_FAILED',
-            'Training dry run did not confirm a valid approved plan.',
+            "RUNTIME_INVARIANT_FAILED",
+            "Training dry run did not confirm a valid approved plan.",
             execution.state.id,
           );
         }
@@ -932,22 +955,22 @@ const executeThetaState = async (
           THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
         );
       case THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining: {
-        const input = requireRecord(variables.input, 'workflow input');
+        const input = requireRecord(variables.input, "workflow input");
         const profile = datasetProfileSchema.parse(variables.datasetProfile);
         const inspection = await invoke(THETA_TOOL_IDS.datasetInspect, {
-          filePath: requiredString(input.filePath, 'input.filePath'),
+          filePath: requiredString(input.filePath, "input.filePath"),
           ...(numberValue(input.sampleSize) === undefined
             ? {}
             : { sampleSize: numberValue(input.sampleSize) }),
         });
         const currentSha256 = requiredString(
           inspection.datasetSha256,
-          'training datasetSha256',
+          "training datasetSha256",
         );
         if (currentSha256 !== profile.datasetSha256) {
           return transition(THETA_WORKFLOW_STATES.inspectDataset, {
             datasetInvalidation: {
-              reason: 'dataset_hash_changed_before_training',
+              reason: "dataset_hash_changed_before_training",
               previousDatasetSha256: profile.datasetSha256,
               detectedDatasetSha256: currentSha256,
               planApprovalInvalidated: true,
@@ -961,8 +984,8 @@ const executeThetaState = async (
         return transition(THETA_WORKFLOW_STATES.startTraining);
       }
       case THETA_WORKFLOW_STATES.startTraining: {
-        const plan = requireRecord(variables.planRecord, 'plan record');
-        const approval = requireRecord(variables.planApproval, 'plan approval');
+        const plan = requireRecord(variables.planRecord, "plan record");
+        const approval = requireRecord(variables.planApproval, "plan approval");
         const approvedBy = approvalActor(
           variables,
           THETA_APPROVAL_KEYS.trainingStart,
@@ -970,9 +993,9 @@ const executeThetaState = async (
         const started = await invoke(
           THETA_TOOL_IDS.trainingStart,
           {
-            planId: requiredString(plan.planId, 'planId'),
-            planHash: requiredString(plan.planHash, 'planHash'),
-            approvalId: requiredString(approval.approvalId, 'approvalId'),
+            planId: requiredString(plan.planId, "planId"),
+            planHash: requiredString(plan.planHash, "planHash"),
+            approvalId: requiredString(approval.approvalId, "approvalId"),
             idempotencyKey: `theta-workflow-training-${execution.scope.runId}`,
           },
           approvedBy,
@@ -981,31 +1004,31 @@ const executeThetaState = async (
           training: {
             trainingRunId: requiredString(
               started.trainingRunId,
-              'trainingRunId',
+              "trainingRunId",
             ),
-            status: stringValue(started.status) ?? 'running',
+            status: stringValue(started.status) ?? "running",
             progress: numberValue(started.progress) ?? 0,
-            currentStep: stringValue(started.currentStep) ?? 'starting',
+            currentStep: stringValue(started.currentStep) ?? "starting",
           },
         });
       }
       case THETA_WORKFLOW_STATES.monitorTraining: {
-        const training = requireRecord(variables.training, 'training state');
+        const training = requireRecord(variables.training, "training state");
         const status = await invoke(THETA_TOOL_IDS.trainingStatus, {
           trainingRunId: requiredString(
             training.trainingRunId,
-            'trainingRunId',
+            "trainingRunId",
           ),
           logLimit: 20,
         });
         const normalizedStatus = (
-          stringValue(status.status) ?? 'unknown'
+          stringValue(status.status) ?? "unknown"
         ).toLowerCase();
-        if (['completed', 'succeeded', 'success'].includes(normalizedStatus)) {
-          const plan = requireRecord(variables.planRecord, 'plan record');
+        if (["completed", "succeeded", "success"].includes(normalizedStatus)) {
+          const plan = requireRecord(variables.planRecord, "plan record");
           const validatedPlan = requireRecord(
             variables.validatedPlan,
-            'validated plan',
+            "validated plan",
           );
           return transition(
             THETA_WORKFLOW_STATES.completed,
@@ -1015,36 +1038,36 @@ const executeThetaState = async (
             {
               runId: execution.scope.runId,
               status: normalizedStatus,
-              modelId: requiredString(validatedPlan.modelId, 'modelId'),
-              planId: requiredString(plan.planId, 'planId'),
+              modelId: requiredString(validatedPlan.modelId, "modelId"),
+              planId: requiredString(plan.planId, "planId"),
               trainingRunId: requiredString(
                 status.trainingRunId,
-                'trainingRunId',
+                "trainingRunId",
               ),
               artifacts: arrayValue(status.artifacts).map(sanitizeArtifact),
             },
           );
         }
-        if (['failed', 'error'].includes(normalizedStatus)) {
+        if (["failed", "error"].includes(normalizedStatus)) {
           return failed(
-            'RUNTIME_INTERNAL_ERROR',
-            `Training run failed in state ${stringValue(status.currentStep) ?? 'unknown'}.`,
+            "RUNTIME_INTERNAL_ERROR",
+            `Training run failed in state ${stringValue(status.currentStep) ?? "unknown"}.`,
             execution.state.id,
           );
         }
-        if (normalizedStatus === 'cancelled') {
+        if (normalizedStatus === "cancelled") {
           return transition(THETA_WORKFLOW_STATES.cancelled, {
             training: sanitizeTrainingStatus(status),
           });
         }
         return {
           result: {
-            kind: 'waiting',
+            kind: "waiting",
             wait: {
-              type: 'timer',
+              type: "timer",
               expiresAt: new Date(Date.now() + 1_000).toISOString(),
               reason:
-                'Training is still running; poll again after the durable timer fires.',
+                "Training is still running; poll again after the durable timer fires.",
               metadata: sanitizeTrainingStatus(status) as Record<
                 string,
                 RuntimeJsonValue
@@ -1055,14 +1078,14 @@ const executeThetaState = async (
       }
       default:
         return failed(
-          'RUNTIME_STATE_NOT_FOUND',
+          "RUNTIME_STATE_NOT_FOUND",
           `THETA workflow has no executor for state ${execution.state.id}.`,
           execution.state.id,
         );
     }
   } catch (error) {
     return failed(
-      'RUNTIME_INTERNAL_ERROR',
+      "RUNTIME_INTERNAL_ERROR",
       error instanceof Error ? error.message : String(error),
       execution.state.id,
     );
@@ -1079,14 +1102,14 @@ const approvalDecision = (
     ? execution.projection.lastResume.payload
     : undefined;
   if (payload?.pendingActionRef === pendingActionRef) {
-    if (payload.decision === 'rejected') {
+    if (payload.decision === "rejected") {
       return failed(
-        'RUNTIME_CANCELLED',
+        "RUNTIME_CANCELLED",
         `Human rejected ${pendingActionRef}.`,
         execution.state.id,
       );
     }
-    if (payload.decision === 'approved') {
+    if (payload.decision === "approved") {
       const priorActors = isRecord(variables.approvalActors)
         ? variables.approvalActors
         : {};
@@ -1101,9 +1124,9 @@ const approvalDecision = (
   }
   return {
     result: {
-      kind: 'waiting',
+      kind: "waiting",
       wait: {
-        type: 'human',
+        type: "human",
         pendingActionRef,
         reason: `Explicit owner approval is required for ${pendingActionRef}.`,
         metadata: { stateId: execution.state.id },
@@ -1124,13 +1147,13 @@ const researchClarificationWait = (
   const grilling = decideResearchGrilling(assessment, 1);
   return {
     result: {
-      kind: 'waiting',
+      kind: "waiting",
       wait: {
-        type: 'human',
+        type: "human",
         pendingActionRef: THETA_APPROVAL_KEYS.researchClarification,
         reason:
           grilling.activeQuestion ??
-          'Structured research clarification is required.',
+          "Structured research clarification is required.",
         metadata: sanitizeResearchAssessment(assessment),
       },
     },
@@ -1141,12 +1164,12 @@ const columnConfirmationWait = (
   profile: DatasetProfile,
 ): BoundedStateExecutionDecision => ({
   result: {
-    kind: 'waiting',
+    kind: "waiting",
     wait: {
-      type: 'human',
+      type: "human",
       pendingActionRef: THETA_APPROVAL_KEYS.columnConfirmation,
       reason:
-        'Confirm the text, time, ID, and metadata column roles for this dataset hash.',
+        "Confirm the text, time, ID, and metadata column roles for this dataset hash.",
       metadata: {
         datasetSha256: profile.datasetSha256,
         columns: profile.columns,
@@ -1180,7 +1203,7 @@ const validateConfirmedColumns = (
   const unknown = selected.filter((name) => !columns.includes(name));
   if (unknown.length > 0) {
     throw new Error(
-      `Column confirmation references unknown columns: ${unique(unknown).join(', ')}.`,
+      `Column confirmation references unknown columns: ${unique(unknown).join(", ")}.`,
     );
   }
 };
@@ -1191,7 +1214,7 @@ const transition = (
   output?: unknown,
 ): BoundedStateExecutionDecision => ({
   result: {
-    kind: 'completed',
+    kind: "completed",
     ...(variablesPatch === undefined
       ? {}
       : { variablesPatch: variablesPatch as Record<string, RuntimeJsonValue> }),
@@ -1202,21 +1225,21 @@ const transition = (
 
 const failed = (
   code:
-    | 'RUNTIME_INVARIANT_FAILED'
-    | 'RUNTIME_INTERNAL_ERROR'
-    | 'RUNTIME_STATE_NOT_FOUND'
-    | 'RUNTIME_CANCELLED',
+    | "RUNTIME_INVARIANT_FAILED"
+    | "RUNTIME_INTERNAL_ERROR"
+    | "RUNTIME_STATE_NOT_FOUND"
+    | "RUNTIME_CANCELLED",
   message: string,
   stateId: string,
 ): BoundedStateExecutionDecision => ({
   result: {
-    kind: 'failed',
+    kind: "failed",
     error: { code, message, retryable: false, stateId },
   },
 });
 
 const seedRun = async (
-  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>['events'],
+  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>["events"],
   scope: RuntimeScope,
   input: ThetaWorkflowInput,
   timestamp: string,
@@ -1225,12 +1248,12 @@ const seedRun = async (
   if (existing) return;
   const event = (
     id: string,
-    type: EventCreateInput['type'],
+    type: EventCreateInput["type"],
     payload: Record<string, unknown>,
   ): EventCreateInput => ({
     id,
     type,
-    version: '1.0.0',
+    version: "1.0.0",
     userId: scope.userId,
     workspaceId: scope.workspaceId,
     sessionId: scope.sessionId,
@@ -1243,8 +1266,8 @@ const seedRun = async (
   await events.append({
     scope: streamScope(scope),
     events: [
-      event(`${scope.runId}:created`, 'run.created', { runId: scope.runId }),
-      event(`${scope.runId}:started`, 'run.started', {
+      event(`${scope.runId}:created`, "run.created", { runId: scope.runId }),
+      event(`${scope.runId}:started`, "run.started", {
         runId: scope.runId,
         input,
       }),
@@ -1255,28 +1278,25 @@ const seedRun = async (
 };
 
 const hydrateVariables = async (
-  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>['events'],
+  events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>["events"],
   scope: RuntimeScope,
 ): Promise<Record<string, unknown>> => {
   const stream = await events.read({ scope: streamScope(scope) });
   const variables: Record<string, unknown> = {};
   for (const event of stream) {
-    if (event.type === 'run.started') {
-      const input = recordProperty(event.payload, 'input');
+    if (event.type === "run.started") {
+      const input = recordProperty(event.payload, "input");
       if (input) variables.input = input;
     }
-    if (event.type === 'fsm.transition.accepted') {
-      const patch = recordProperty(event.payload, 'variablesPatch');
+    if (event.type === "fsm.transition.accepted") {
+      const patch = recordProperty(event.payload, "variablesPatch");
       if (patch) Object.assign(variables, patch);
     }
     if (
-      event.type === 'reasoning.decision.recorded' &&
-      stringProperty(event.payload, 'pendingActionRef')
+      event.type === "reasoning.decision.recorded" &&
+      stringProperty(event.payload, "pendingActionRef")
     ) {
-      const researchAnswers = recordProperty(
-        event.payload,
-        'researchAnswers',
-      );
+      const researchAnswers = recordProperty(event.payload, "researchAnswers");
       if (researchAnswers) {
         variables.researchAnswers = {
           ...(isRecord(variables.researchAnswers)
@@ -1287,7 +1307,7 @@ const hydrateVariables = async (
       }
       const columnConfirmation = recordProperty(
         event.payload,
-        'columnConfirmation',
+        "columnConfirmation",
       );
       if (columnConfirmation) {
         variables.columnConfirmation = columnConfirmation;
@@ -1327,14 +1347,11 @@ const sanitizeDatasetProfile = (
   );
   return datasetProfileSchema.parse({
     schemaVersion: RESEARCH_CONTRACT_VERSION,
-    datasetSha256: requiredString(
-      inspection.datasetSha256,
-      'datasetSha256',
-    ),
-    fileName: stringValue(inspection.fileName) ?? 'unknown',
+    datasetSha256: requiredString(inspection.datasetSha256, "datasetSha256"),
+    fileName: stringValue(inspection.fileName) ?? "unknown",
     fileSizeBytes: numberValue(inspection.fileSizeBytes) ?? 0,
-    format: stringValue(inspection.suffix)?.replace(/^\./, '') || 'unknown',
-    encoding: stringValue(inspection.encoding) ?? 'unknown',
+    format: stringValue(inspection.suffix)?.replace(/^\./, "") || "unknown",
+    encoding: stringValue(inspection.encoding) ?? "unknown",
     rowCount: numberValue(inspection.rowCount) ?? 0,
     columnCount: columnNames.length,
     columns: columnNames,
@@ -1348,14 +1365,14 @@ const sanitizeDatasetProfile = (
       (value) => {
         const distribution = isRecord(value) ? value : {};
         return {
-          language: stringValue(distribution.language) ?? 'unknown',
+          language: stringValue(distribution.language) ?? "unknown",
           ratio: numberValue(distribution.ratio) ?? 0,
         };
       },
     ),
     timeCoverage: {
-      start: nullableStringProperty(inspection.timeCoverage, 'start'),
-      end: nullableStringProperty(inspection.timeCoverage, 'end'),
+      start: nullableStringProperty(inspection.timeCoverage, "start"),
+      end: nullableStringProperty(inspection.timeCoverage, "end"),
     },
     columnCandidates: {
       text: sanitizeCandidates(columns.textColumns),
@@ -1372,9 +1389,9 @@ const sanitizeCandidates = (
   arrayValue(value).map((candidate) => {
     const item = isRecord(candidate) ? candidate : {};
     return {
-      name: stringValue(item.name) ?? '',
+      name: stringValue(item.name) ?? "",
       score: numberValue(item.score) ?? 0,
-      reason: stringValue(item.reason) ?? '',
+      reason: stringValue(item.reason) ?? "",
     };
   });
 
@@ -1382,14 +1399,14 @@ const sensitiveRiskCodes = (columns: readonly string[]): string[] => {
   const risks = new Set<string>();
   for (const column of columns) {
     const normalized = column.toLowerCase();
-    if (/(email|e-mail)/.test(normalized)) risks.add('possible_email');
-    if (/(phone|mobile|tel)/.test(normalized)) risks.add('possible_phone');
+    if (/(email|e-mail)/.test(normalized)) risks.add("possible_email");
+    if (/(phone|mobile|tel)/.test(normalized)) risks.add("possible_phone");
     if (/(name|user_name|username)/.test(normalized))
-      risks.add('possible_person_name');
+      risks.add("possible_person_name");
     if (/(address|location|gps)/.test(normalized))
-      risks.add('possible_location');
+      risks.add("possible_location");
     if (/(id_card|identity|passport|ssn)/.test(normalized))
-      risks.add('possible_government_id');
+      risks.add("possible_government_id");
   }
   return [...risks].sort();
 };
@@ -1397,20 +1414,24 @@ const sensitiveRiskCodes = (columns: readonly string[]): string[] => {
 const sanitizeCatalog = (
   value: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> => ({
-  source: stringValue(value.source) ?? 'unknown',
+  source: "theta-model-catalog",
   supportedModelIds: stringArray(value.supportedModelIds),
 });
 
 const sanitizeRecommendation = (
   value: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> => ({
+  schemaVersion: stringValue(value.schemaVersion) ?? "1.0.0",
   deterministic: value.deterministic === true,
-  catalogSource: stringValue(value.catalogSource) ?? 'unknown',
+  recommendationVersion: stringValue(value.recommendationVersion) ?? "1.0.0",
+  catalogSource: stringValue(value.catalogSource) ?? "unknown",
   recommendations: arrayValue(value.recommendations) as RuntimeJsonValue[],
+  skipped: arrayValue(value.skipped) as RuntimeJsonValue[],
   warnings: stringArray(value.warnings),
   constraintsApplied: (isRecord(value.constraintsApplied)
     ? value.constraintsApplied
     : {}) as Record<string, RuntimeJsonValue>,
+  noEvidence: value.noEvidence === true,
 });
 
 const candidatePlan = (
@@ -1427,12 +1448,14 @@ const candidatePlan = (
     ? top.recommendedPlanPatch
     : {};
   const constraints = isRecord(input.constraints) ? input.constraints : {};
-  const fileName = stringValue(datasetProfile.fileName) ?? 'dataset';
+  const fileName = stringValue(datasetProfile.fileName) ?? "dataset";
   return {
     ...patch,
     datasetId: stringValue(input.datasetId) ?? path.parse(fileName).name,
-    modelId:
-      stringValue(top.modelId) ?? stringValue(patch.modelId) ?? 'bertopic',
+    modelId: requiredString(
+      top.modelId ?? patch.modelId,
+      "recommendation.modelId",
+    ),
     mode: normalizedMode(patch.mode),
     numTopics:
       numberValue(patch.numTopics) ?? numberValue(constraints.maxTopics) ?? 10,
@@ -1442,30 +1465,30 @@ const candidatePlan = (
   };
 };
 
-const normalizedMode = (value: unknown): ThetaTrainingPlan['mode'] => {
+const normalizedMode = (value: unknown): ThetaTrainingPlan["mode"] => {
   const mode = stringValue(value);
   return mode &&
-    ['zero_shot', 'finetune', 'supervised', 'unsupervised'].includes(mode)
-    ? (mode as ThetaTrainingPlan['mode'])
-    : 'unsupervised';
+    ["zero_shot", "finetune", "supervised", "unsupervised"].includes(mode)
+    ? (mode as ThetaTrainingPlan["mode"])
+    : "unsupervised";
 };
 
 const sanitizeArtifact = (value: unknown): Record<string, RuntimeJsonValue> => {
   const artifact = isRecord(value) ? value : {};
   return {
-    kind: stringValue(artifact.kind) ?? 'artifact',
-    path: stringValue(artifact.path) ?? '',
-    description: stringValue(artifact.description) ?? '',
+    kind: stringValue(artifact.kind) ?? "artifact",
+    path: stringValue(artifact.path) ?? "",
+    description: stringValue(artifact.description) ?? "",
   };
 };
 
 const sanitizeTrainingStatus = (
   status: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> => ({
-  trainingRunId: requiredString(status.trainingRunId, 'trainingRunId'),
-  status: stringValue(status.status) ?? 'unknown',
+  trainingRunId: requiredString(status.trainingRunId, "trainingRunId"),
+  status: stringValue(status.status) ?? "unknown",
   progress: numberValue(status.progress) ?? 0,
-  currentStep: stringValue(status.currentStep) ?? 'unknown',
+  currentStep: stringValue(status.currentStep) ?? "unknown",
   artifacts: arrayValue(status.artifacts).map(sanitizeArtifact),
 });
 
@@ -1473,7 +1496,7 @@ const approvalActor = (
   variables: Record<string, unknown>,
   key: string,
 ): string => {
-  const actors = requireRecord(variables.approvalActors, 'approval actors');
+  const actors = requireRecord(variables.approvalActors, "approval actors");
   return requiredString(actors[key], `approval actor for ${key}`);
 };
 
@@ -1481,9 +1504,9 @@ const completedOutput = (
   toolId: string,
   result: ToolCallResult,
 ): Record<string, unknown> => {
-  if (result.status !== 'completed' || !isRecord(result.output)) {
+  if (result.status !== "completed" || !isRecord(result.output)) {
     const detail =
-      typeof result.error === 'string'
+      typeof result.error === "string"
         ? result.error
         : (result.error?.message ?? `status=${result.status}`);
     throw new Error(`Governed tool ${toolId} did not complete: ${detail}`);
@@ -1522,18 +1545,18 @@ const terminalOutput = async (
     ...(await runtime.events.read({ scope: streamScope(scope) })),
   ]
     .reverse()
-    .find((event) => event.type === 'run.completed');
-  return recordProperty(terminal?.payload, 'output') as
+    .find((event) => event.type === "run.completed");
+  return recordProperty(terminal?.payload, "output") as
     | RuntimeJsonValue
     | undefined;
 };
 
 const invocationKey = (request: ThetaWorkflowToolRequest): string =>
-  createHash('sha256')
+  createHash("sha256")
     .update(
       `${request.runId}:${request.stateId}:${request.stateAttempt}:${request.toolId}`,
     )
-    .digest('hex');
+    .digest("hex");
 
 const runtimeScope = (runId: string): RuntimeScope => ({
   userId: USER_ID,
@@ -1550,26 +1573,26 @@ const streamScope = (scope: RuntimeScope) => ({
 });
 
 const validateInput = (input: ThetaWorkflowInput): void => {
-  if (!input || typeof input !== 'object')
-    throw new Error('Workflow input must be an object.');
-  required(input.filePath, 'input.filePath');
+  if (!input || typeof input !== "object")
+    throw new Error("Workflow input must be an object.");
+  required(input.filePath, "input.filePath");
   if (
     input.sampleSize !== undefined &&
     (!Number.isInteger(input.sampleSize) ||
       input.sampleSize < 1 ||
       input.sampleSize > 1000)
   ) {
-    throw new Error('input.sampleSize must be an integer from 1 to 1000.');
+    throw new Error("input.sampleSize must be an integer from 1 to 1000.");
   }
 };
 
 const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (isRecord(value)) {
     return `{${Object.keys(value)
       .sort()
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(',')}}`;
+      .join(",")}}`;
   }
   return JSON.stringify(value);
 };
@@ -1583,9 +1606,9 @@ const unique = <T>(values: T[]): T[] => [...new Set(values)];
 const arrayValue = (value: unknown): unknown[] =>
   Array.isArray(value) ? value : [];
 const stringArray = (value: unknown): string[] =>
-  arrayValue(value).filter((item): item is string => typeof item === 'string');
+  arrayValue(value).filter((item): item is string => typeof item === "string");
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const requireRecord = (
   value: unknown,
   label: string,
@@ -1594,9 +1617,9 @@ const requireRecord = (
   return value;
 };
 const stringValue = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() ? value : undefined;
+  typeof value === "string" && value.trim() ? value : undefined;
 const numberValue = (value: unknown): number | undefined =>
-  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const requiredString = (value: unknown, label: string): string => {
   const resolved = stringValue(value);
   if (!resolved) throw new Error(`${label} is required.`);
@@ -1620,4 +1643,4 @@ const nullableStringProperty = (
   value: unknown,
   property: string,
 ): string | null =>
-  isRecord(value) ? stringValue(value[property]) ?? null : null;
+  isRecord(value) ? (stringValue(value[property]) ?? null) : null;

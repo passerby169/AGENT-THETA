@@ -1,77 +1,105 @@
-import type { JsonSchema } from '@hypha/core';
-import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
-import { callThetaBridge } from './bridge.js';
-import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
+import type { JsonSchema } from "@hypha/core";
+import type { ToolCallContext, ToolHandler, ToolSpec } from "@hypha/tools";
+import {
+  columnConfirmationSchema,
+  researchBriefSchema,
+} from "../agent/research-contracts.js";
+import {
+  recommendModels,
+  type CatalogModel,
+} from "../recommendation/engine.js";
+import {
+  recommendationResultSchema,
+  type RecommendationResult,
+} from "../recommendation/contracts.js";
+import { evidenceRefSchema, type EvidenceRef } from "../rag/contracts.js";
+import { callThetaBridge } from "./bridge.js";
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
 export interface ThetaModelRecommendInput {
   dataProfile: Record<string, unknown>;
   researchGoal?: string;
+  researchBrief?: Record<string, unknown>;
+  columnConfirmation?: Record<string, unknown>;
   constraints?: Record<string, unknown>;
+  evidence?: EvidenceRef[];
 }
 
-export interface ThetaModelRecommendOutput {
-  deterministic: boolean;
-  catalogSource: string;
-  dataProfileSummary: Record<string, unknown>;
-  recommendations: Array<Record<string, unknown>>;
-  skipped: Array<Record<string, unknown>>;
-  warnings: string[];
-  constraintsApplied: Record<string, unknown>;
-}
+export type ThetaModelRecommendOutput = RecommendationResult;
 
 const dataProfileSchema: JsonSchema = {
-  type: 'object',
+  type: "object",
   additionalProperties: true,
-  description: 'Normalized dataset profile produced by theta.dataset.inspect or dataset.detect_columns.',
+  description:
+    "Normalized dataset profile produced by theta.dataset.inspect or dataset.detect_columns.",
 };
 
 const modelRecommendInputSchema: JsonSchema = {
-  type: 'object',
-  required: ['dataProfile'],
+  type: "object",
+  required: ["dataProfile"],
   properties: {
     dataProfile: dataProfileSchema,
-    researchGoal: { type: 'string' },
+    researchGoal: { type: "string" },
+    researchBrief: { type: "object", additionalProperties: true },
+    columnConfirmation: { type: "object", additionalProperties: true },
     constraints: {
-      type: 'object',
+      type: "object",
       additionalProperties: true,
+    },
+    evidence: {
+      type: "array",
+      items: { type: "object", additionalProperties: true },
     },
   },
   additionalProperties: false,
 };
 
 const modelRecommendOutputSchema: JsonSchema = {
-  type: 'object',
+  type: "object",
   required: [
-    'deterministic',
-    'catalogSource',
-    'dataProfileSummary',
-    'recommendations',
-    'skipped',
-    'warnings',
-    'constraintsApplied',
+    "schemaVersion",
+    "deterministic",
+    "recommendationVersion",
+    "catalogSource",
+    "dataProfileSummary",
+    "recommendations",
+    "skipped",
+    "warnings",
+    "constraintsApplied",
+    "noEvidence",
   ],
   properties: {
-    deterministic: { type: 'boolean' },
-    catalogSource: { type: 'string' },
+    schemaVersion: { const: "1.0.0" },
+    deterministic: { const: true },
+    recommendationVersion: { const: "1.0.0" },
+    catalogSource: { type: "string" },
     dataProfileSummary: {
-      type: 'object',
+      type: "object",
       additionalProperties: true,
     },
     recommendations: {
-      type: 'array',
+      type: "array",
       items: {
-        type: 'object',
-        required: ['rank', 'modelId', 'modelName', 'score', 'reasons', 'warnings', 'requirements'],
+        type: "object",
+        required: [
+          "rank",
+          "modelId",
+          "modelName",
+          "score",
+          "reasonCodes",
+          "warnings",
+          "requirements",
+        ],
         properties: {
-          rank: { type: 'integer' },
-          modelId: { type: 'string' },
-          modelName: { type: 'string' },
-          score: { type: 'integer' },
-          reasons: { type: 'array', items: { type: 'string' } },
-          warnings: { type: 'array', items: { type: 'string' } },
-          requirements: { type: 'array', items: { type: 'string' } },
+          rank: { type: "integer" },
+          modelId: { type: "string" },
+          modelName: { type: "string" },
+          score: { type: "integer" },
+          reasonCodes: { type: "array", items: { type: "string" } },
+          warnings: { type: "array", items: { type: "string" } },
+          requirements: { type: "array", items: { type: "string" } },
           recommendedPlanPatch: {
-            type: 'object',
+            type: "object",
             additionalProperties: true,
           },
         },
@@ -79,34 +107,39 @@ const modelRecommendOutputSchema: JsonSchema = {
       },
     },
     skipped: {
-      type: 'array',
+      type: "array",
       items: {
-        type: 'object',
+        type: "object",
         additionalProperties: true,
       },
     },
-    warnings: { type: 'array', items: { type: 'string' } },
+    warnings: { type: "array", items: { type: "string" } },
     constraintsApplied: {
-      type: 'object',
+      type: "object",
       additionalProperties: true,
     },
+    noEvidence: { type: "boolean" },
   },
   additionalProperties: false,
 };
 
 export const thetaModelRecommendToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.modelRecommend,
-  version: '1.0.0',
-  displayName: 'Recommend Model',
-  description: 'Recommend THETA model and parameter candidates from a dataset profile through Hypha governance.',
-  tags: ['theta', 'model'],
+  version: "2.0.0",
+  displayName: "Recommend Model",
+  description:
+    "Apply deterministic TypeScript hard constraints, parameter ranges, resource estimates, and evidence.",
+  tags: ["theta", "model", "evidence"],
   inputSchema: modelRecommendInputSchema,
   outputSchema: modelRecommendOutputSchema,
-  sideEffectLevel: 'read',
-  permissionScope: [THETA_PERMISSION_SCOPES.modelRead, THETA_PERMISSION_SCOPES.datasetRead],
+  sideEffectLevel: "read",
+  permissionScope: [
+    THETA_PERMISSION_SCOPES.modelRead,
+    THETA_PERMISSION_SCOPES.datasetRead,
+  ],
   timeoutPolicy: {
     timeoutMs: 30000,
-    onTimeout: 'fail',
+    onTimeout: "fail",
   },
   retryPolicy: {
     maxAttempts: 1,
@@ -116,35 +149,83 @@ export const thetaModelRecommendToolSpec: ToolSpec = {
     includeInput: false,
     includeOutput: true,
   },
-  source: 'local',
+  source: "local",
 };
 
-const normalizeModelRecommendInput = (input: unknown): ThetaModelRecommendInput => {
-  if (!input || typeof input !== 'object' || !('dataProfile' in input)) {
-    throw new Error('model.recommend input must include dataProfile.');
+const normalizeModelRecommendInput = (
+  input: unknown,
+): ThetaModelRecommendInput => {
+  if (!input || typeof input !== "object" || !("dataProfile" in input)) {
+    throw new Error("model.recommend input must include dataProfile.");
   }
   return input as ThetaModelRecommendInput;
 };
 
-const ensureModelRecommendOutput = (data: unknown): ThetaModelRecommendOutput => {
-  if (!data || typeof data !== 'object') {
-    throw new Error('model.recommend bridge returned a non-object payload.');
+export const thetaModelRecommendHandler: ToolHandler<
+  unknown,
+  ThetaModelRecommendOutput
+> = async (input: unknown, context: ToolCallContext) => {
+  const normalized = normalizeModelRecommendInput(input);
+  const response = await callThetaBridge(
+    "model.catalog",
+    {},
+    {
+      runId: context.runId,
+      stepId: `${context.stepId}.catalog`,
+    },
+  );
+
+  if (response.status !== "ok" || !isRecord(response.data)) {
+    throw new Error(
+      response.error?.message ?? "model.catalog bridge command failed.",
+    );
   }
-  return data as ThetaModelRecommendOutput;
+  const models = Array.isArray(response.data.models)
+    ? response.data.models.filter(isCatalogModel)
+    : [];
+  if (models.length === 0) {
+    throw new Error("model.catalog returned no valid models.");
+  }
+
+  return recommendationResultSchema.parse(
+    recommendModels({
+      catalogSource: "theta-model-catalog",
+      models,
+      dataProfile: normalized.dataProfile,
+      ...(normalized.researchGoal
+        ? { researchGoal: normalized.researchGoal }
+        : {}),
+      ...(normalized.constraints
+        ? { constraints: normalized.constraints }
+        : {}),
+      ...(normalized.researchBrief
+        ? { researchBrief: researchBriefSchema.parse(normalized.researchBrief) }
+        : {}),
+      ...(normalized.columnConfirmation
+        ? {
+            columnConfirmation: columnConfirmationSchema.parse(
+              normalized.columnConfirmation,
+            ),
+          }
+        : {}),
+      evidence: (normalized.evidence ?? []).map((item) =>
+        evidenceRefSchema.parse(item),
+      ),
+    }),
+  );
 };
 
-export const thetaModelRecommendHandler: ToolHandler<unknown, ThetaModelRecommendOutput> = async (
-  input: unknown,
-  context: ToolCallContext
-) => {
-  const response = await callThetaBridge('model.recommend', normalizeModelRecommendInput(input), {
-    runId: context.runId,
-    stepId: context.stepId,
-  });
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-  if (response.status !== 'ok') {
-    throw new Error(response.error?.message ?? 'model.recommend bridge command failed.');
-  }
-
-  return ensureModelRecommendOutput(response.data);
+const isCatalogModel = (value: unknown): value is CatalogModel => {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.type === "string" &&
+    Array.isArray(value.requires) &&
+    value.requires.every((item) => typeof item === "string") &&
+    isRecord(value.params)
+  );
 };
