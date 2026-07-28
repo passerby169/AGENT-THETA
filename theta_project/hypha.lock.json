@@ -2,7 +2,7 @@
   "schemaVersion": "1.0.0",
   "repository": "https://github.com/CodeSoul-co/Hypha.git",
   "branch": "dev-domain-merge",
-  "commit": "dfb787ceed7d3c525fb39909142af7d1b5106c41",
+  "commit": "1da723167d2b6dda3fa553cac524969884507785",
   "requiredPackages": [
     "@hypha/core",
     "@hypha/domain",
