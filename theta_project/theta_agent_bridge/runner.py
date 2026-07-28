@@ -13,6 +13,7 @@ from typing import Any
 
 from .bridge import (
     PROJECT_ROOT,
+    bind_result_artifacts,
     connect_state_db,
     init_state_db,
     record_event,
@@ -55,8 +56,12 @@ def run_training(training_run_id: str) -> None:
                 mark_running(training_run_id, step, progress)
                 write_log(log, f"[runner] step={step}")
                 code = run_command(training_run_id, command, log)
-                if code == "cancelled":
-                    mark_cancelled(training_run_id, f"Cancelled during {step}.")
+                if isinstance(code, dict):
+                    mark_cancelled(
+                        training_run_id,
+                        f"Cancelled during {step}.",
+                        code,
+                    )
                     write_log(log, f"[runner] cancelled during {step}")
                     return
                 if isinstance(code, int) and code != 0:
@@ -65,15 +70,15 @@ def run_training(training_run_id: str) -> None:
                     write_log(log, f"[runner] failed: {message}")
                     return
 
-            mark_completed(training_run_id)
-            write_log(log, "[runner] completed")
+            terminal_status = mark_completed(training_run_id)
+            write_log(log, f"[runner] {terminal_status}")
         except Exception as exc:
             mark_failed(training_run_id, "runner", str(exc))
             write_log(log, f"[runner] failed: {exc}")
             raise
 
 
-def run_command(training_run_id: str, command: dict[str, Any], log) -> int | str:
+def run_command(training_run_id: str, command: dict[str, Any], log) -> int | dict[str, Any]:
     argv = command_argv(command)
     cwd = Path(str(command.get("cwd") or PROJECT_ROOT))
     write_log(log, "[run] " + " ".join(argv))
@@ -93,6 +98,7 @@ def run_command(training_run_id: str, command: dict[str, Any], log) -> int | str
         kwargs["start_new_session"] = True
 
     process = subprocess.Popen(argv, **kwargs)
+    record_active_process(training_run_id, int(process.pid))
     output_queue: queue.Queue[str | None] = queue.Queue()
     reader = threading.Thread(target=read_stdout, args=(process, output_queue), daemon=True)
     reader.start()
@@ -100,14 +106,15 @@ def run_command(training_run_id: str, command: dict[str, Any], log) -> int | str
     while True:
         drain_output(output_queue, log)
         if is_cancel_requested(training_run_id):
-            terminate_process(process, log)
+            outcome = terminate_process(process, log)
             drain_output(output_queue, log)
-            return "cancelled"
+            return outcome
 
         code = process.poll()
         if code is not None:
             reader.join(timeout=2)
             drain_output(output_queue, log)
+            clear_active_process(training_run_id)
             return int(code)
 
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -139,7 +146,7 @@ def drain_output(output_queue: queue.Queue[str | None], log) -> None:
         log.flush()
 
 
-def terminate_process(process: subprocess.Popen, log) -> None:
+def terminate_process(process: subprocess.Popen, log) -> dict[str, Any]:
     write_log(log, f"[runner] terminating child pid={process.pid}")
     try:
         if os.name == "nt":
@@ -150,7 +157,11 @@ def terminate_process(process: subprocess.Popen, log) -> None:
         else:
             os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
-        return
+        return {
+            "targetPid": int(process.pid),
+            "gracefulResult": "succeeded",
+            "forcedResult": "not_required",
+        }
     except Exception as exc:
         write_log(log, f"[runner] graceful termination failed: {exc}")
 
@@ -164,8 +175,18 @@ def terminate_process(process: subprocess.Popen, log) -> None:
             )
         else:
             os.killpg(process.pid, signal.SIGKILL)
+        return {
+            "targetPid": int(process.pid),
+            "gracefulResult": "failed",
+            "forcedResult": "succeeded",
+        }
     except Exception as exc:
         write_log(log, f"[runner] forced termination failed: {exc}")
+        return {
+            "targetPid": int(process.pid),
+            "gracefulResult": "failed",
+            "forcedResult": "failed",
+        }
 
 
 def fetch_run(training_run_id: str):
@@ -191,6 +212,44 @@ def is_cancel_requested(training_run_id: str) -> bool:
     return row is not None and str(row["status"]) == "cancel_requested"
 
 
+def record_active_process(training_run_id: str, pid: int) -> None:
+    now = utc_now_iso()
+    with connect_state_db() as conn:
+        init_state_db(conn)
+        conn.execute(
+            """
+            UPDATE training_runs
+            SET active_pid = ?, updated_at = ?
+            WHERE training_run_id = ?
+            """,
+            (pid, now, training_run_id),
+        )
+        record_event(
+            conn,
+            "training.process_started",
+            "training_run",
+            training_run_id,
+            {
+                "trainingRunId": training_run_id,
+                "targetPid": pid,
+                "recordedAt": now,
+            },
+        )
+
+
+def clear_active_process(training_run_id: str) -> None:
+    with connect_state_db() as conn:
+        init_state_db(conn)
+        conn.execute(
+            """
+            UPDATE training_runs
+            SET active_pid = NULL, updated_at = ?
+            WHERE training_run_id = ?
+            """,
+            (utc_now_iso(), training_run_id),
+        )
+
+
 def mark_running(training_run_id: str, step: str, progress: int) -> None:
     now = utc_now_iso()
     with connect_state_db() as conn:
@@ -200,6 +259,14 @@ def mark_running(training_run_id: str, step: str, progress: int) -> None:
             (training_run_id,),
         ).fetchone()
         if row is None:
+            return
+        if str(row["status"]) in {
+            "cancel_requested",
+            "completed",
+            "failed",
+            "cancelled",
+            "quarantined",
+        }:
             return
         started_at = row["started_at"] or now
         conn.execute(
@@ -219,47 +286,146 @@ def mark_running(training_run_id: str, step: str, progress: int) -> None:
         )
 
 
-def mark_completed(training_run_id: str) -> None:
+def mark_completed(training_run_id: str) -> str:
     now = utc_now_iso()
     with connect_state_db() as conn:
         init_state_db(conn)
+        row = conn.execute(
+            """
+            SELECT plan_id, plan_hash, plan_review_approval_id,
+                   training_review_approval_id, dry_run_hash, artifact_json
+            FROM training_runs
+            WHERE training_run_id = ?
+            """,
+            (training_run_id,),
+        ).fetchone()
+        if row is None:
+            return "missing"
+        result_artifacts = bind_result_artifacts(json.loads(row["artifact_json"]))
+        missing = [artifact["path"] for artifact in result_artifacts if not artifact["exists"]]
+        if missing:
+            reason = "Expected training artifacts are missing: " + ", ".join(missing)
+            conn.execute(
+                """
+                UPDATE training_runs
+                SET status = 'quarantined', current_step = 'result_binding',
+                    result_json = ?, quarantine_reason = ?, error_message = ?,
+                    active_pid = NULL,
+                    updated_at = ?
+                WHERE training_run_id = ?
+                """,
+                (
+                    json.dumps(result_artifacts, ensure_ascii=False, sort_keys=True),
+                    reason,
+                    reason,
+                    now,
+                    training_run_id,
+                ),
+            )
+            record_event(
+                conn,
+                "training.quarantined",
+                "training_run",
+                training_run_id,
+                {
+                    "trainingRunId": training_run_id,
+                    "status": "quarantined",
+                    "reason": reason,
+                    "source": "result_binding",
+                    "resultArtifacts": result_artifacts,
+                },
+            )
+            return "quarantined"
         conn.execute(
             """
             UPDATE training_runs
             SET status = 'completed', current_step = 'completed', progress = 100,
-                finished_at = ?, updated_at = ?
+                result_json = ?, active_pid = NULL, finished_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
-            (now, now, training_run_id),
+            (
+                json.dumps(result_artifacts, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+                training_run_id,
+            ),
         )
         record_event(
             conn,
             "training.completed",
             "training_run",
             training_run_id,
-            {"trainingRunId": training_run_id, "status": "completed", "progress": 100},
+            {
+                "trainingRunId": training_run_id,
+                "status": "completed",
+                "progress": 100,
+                "planId": row["plan_id"],
+                "planHash": row["plan_hash"],
+                "planReviewApprovalId": row["plan_review_approval_id"],
+                "trainingReviewApprovalId": row["training_review_approval_id"],
+                "dryRunHash": row["dry_run_hash"],
+                "resultArtifacts": result_artifacts,
+            },
         )
+        return "completed"
 
 
-def mark_cancelled(training_run_id: str, reason: str) -> None:
+def mark_cancelled(
+    training_run_id: str,
+    reason: str,
+    outcome: dict[str, Any] | None = None,
+) -> None:
     now = utc_now_iso()
     with connect_state_db() as conn:
         init_state_db(conn)
+        row = conn.execute(
+            "SELECT cancellation_json FROM training_runs WHERE training_run_id = ?",
+            (training_run_id,),
+        ).fetchone()
+        cancellation = (
+            json.loads(row["cancellation_json"] or "null") if row is not None else None
+        ) or {
+            "cancellationId": "cancel_" + training_run_id.removeprefix("run_").ljust(20, "0")[:20],
+            "trainingRunId": training_run_id,
+            "operator": "runtime",
+            "reason": reason,
+            "requestedAt": now,
+            "targetPid": None,
+            "gracefulResult": "not_required",
+            "forcedResult": "not_required",
+        }
+        if outcome:
+            cancellation.update(outcome)
+        else:
+            cancellation["gracefulResult"] = "succeeded"
+            cancellation["forcedResult"] = "not_required"
         conn.execute(
             """
             UPDATE training_runs
             SET status = 'cancelled', current_step = 'cancelled', error_message = ?,
+                cancellation_json = ?, active_pid = NULL,
                 finished_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
-            (reason, now, now, training_run_id),
+            (
+                reason,
+                json.dumps(cancellation, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+                training_run_id,
+            ),
         )
         record_event(
             conn,
             "training.cancelled",
             "training_run",
             training_run_id,
-            {"trainingRunId": training_run_id, "status": "cancelled", "reason": reason},
+            {
+                **cancellation,
+                "trainingRunId": training_run_id,
+                "status": "cancelled",
+                "reason": reason,
+            },
         )
 
 
@@ -271,6 +437,7 @@ def mark_failed(training_run_id: str, step: str, message: str) -> None:
             """
             UPDATE training_runs
             SET status = 'failed', current_step = ?, error_message = ?,
+                active_pid = NULL,
                 finished_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,

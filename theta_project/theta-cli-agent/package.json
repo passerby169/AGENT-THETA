@@ -33,6 +33,8 @@
     "smoke:hypha-plan-create-approved": "node dist/hypha-plan-create-approved-smoke.js",
     "smoke:hypha-plan-lifecycle": "node dist/hypha-plan-lifecycle-smoke.js",
     "smoke:hypha-training-controls": "node dist/hypha-training-controls-smoke.js",
+    "smoke:training-runtime": "node dist/training-runtime-smoke.js",
+    "test:python-runtime": "python -m unittest discover ../theta_agent_bridge/tests -p \"test_*.py\"",
     "smoke:cli": "node dist/cli-smoke.js"
   },
   "dependencies": {

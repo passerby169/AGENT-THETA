@@ -61,7 +61,7 @@ npm run cli -- demo --approve
 
 ## Durable Workflow
 
-The complete Agent path is the versioned `domain.theta.training@2.0.0`
+The complete Agent path is the versioned `domain.theta.training@3.0.0`
 DomainPack executed by Hypha's bounded FSM driver. Run state, transitions,
 human decisions, waits, retries, plans, dry-run receipts, and terminal output
 are persisted as SQLite events. Tool audit events use a separate durable JSONL
@@ -231,6 +231,12 @@ and expected artifacts, repeat with `--approve`:
 npm run cli -- training start --file <training-start-request.json> --approve
 ```
 
+The request `idempotencyKey` is bound to the plan, both approvals, and the
+dry-run hash. Repeating a queued, running, completed, cancelled, or quarantined
+request returns the existing `TrainingReceipt`. A failed run is never restarted
+implicitly: create a new key and provide `retryOfTrainingRunId` plus a
+`retryReason`.
+
 Read training progress, recent logs, artifacts, and events:
 
 ```powershell
@@ -244,6 +250,13 @@ explicit:
 npm run cli -- training cancel --run-id <id> --reason "User requested cancellation"
 npm run cli -- training cancel --run-id <id> --reason "User requested cancellation" --approve
 ```
+
+Cancellation is an irreversible governed operation. Its receipt records the
+operator, reason, request time, target PID, and graceful or forced termination
+outcome. A non-terminal run whose recorded Runner is missing becomes
+`quarantined`; it cannot restart automatically. Completed results bind each
+expected artifact to its resolved path, existence, type, size, and SHA-256 when
+the artifact is a file.
 
 Add `--json` to any command for machine-readable output.
 
@@ -259,6 +272,8 @@ npm run smoke:planning-chain
 npm run smoke:theta-domain
 npm run smoke:theta-workflow
 npm run smoke:architecture-boundary
+npm run test:python-runtime
+npm run smoke:training-runtime
 npm run smoke:cli
 ```
 
@@ -313,5 +328,7 @@ spawning a training process.
 `training start` requires the canonical plan, `HumanPlanReview`,
 `DryRunReceipt`, and a distinct `HumanTrainingReview`, plus the
 `theta:training:write` permission, an idempotency key, and Hypha external-effect
-approval. `training cancel` has the same external-effect governance.
-`training status` is read-only and exposes the event-backed run view.
+approval. `training cancel` is irreversible and requires a separate Hypha
+approval. `training status` is read-only and exposes the strict event-backed
+`TrainingReceipt`. Unknown recovery state is terminally isolated as
+`Quarantined` until an operator reconciles it.

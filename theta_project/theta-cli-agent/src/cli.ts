@@ -606,11 +606,12 @@ const trainingStatusCommand = async (
     return [
       `Training run: ${status.trainingRunId}`,
       `Status: ${status.status}`,
-      `Progress: ${String(status.progress ?? 0)}%`,
-      `Current step: ${status.currentStep ?? "unknown"}`,
-      `PID: ${String(status.pid ?? "not running")}`,
-      `Artifacts: ${status.artifacts.length}`,
-      `Events: ${status.events?.length ?? 0}`,
+      `Attempt: ${status.receipt.attempt}`,
+      `Progress: ${String(status.receipt.progress)}%`,
+      `Current step: ${status.receipt.currentStep}`,
+      `PID: ${String(status.receipt.pid ?? "not running")}`,
+      `Bound artifacts: ${status.receipt.resultArtifacts.length}`,
+      `Events: ${status.events.length}`,
       `Recent log lines: ${status.logs.length}`,
       ...status.logs.map((line) => `  ${line}`),
     ].join("\n");
@@ -659,6 +660,10 @@ const trainingCancelCommand = async (
       `Run ID: ${cancelled.trainingRunId}`,
       `Status: ${cancelled.status}`,
       `Changed: ${cancelled.changed ? "yes" : "no"}`,
+      `Operator: ${cancelled.cancellation.operator}`,
+      `Target PID: ${String(cancelled.cancellation.targetPid ?? "not running")}`,
+      `Graceful stop: ${cancelled.cancellation.gracefulResult}`,
+      `Forced stop: ${cancelled.cancellation.forcedResult}`,
       `Message: ${cancelled.message}`,
     ].join("\n"),
   );

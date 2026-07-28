@@ -1,0 +1,134 @@
+import { z } from "zod";
+import {
+  expectedArtifactSchema,
+  trainingCommandSchema,
+} from "../planning/contracts.js";
+
+export const TRAINING_RUNTIME_SCHEMA_VERSION = "1.0.0";
+
+export const trainingRunStatusSchema = z.enum([
+  "queued",
+  "running",
+  "cancel_requested",
+  "completed",
+  "failed",
+  "cancelled",
+  "quarantined",
+]);
+
+export const boundResultArtifactSchema = z
+  .object({
+    kind: z.string().min(1),
+    path: z.string().min(1),
+    description: z.string(),
+    exists: z.boolean(),
+    fileType: z.enum(["file", "directory", "missing"]),
+    sizeBytes: z.number().int().nonnegative().nullable(),
+    sha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+  })
+  .strict();
+
+export const cancellationReceiptSchema = z
+  .object({
+    cancellationId: z.string().regex(/^cancel_[a-f0-9]{20}$/),
+    trainingRunId: z.string().regex(/^run_[a-f0-9]{12}$/),
+    operator: z.string().min(1),
+    reason: z.string().min(1),
+    requestedAt: z.string().datetime(),
+    targetPid: z.number().int().positive().nullable(),
+    gracefulResult: z.enum(["pending", "not_required", "succeeded", "failed"]),
+    forcedResult: z.enum(["pending", "not_required", "succeeded", "failed"]),
+  })
+  .strict();
+
+export const trainingReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(TRAINING_RUNTIME_SCHEMA_VERSION),
+    trainingRunId: z.string().regex(/^run_[a-f0-9]{12}$/),
+    attempt: z.number().int().positive(),
+    retryOfTrainingRunId: z
+      .string()
+      .regex(/^run_[a-f0-9]{12}$/)
+      .nullable(),
+    idempotencyKey: z.string().min(1),
+    planId: z.string().regex(/^plan_[a-f0-9]{16}$/),
+    planHash: z.string().regex(/^[a-f0-9]{64}$/),
+    planReviewApprovalId: z.string().regex(/^approval_[a-f0-9]{20}$/),
+    trainingReviewApprovalId: z.string().regex(/^approval_[a-f0-9]{20}$/),
+    dryRunHash: z.string().regex(/^[a-f0-9]{64}$/),
+    status: trainingRunStatusSchema,
+    progress: z.number().min(0).max(100),
+    processStarted: z.boolean(),
+    pid: z.number().int().positive().nullable(),
+    runnerPid: z.number().int().positive().nullable(),
+    activePid: z.number().int().positive().nullable(),
+    currentStep: z.string().min(1),
+    logPath: z.string().min(1).nullable(),
+    commands: z.array(trainingCommandSchema).min(1),
+    expectedArtifacts: z.array(expectedArtifactSchema),
+    resultArtifacts: z.array(boundResultArtifactSchema),
+    errorMessage: z.string().min(1).nullable(),
+    quarantineReason: z.string().min(1).nullable(),
+    cancellation: cancellationReceiptSchema.nullable(),
+    startedAt: z.string().datetime().nullable(),
+    finishedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    message: z.string().min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.planReviewApprovalId === value.trainingReviewApprovalId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["trainingReviewApprovalId"],
+        message: "Training and plan review approvals must be distinct.",
+      });
+    }
+    if (value.status === "quarantined" && value.quarantineReason === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["quarantineReason"],
+        message: "Quarantined runs require a reason.",
+      });
+    }
+  });
+
+export const trainingLifecycleEventSchema = z
+  .object({
+    type: z.string().min(1),
+    payload: z.record(z.unknown()),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
+  z
+    .object({
+      trainingRunId: z.string().min(1),
+      found: z.literal(false),
+      status: z.literal("not_found"),
+      logs: z.array(z.string()),
+      events: z.array(trainingLifecycleEventSchema),
+    })
+    .strict(),
+  z
+    .object({
+      trainingRunId: z.string().regex(/^run_[a-f0-9]{12}$/),
+      found: z.literal(true),
+      receipt: trainingReceiptSchema,
+      status: trainingRunStatusSchema,
+      logs: z.array(z.string()),
+      events: z.array(trainingLifecycleEventSchema),
+    })
+    .strict(),
+]);
+
+export type TrainingRunStatus = z.infer<typeof trainingRunStatusSchema>;
+export type BoundResultArtifact = z.infer<typeof boundResultArtifactSchema>;
+export type CancellationReceipt = z.infer<typeof cancellationReceiptSchema>;
+export type TrainingReceipt = z.infer<typeof trainingReceiptSchema>;
+export type TrainingStatusOutput = z.infer<typeof trainingStatusOutputSchema>;

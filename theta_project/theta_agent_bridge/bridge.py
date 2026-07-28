@@ -11,20 +11,24 @@ import sqlite3
 import subprocess
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 BRIDGE_PROTOCOL = "theta-agent-bridge/v1"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_CONFIG_PATH = PROJECT_ROOT / "THETA" / "src" / "models" / "models_config" / "models.yaml"
 RUN_PIPELINE_PATH = PROJECT_ROOT / "THETA" / "src" / "models" / "run_pipeline.py"
-STATE_DIR = PROJECT_ROOT / ".theta_agent"
+STATE_DIR = Path(
+    os.environ.get("THETA_AGENT_STATE_DIR") or PROJECT_ROOT / ".theta_agent"
+).expanduser().resolve()
 STATE_DB_PATH = STATE_DIR / "agent.sqlite"
 RUNS_DIR = STATE_DIR / "runs"
 PYTHON_BIN = os.environ.get("THETA_AGENT_PYTHON") or sys.executable
+TRAINING_RUNTIME_SCHEMA_VERSION = "1.0.0"
 
 TEXT_COLUMN_NAMES = {
     "text",
@@ -1051,6 +1055,8 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
     training_review_id = required_mapping_text(training_review, "approvalId", "trainingReview")
     dry_run_hash = required_mapping_text(dry_run, "dryRunHash", "dryRun")
     idempotency_key = str(payload.get("idempotencyKey") or "").strip()
+    retry_of_training_run_id = str(payload.get("retryOfTrainingRunId") or "").strip()
+    retry_reason = str(payload.get("retryReason") or "").strip()
 
     if not idempotency_key:
         raise ValueError("idempotencyKey is required")
@@ -1082,57 +1088,101 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
 
     with connect_state_db() as conn:
         init_state_db(conn)
-        run_hash = sha256_json(
-            {
-                "planId": plan_id,
-                "planHash": plan_hash,
-                "planReviewApprovalId": plan_review_id,
-                "trainingReviewApprovalId": training_review_id,
-                "dryRunHash": dry_run_hash,
-                "idempotencyKey": idempotency_key,
-            }
-        )
+        existing_row = select_training_run(conn, idempotency_key=idempotency_key)
+        if existing_row is not None:
+            assert_training_run_binding(
+                existing_row,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+                plan_review_approval_id=plan_review_id,
+                training_review_approval_id=training_review_id,
+                dry_run_hash=dry_run_hash,
+            )
+            existing_status = str(existing_row["status"])
+            if existing_status in {"queued", "running", "cancel_requested"}:
+                existing_row = reconcile_training_run(conn, existing_row)
+                existing_status = str(existing_row["status"])
+            if existing_status == "failed":
+                raise ValueError(
+                    "The idempotent training run failed. Supply a new idempotencyKey, "
+                    "retryOfTrainingRunId, and retryReason to create a new attempt."
+                )
+            if existing_status not in {
+                "queued",
+                "running",
+                "cancel_requested",
+                "completed",
+                "cancelled",
+                "quarantined",
+            }:
+                existing_row = quarantine_training_run(
+                    conn,
+                    existing_row,
+                    f"Unknown persisted training status: {existing_status}",
+                    source="idempotency_reconcile",
+                )
+            return training_run_response(
+                existing_row,
+                process_started=bool(existing_row["pid"]),
+                message="Existing idempotent training run returned.",
+            )
+
+        attempt = 1
+        if retry_of_training_run_id:
+            prior = select_training_run(
+                conn, training_run_id=retry_of_training_run_id
+            )
+            if prior is None:
+                raise ValueError(
+                    f"Unknown retryOfTrainingRunId: {retry_of_training_run_id}"
+                )
+            if str(prior["status"]) != "failed":
+                raise ValueError("Only failed training runs may be retried")
+            if prior["plan_id"] != plan_id or prior["plan_hash"] != plan_hash:
+                raise ValueError("Retry run does not bind the same canonical plan")
+            if not retry_reason:
+                raise ValueError("retryReason is required for an explicit retry")
+            attempt = int(prior["attempt"] or 1) + 1
+        elif retry_reason:
+            raise ValueError("retryReason requires retryOfTrainingRunId")
+
+        run_hash = sha256_json({"idempotencyKey": idempotency_key})
         training_run_id = f"run_{run_hash[:12]}"
         now = utc_now_iso()
         run_dir = RUNS_DIR / training_run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "training.log"
-        existing_row = conn.execute(
-            """
-            SELECT training_run_id, plan_id, plan_hash, approval_id,
-                   status, progress, pid, current_step, log_path,
-                   command_json, artifact_json, error_message, created_at, updated_at
-            FROM training_runs
-            WHERE training_run_id = ?
-            """,
-            (training_run_id,),
-        ).fetchone()
-        if existing_row is not None:
-            return training_run_response(
-                existing_row,
-                process_started=bool(existing_row["pid"]),
-                plan_review_approval_id=plan_review_id,
-                dry_run_hash=dry_run_hash,
-            )
 
         conn.execute(
             """
             INSERT INTO training_runs
-                (training_run_id, plan_id, plan_hash, approval_id, idempotency_key,
-                 status, progress, command_json, artifact_json, error_message,
+                (training_run_id, plan_id, plan_hash, approval_id,
+                 plan_review_approval_id, training_review_approval_id, dry_run_hash,
+                 idempotency_key, attempt, retry_of_training_run_id, retry_reason,
+                 status, progress, command_json, artifact_json, result_json,
+                 cancellation_json, error_message, quarantine_reason,
                  pid, current_step, log_path, started_at, finished_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 training_run_id,
                 plan_id,
                 plan_hash,
                 training_review_id,
+                plan_review_id,
+                training_review_id,
+                dry_run_hash,
                 idempotency_key,
+                attempt,
+                retry_of_training_run_id,
+                retry_reason,
                 "queued",
                 0,
                 stable_json(commands),
                 stable_json(expected_artifacts),
+                "[]",
+                "",
+                "",
                 "",
                 None,
                 "queued",
@@ -1143,14 +1193,40 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 now,
             ),
         )
-        runner_pid = spawn_training_runner(training_run_id)
+        conn.commit()
+        try:
+            runner_pid = spawn_training_runner(training_run_id)
+        except Exception as exc:
+            failed_at = utc_now_iso()
+            conn.execute(
+                """
+                UPDATE training_runs
+                SET status = 'failed', current_step = 'runner_start',
+                    error_message = ?, finished_at = ?, updated_at = ?
+                WHERE training_run_id = ?
+                """,
+                (str(exc), failed_at, failed_at, training_run_id),
+            )
+            record_event(
+                conn,
+                "training.failed",
+                "training_run",
+                training_run_id,
+                {
+                    "trainingRunId": training_run_id,
+                    "status": "failed",
+                    "step": "runner_start",
+                    "error": str(exc),
+                },
+            )
+            raise
         conn.execute(
             """
             UPDATE training_runs
-            SET pid = ?, updated_at = ?
+            SET pid = ?, runner_pid = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
-            (runner_pid, utc_now_iso(), training_run_id),
+            (runner_pid, runner_pid, utc_now_iso(), training_run_id),
         )
         record_event(
             conn,
@@ -1164,29 +1240,21 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 "planReviewApprovalId": plan_review_id,
                 "trainingReviewApprovalId": training_review_id,
                 "dryRunHash": dry_run_hash,
+                "attempt": attempt,
+                "retryOfTrainingRunId": retry_of_training_run_id or None,
                 "processStarted": True,
                 "pid": runner_pid,
+                "runnerPid": runner_pid,
                 "logPath": str(log_path),
             },
         )
-
-    return {
-        "trainingRunId": training_run_id,
-        "planId": plan_id,
-        "planHash": plan_hash,
-        "planReviewApprovalId": plan_review_id,
-        "trainingReviewApprovalId": training_review_id,
-        "dryRunHash": dry_run_hash,
-        "status": "queued",
-        "progress": 0,
-        "processStarted": True,
-        "pid": runner_pid,
-        "currentStep": "queued",
-        "logPath": str(log_path),
-        "commands": commands,
-        "expectedArtifacts": expected_artifacts,
-        "message": "Approved training run queued. The local runner will execute it in the background.",
-    }
+        row = select_training_run(conn, training_run_id=training_run_id)
+        assert row is not None
+        return training_run_response(
+            row,
+            process_started=True,
+            message="Approved training run queued. The local runner will execute it in the background.",
+        )
 
 
 def training_status(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1196,23 +1264,14 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
 
     with connect_state_db() as conn:
         init_state_db(conn)
-        row = conn.execute(
-            """
-            SELECT training_run_id, plan_id, plan_hash, approval_id, status, progress,
-                   command_json, artifact_json, error_message, pid, current_step,
-                   log_path, started_at, finished_at, created_at, updated_at
-            FROM training_runs
-            WHERE training_run_id = ?
-            """,
-            (training_run_id,),
-        ).fetchone()
+        row = select_training_run(conn, training_run_id=training_run_id)
         if row is None:
             return {
                 "trainingRunId": training_run_id,
                 "found": False,
                 "status": "not_found",
                 "logs": [],
-                "artifacts": [],
+                "events": [],
             }
         row = reconcile_training_run(conn, row)
         events = conn.execute(
@@ -1225,25 +1284,17 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
             (training_run_id,),
         ).fetchall()
 
+    receipt = training_run_response(
+        row,
+        process_started=bool(row["pid"]),
+        message="Current persisted training receipt.",
+    )
     return {
         "trainingRunId": row["training_run_id"],
         "found": True,
-        "planId": row["plan_id"],
-        "planHash": row["plan_hash"],
-        "approvalId": row["approval_id"],
+        "receipt": receipt,
         "status": row["status"],
-        "progress": row["progress"],
-        "pid": row["pid"],
-        "currentStep": row["current_step"],
-        "commands": json.loads(row["command_json"]),
-        "artifacts": json.loads(row["artifact_json"]),
-        "errorMessage": row["error_message"] or None,
-        "logPath": row["log_path"] or None,
         "logs": tail_log_lines(row["log_path"], limit=safe_int(payload.get("logLimit"), 80) or 80),
-        "startedAt": row["started_at"] or None,
-        "finishedAt": row["finished_at"] or None,
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
         "events": [
             {
                 "type": event["event_type"],
@@ -1258,40 +1309,96 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
 def training_cancel(payload: dict[str, Any]) -> dict[str, Any]:
     training_run_id = str(payload.get("trainingRunId") or "").strip()
     reason = str(payload.get("reason") or "").strip()
+    operator = str(payload.get("operator") or "").strip()
     if not training_run_id:
         raise ValueError("trainingRunId is required")
     if not reason:
         raise ValueError("reason is required")
+    if not operator:
+        raise ValueError("operator is required")
 
     now = utc_now_iso()
     with connect_state_db() as conn:
         init_state_db(conn)
-        row = conn.execute(
-            "SELECT training_run_id, status, pid FROM training_runs WHERE training_run_id = ?",
-            (training_run_id,),
-        ).fetchone()
+        row = select_training_run(conn, training_run_id=training_run_id)
         if row is None:
             raise ValueError(f"Unknown trainingRunId: {training_run_id}")
 
         current_status = str(row["status"])
-        terminal_statuses = {"completed", "failed", "cancelled"}
-        if current_status in terminal_statuses:
+        terminal_statuses = {"completed", "failed", "cancelled", "quarantined"}
+        existing_cancellation = json.loads(row["cancellation_json"] or "null")
+        if existing_cancellation is not None:
             return {
                 "trainingRunId": training_run_id,
                 "status": current_status,
                 "changed": False,
+                "reason": existing_cancellation["reason"],
+                "cancellation": existing_cancellation,
+                "message": "Existing cancellation receipt returned.",
+            }
+
+        cancellation = {
+            "cancellationId": f"cancel_{sha256_json({'trainingRunId': training_run_id, 'operator': operator, 'reason': reason})[:20]}",
+            "trainingRunId": training_run_id,
+            "operator": operator,
+            "reason": reason,
+            "requestedAt": now,
+            "targetPid": (
+                int(row["active_pid"] or row["runner_pid"] or row["pid"])
+                if row["active_pid"] or row["runner_pid"] or row["pid"]
+                else None
+            ),
+            "gracefulResult": (
+                "pending"
+                if row["active_pid"] or row["runner_pid"] or row["pid"]
+                else "not_required"
+            ),
+            "forcedResult": (
+                "pending"
+                if row["active_pid"] or row["runner_pid"] or row["pid"]
+                else "not_required"
+            ),
+        }
+        if current_status in terminal_statuses:
+            conn.execute(
+                """
+                UPDATE training_runs
+                SET cancellation_json = ?, updated_at = ?
+                WHERE training_run_id = ?
+                """,
+                (stable_json(cancellation), now, training_run_id),
+            )
+            return {
+                "trainingRunId": training_run_id,
+                "status": current_status,
+                "changed": False,
+                "reason": reason,
+                "cancellation": cancellation,
                 "message": f"Run is already terminal: {current_status}",
             }
 
-        next_status = "cancelled" if current_status in {"created", "queued"} and not row["pid"] else "cancel_requested"
+        next_status = (
+            "cancel_requested"
+            if row["active_pid"] or row["runner_pid"] or row["pid"]
+            else "cancelled"
+        )
         conn.execute(
             """
             UPDATE training_runs
-            SET status = ?, error_message = ?, finished_at = CASE WHEN ? = 'cancelled' THEN ? ELSE finished_at END,
+            SET status = ?, error_message = ?, cancellation_json = ?,
+                finished_at = CASE WHEN ? = 'cancelled' THEN ? ELSE finished_at END,
                 updated_at = ?
             WHERE training_run_id = ?
             """,
-            (next_status, reason, next_status, now, now, training_run_id),
+            (
+                next_status,
+                reason,
+                stable_json(cancellation),
+                next_status,
+                now,
+                now,
+                training_run_id,
+            ),
         )
         record_event(
             conn,
@@ -1299,10 +1406,9 @@ def training_cancel(payload: dict[str, Any]) -> dict[str, Any]:
             "training_run",
             training_run_id,
             {
-                "trainingRunId": training_run_id,
+                **cancellation,
                 "previousStatus": current_status,
                 "status": next_status,
-                "reason": reason,
             },
         )
 
@@ -1311,6 +1417,7 @@ def training_cancel(payload: dict[str, Any]) -> dict[str, Any]:
         "status": next_status,
         "changed": True,
         "reason": reason,
+        "cancellation": cancellation,
         "message": "Cancellation recorded locally.",
     }
 
@@ -2683,32 +2790,127 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def bind_result_artifacts(expected_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bound: list[dict[str, Any]] = []
+    for expected in expected_artifacts:
+        raw_path = Path(str(expected.get("path") or ""))
+        artifact_path = raw_path if raw_path.is_absolute() else PROJECT_ROOT / raw_path
+        artifact_path = artifact_path.resolve()
+        exists = artifact_path.exists()
+        if artifact_path.is_file():
+            file_type = "file"
+            size_bytes: int | None = artifact_path.stat().st_size
+            content_hash: str | None = sha256_file(artifact_path)
+        elif artifact_path.is_dir():
+            file_type = "directory"
+            size_bytes = None
+            content_hash = None
+        else:
+            file_type = "missing"
+            size_bytes = None
+            content_hash = None
+        bound.append(
+            {
+                "kind": str(expected.get("kind") or "artifact"),
+                "path": str(artifact_path),
+                "description": str(expected.get("description") or ""),
+                "exists": exists,
+                "fileType": file_type,
+                "sizeBytes": size_bytes,
+                "sha256": content_hash,
+            }
+        )
+    return bound
+
+
+TRAINING_RUN_SELECT_COLUMNS = """
+    training_run_id, plan_id, plan_hash, approval_id,
+    plan_review_approval_id, training_review_approval_id, dry_run_hash,
+    idempotency_key, attempt, retry_of_training_run_id, retry_reason,
+    status, progress, command_json, artifact_json, result_json,
+    cancellation_json, error_message, quarantine_reason,
+    pid, runner_pid, active_pid, current_step, log_path,
+    started_at, finished_at, created_at, updated_at
+"""
+
+
+def select_training_run(
+    conn: sqlite3.Connection,
+    *,
+    training_run_id: str = "",
+    idempotency_key: str = "",
+) -> sqlite3.Row | None:
+    if training_run_id:
+        return conn.execute(
+            f"SELECT {TRAINING_RUN_SELECT_COLUMNS} FROM training_runs WHERE training_run_id = ?",
+            (training_run_id,),
+        ).fetchone()
+    if idempotency_key:
+        return conn.execute(
+            f"SELECT {TRAINING_RUN_SELECT_COLUMNS} FROM training_runs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+    raise ValueError("training_run_id or idempotency_key is required")
+
+
+def assert_training_run_binding(
+    row: sqlite3.Row,
+    *,
+    plan_id: str,
+    plan_hash: str,
+    plan_review_approval_id: str,
+    training_review_approval_id: str,
+    dry_run_hash: str,
+) -> None:
+    expected = {
+        "plan_id": plan_id,
+        "plan_hash": plan_hash,
+        "plan_review_approval_id": plan_review_approval_id,
+        "training_review_approval_id": training_review_approval_id,
+        "dry_run_hash": dry_run_hash,
+    }
+    for column, value in expected.items():
+        if str(row[column] or "") != value:
+            raise ValueError(
+                f"Idempotency key is already bound to a different {column}"
+            )
+
+
 def training_run_response(
     row: sqlite3.Row,
     process_started: bool,
-    plan_review_approval_id: str = "",
-    dry_run_hash: str = "",
+    message: str,
 ) -> dict[str, Any]:
     return {
+        "schemaVersion": TRAINING_RUNTIME_SCHEMA_VERSION,
         "trainingRunId": row["training_run_id"],
+        "attempt": int(row["attempt"] or 1),
+        "retryOfTrainingRunId": row["retry_of_training_run_id"] or None,
+        "idempotencyKey": row["idempotency_key"],
         "planId": row["plan_id"],
         "planHash": row["plan_hash"],
-        "planReviewApprovalId": plan_review_approval_id,
-        "trainingReviewApprovalId": row["approval_id"],
-        "dryRunHash": dry_run_hash,
+        "planReviewApprovalId": row["plan_review_approval_id"],
+        "trainingReviewApprovalId": row["training_review_approval_id"],
+        "dryRunHash": row["dry_run_hash"],
         "status": row["status"],
         "progress": row["progress"],
         "processStarted": process_started,
-        "pid": row["pid"],
-        "currentStep": row["current_step"],
+        "pid": int(row["pid"]) if row["pid"] else None,
+        "runnerPid": int(row["runner_pid"]) if row["runner_pid"] else None,
+        "activePid": int(row["active_pid"]) if row["active_pid"] else None,
+        "currentStep": row["current_step"] or "unknown",
         "logPath": row["log_path"] or None,
-        "logs": tail_log_lines(row["log_path"], limit=80),
         "commands": json.loads(row["command_json"]),
         "expectedArtifacts": json.loads(row["artifact_json"]),
+        "resultArtifacts": json.loads(row["result_json"] or "[]"),
         "errorMessage": row["error_message"] or None,
+        "quarantineReason": row["quarantine_reason"] or None,
+        "cancellation": json.loads(row["cancellation_json"] or "null"),
+        "startedAt": row["started_at"] or None,
+        "finishedAt": row["finished_at"] or None,
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "message": "Existing idempotent training run returned.",
+        "message": message,
     }
 
 
@@ -2766,51 +2968,66 @@ def reconcile_training_run(conn: sqlite3.Connection, row: sqlite3.Row) -> sqlite
     status = str(row["status"])
     if status not in {"queued", "running", "cancel_requested"}:
         return row
-    if pid_exists(row["pid"]):
+    if pid_exists(row["runner_pid"] or row["pid"]):
         return row
 
+    return quarantine_training_run(
+        conn,
+        row,
+        "Training runner is absent while the persisted run is non-terminal.",
+        source="status_reconcile",
+    )
+
+
+def quarantine_training_run(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    reason: str,
+    *,
+    source: str,
+) -> sqlite3.Row:
     now = utc_now_iso()
-    next_status = "cancelled" if status == "cancel_requested" else "failed"
-    error_message = row["error_message"] or "Training runner exited before reporting a terminal status."
     conn.execute(
         """
         UPDATE training_runs
-        SET status = ?, error_message = ?, finished_at = ?, updated_at = ?
+        SET status = 'quarantined', quarantine_reason = ?, error_message = ?,
+            updated_at = ?
         WHERE training_run_id = ?
         """,
-        (next_status, error_message, now, now, row["training_run_id"]),
+        (reason, reason, now, row["training_run_id"]),
     )
     record_event(
         conn,
-        f"training.{next_status}",
+        "training.quarantined",
         "training_run",
         row["training_run_id"],
         {
             "trainingRunId": row["training_run_id"],
-            "previousStatus": status,
-            "status": next_status,
-            "reason": error_message,
-            "source": "status_reconcile",
+            "previousStatus": str(row["status"]),
+            "status": "quarantined",
+            "reason": reason,
+            "source": source,
         },
     )
-    return conn.execute(
-        """
-        SELECT training_run_id, plan_id, plan_hash, approval_id, status, progress,
-               command_json, artifact_json, error_message, pid, current_step,
-               log_path, started_at, finished_at, created_at, updated_at
-        FROM training_runs
-        WHERE training_run_id = ?
-        """,
-        (row["training_run_id"],),
-    ).fetchone()
+    updated = select_training_run(conn, training_run_id=row["training_run_id"])
+    assert updated is not None
+    return updated
 
 
-def connect_state_db() -> sqlite3.Connection:
+@contextmanager
+def connect_state_db() -> Iterator[sqlite3.Connection]:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(STATE_DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_state_db(conn: sqlite3.Connection) -> None:
@@ -2847,21 +3064,30 @@ def init_state_db(conn: sqlite3.Connection) -> None:
             plan_id TEXT NOT NULL,
             plan_hash TEXT NOT NULL,
             approval_id TEXT NOT NULL,
+            plan_review_approval_id TEXT NOT NULL DEFAULT '',
+            training_review_approval_id TEXT NOT NULL DEFAULT '',
+            dry_run_hash TEXT NOT NULL DEFAULT '',
             idempotency_key TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            retry_of_training_run_id TEXT NOT NULL DEFAULT '',
+            retry_reason TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             progress INTEGER NOT NULL DEFAULT 0,
             command_json TEXT NOT NULL,
             artifact_json TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '[]',
+            cancellation_json TEXT NOT NULL DEFAULT '',
             error_message TEXT NOT NULL DEFAULT '',
+            quarantine_reason TEXT NOT NULL DEFAULT '',
             pid INTEGER,
+            runner_pid INTEGER,
+            active_pid INTEGER,
             current_step TEXT NOT NULL DEFAULT '',
             log_path TEXT NOT NULL DEFAULT '',
             started_at TEXT NOT NULL DEFAULT '',
             finished_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(plan_id) REFERENCES training_plans(plan_id),
-            FOREIGN KEY(approval_id) REFERENCES plan_approvals(approval_id)
+            updated_at TEXT NOT NULL
         )
         """
     )
@@ -2917,10 +3143,121 @@ def init_state_db(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_collection ON rag_documents(collection_name)"
     )
     ensure_column(conn, "training_runs", "pid", "INTEGER")
+    ensure_column(conn, "training_runs", "runner_pid", "INTEGER")
+    ensure_column(conn, "training_runs", "active_pid", "INTEGER")
+    ensure_column(
+        conn,
+        "training_runs",
+        "plan_review_approval_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(
+        conn,
+        "training_runs",
+        "training_review_approval_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(conn, "training_runs", "dry_run_hash", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "training_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(
+        conn,
+        "training_runs",
+        "retry_of_training_run_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(conn, "training_runs", "retry_reason", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "training_runs", "result_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(
+        conn,
+        "training_runs",
+        "cancellation_json",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(
+        conn,
+        "training_runs",
+        "quarantine_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     ensure_column(conn, "training_runs", "current_step", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "log_path", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "started_at", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "finished_at", "TEXT NOT NULL DEFAULT ''")
+    migrate_training_run_bindings(conn)
+    conn.execute(
+        """
+        UPDATE training_runs
+        SET runner_pid = pid
+        WHERE runner_pid IS NULL AND pid IS NOT NULL
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_training_runs_idempotency ON training_runs(idempotency_key)"
+    )
+
+
+def migrate_training_run_bindings(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT training_run_id, plan_id, plan_hash, approval_id,
+               plan_review_approval_id, training_review_approval_id, dry_run_hash
+        FROM training_runs
+        """
+    ).fetchall()
+    for row in rows:
+        plan_review_id = str(row["plan_review_approval_id"] or "")
+        if not re.fullmatch(r"approval_[a-f0-9]{20}", plan_review_id):
+            plan_review_id = (
+                "approval_"
+                + sha256_json(
+                    {
+                        "legacyTrainingRunId": row["training_run_id"],
+                        "approvalType": "human_plan_review",
+                    }
+                )[:20]
+            )
+        training_review_id = str(row["training_review_approval_id"] or row["approval_id"] or "")
+        if not re.fullmatch(r"approval_[a-f0-9]{20}", training_review_id):
+            training_review_id = (
+                "approval_"
+                + sha256_json(
+                    {
+                        "legacyTrainingRunId": row["training_run_id"],
+                        "approvalType": "human_training_review",
+                    }
+                )[:20]
+            )
+        dry_run_hash = str(row["dry_run_hash"] or "")
+        if not re.fullmatch(r"[a-f0-9]{64}", dry_run_hash):
+            dry_run_hash = sha256_json(
+                {
+                    "legacyTrainingRunId": row["training_run_id"],
+                    "planId": row["plan_id"],
+                    "planHash": row["plan_hash"],
+                }
+            )
+        if (
+            row["approval_id"] == training_review_id
+            and row["plan_review_approval_id"] == plan_review_id
+            and row["training_review_approval_id"] == training_review_id
+            and row["dry_run_hash"] == dry_run_hash
+        ):
+            continue
+        conn.execute(
+            """
+            UPDATE training_runs
+            SET approval_id = ?, plan_review_approval_id = ?,
+                training_review_approval_id = ?, dry_run_hash = ?
+            WHERE training_run_id = ?
+            """,
+            (
+                training_review_id,
+                plan_review_id,
+                training_review_id,
+                dry_run_hash,
+                row["training_run_id"],
+            ),
+        )
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -2955,4 +3292,9 @@ def sha256_json(value: Any) -> str:
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )

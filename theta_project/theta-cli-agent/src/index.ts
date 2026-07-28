@@ -7,3 +7,4 @@ export * from "./agent/research-service.js";
 export * from "./rag/contracts.js";
 export * from "./recommendation/contracts.js";
 export * from "./recommendation/engine.js";
+export * from "./training/contracts.js";

@@ -1052,19 +1052,14 @@ const executeThetaState = async (
           approvedBy,
         );
         return transition(THETA_WORKFLOW_STATES.monitorTraining, {
-          training: {
-            trainingRunId: requiredString(
-              started.trainingRunId,
-              "trainingRunId",
-            ),
-            status: stringValue(started.status) ?? "running",
-            progress: numberValue(started.progress) ?? 0,
-            currentStep: stringValue(started.currentStep) ?? "starting",
-          },
+          trainingReceipt: sanitizeTrainingReceipt(started),
         });
       }
       case THETA_WORKFLOW_STATES.monitorTraining: {
-        const training = requireRecord(variables.training, "training state");
+        const training = requireRecord(
+          variables.trainingReceipt,
+          "training receipt",
+        );
         const status = await invoke(THETA_TOOL_IDS.trainingStatus, {
           trainingRunId: requiredString(
             training.trainingRunId,
@@ -1075,6 +1070,15 @@ const executeThetaState = async (
         const normalizedStatus = (
           stringValue(status.status) ?? "unknown"
         ).toLowerCase();
+        const receipt =
+          status.found === false
+            ? {
+                ...training,
+                status: "quarantined",
+                quarantineReason:
+                  "Training runtime no longer contains the bound training run.",
+              }
+            : requireRecord(status.receipt, "training status receipt");
         if (["completed", "succeeded", "success"].includes(normalizedStatus)) {
           const plan = requireRecord(variables.planRecord, "plan record");
           const validatedPlan = requireRecord(
@@ -1084,7 +1088,7 @@ const executeThetaState = async (
           return transition(
             THETA_WORKFLOW_STATES.completed,
             {
-              training: sanitizeTrainingStatus(status),
+              trainingReceipt: sanitizeTrainingReceipt(receipt),
             },
             {
               runId: execution.scope.runId,
@@ -1095,20 +1099,29 @@ const executeThetaState = async (
                 status.trainingRunId,
                 "trainingRunId",
               ),
-              artifacts: arrayValue(status.artifacts).map(sanitizeArtifact),
+              artifacts: arrayValue(receipt.resultArtifacts).map(
+                sanitizeArtifact,
+              ),
             },
           );
         }
         if (["failed", "error"].includes(normalizedStatus)) {
-          return failed(
-            "RUNTIME_INTERNAL_ERROR",
-            `Training run failed in state ${stringValue(status.currentStep) ?? "unknown"}.`,
-            execution.state.id,
-          );
+          return transition(THETA_WORKFLOW_STATES.failed, {
+            trainingReceipt: sanitizeTrainingReceipt(receipt),
+          });
         }
         if (normalizedStatus === "cancelled") {
           return transition(THETA_WORKFLOW_STATES.cancelled, {
-            training: sanitizeTrainingStatus(status),
+            trainingReceipt: sanitizeTrainingReceipt(receipt),
+          });
+        }
+        if (
+          normalizedStatus === "quarantined" ||
+          normalizedStatus === "not_found" ||
+          !["queued", "running", "cancel_requested"].includes(normalizedStatus)
+        ) {
+          return transition(THETA_WORKFLOW_STATES.quarantined, {
+            trainingReceipt: sanitizeTrainingReceipt(receipt),
           });
         }
         return {
@@ -1119,7 +1132,7 @@ const executeThetaState = async (
               expiresAt: new Date(Date.now() + 1_000).toISOString(),
               reason:
                 "Training is still running; poll again after the durable timer fires.",
-              metadata: sanitizeTrainingStatus(status) as Record<
+              metadata: sanitizeTrainingReceipt(receipt) as Record<
                 string,
                 RuntimeJsonValue
               >,
@@ -1563,17 +1576,46 @@ const sanitizeArtifact = (value: unknown): Record<string, RuntimeJsonValue> => {
     kind: stringValue(artifact.kind) ?? "artifact",
     path: stringValue(artifact.path) ?? "",
     description: stringValue(artifact.description) ?? "",
+    ...(typeof artifact.exists === "boolean"
+      ? { exists: artifact.exists }
+      : {}),
+    ...(stringValue(artifact.fileType)
+      ? { fileType: stringValue(artifact.fileType) as string }
+      : {}),
+    ...(typeof artifact.sizeBytes === "number" || artifact.sizeBytes === null
+      ? { sizeBytes: artifact.sizeBytes as number | null }
+      : {}),
+    ...(typeof artifact.sha256 === "string" || artifact.sha256 === null
+      ? { sha256: artifact.sha256 as string | null }
+      : {}),
   };
 };
 
-const sanitizeTrainingStatus = (
-  status: Record<string, unknown>,
+const sanitizeTrainingReceipt = (
+  receipt: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> => ({
-  trainingRunId: requiredString(status.trainingRunId, "trainingRunId"),
-  status: stringValue(status.status) ?? "unknown",
-  progress: numberValue(status.progress) ?? 0,
-  currentStep: stringValue(status.currentStep) ?? "unknown",
-  artifacts: arrayValue(status.artifacts).map(sanitizeArtifact),
+  trainingRunId: requiredString(receipt.trainingRunId, "trainingRunId"),
+  attempt: numberValue(receipt.attempt) ?? 1,
+  retryOfTrainingRunId: stringValue(receipt.retryOfTrainingRunId) ?? null,
+  idempotencyKey: requiredString(receipt.idempotencyKey, "idempotencyKey"),
+  planId: requiredString(receipt.planId, "planId"),
+  planHash: requiredString(receipt.planHash, "planHash"),
+  planReviewApprovalId: requiredString(
+    receipt.planReviewApprovalId,
+    "planReviewApprovalId",
+  ),
+  trainingReviewApprovalId: requiredString(
+    receipt.trainingReviewApprovalId,
+    "trainingReviewApprovalId",
+  ),
+  dryRunHash: requiredString(receipt.dryRunHash, "dryRunHash"),
+  status: stringValue(receipt.status) ?? "unknown",
+  progress: numberValue(receipt.progress) ?? 0,
+  currentStep: stringValue(receipt.currentStep) ?? "unknown",
+  resultArtifacts: arrayValue(receipt.resultArtifacts).map(sanitizeArtifact),
+  errorMessage: stringValue(receipt.errorMessage) ?? null,
+  quarantineReason: stringValue(receipt.quarantineReason) ?? null,
+  cancellation: sanitizeRuntimeValue(receipt.cancellation),
 });
 
 const approvalActor = (
@@ -1685,6 +1727,11 @@ const runtimeRecord = (
   value: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> =>
   JSON.parse(JSON.stringify(value)) as Record<string, RuntimeJsonValue>;
+
+const sanitizeRuntimeValue = (value: unknown): RuntimeJsonValue => {
+  if (value === undefined) return null;
+  return JSON.parse(JSON.stringify(value)) as RuntimeJsonValue;
+};
 
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
 const arrayValue = (value: unknown): unknown[] =>

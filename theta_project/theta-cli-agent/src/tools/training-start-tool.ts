@@ -9,11 +9,11 @@ import {
   type TrainingPlanRecord,
 } from "../planning/contracts.js";
 import { assertApprovalChain } from "../planning/engine.js";
+import {
+  trainingReceiptSchema,
+  type TrainingReceipt,
+} from "../training/contracts.js";
 import { callThetaBridge } from "./bridge.js";
-import type {
-  ThetaExpectedArtifact,
-  ThetaTrainingCommand,
-} from "./training-dry-run-tool.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
 export interface ThetaTrainingStartInput {
@@ -22,29 +22,11 @@ export interface ThetaTrainingStartInput {
   dryRun: DryRunReceipt;
   trainingReview: ApprovalReceipt;
   idempotencyKey: string;
+  retryOfTrainingRunId?: string;
+  retryReason?: string;
 }
 
-export interface ThetaTrainingStartOutput {
-  trainingRunId: string;
-  planId: string;
-  planHash: string;
-  planReviewApprovalId: string;
-  trainingReviewApprovalId: string;
-  dryRunHash: string;
-  status: string;
-  progress: number;
-  processStarted: boolean;
-  pid?: number | null;
-  currentStep: string;
-  logPath?: string | null;
-  commands: ThetaTrainingCommand[];
-  expectedArtifacts?: ThetaExpectedArtifact[];
-  artifacts?: ThetaExpectedArtifact[];
-  errorMessage?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-  message: string;
-}
+export type ThetaTrainingStartOutput = TrainingReceipt;
 
 const trainingStartInputSchema: JsonSchema = {
   type: "object",
@@ -61,6 +43,8 @@ const trainingStartInputSchema: JsonSchema = {
     dryRun: { type: "object", additionalProperties: true },
     trainingReview: { type: "object", additionalProperties: true },
     idempotencyKey: { type: "string", minLength: 1 },
+    retryOfTrainingRunId: { type: "string", minLength: 1 },
+    retryReason: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
 };
@@ -68,7 +52,11 @@ const trainingStartInputSchema: JsonSchema = {
 const trainingStartOutputSchema: JsonSchema = {
   type: "object",
   required: [
+    "schemaVersion",
     "trainingRunId",
+    "attempt",
+    "retryOfTrainingRunId",
+    "idempotencyKey",
     "planId",
     "planHash",
     "planReviewApprovalId",
@@ -77,12 +65,31 @@ const trainingStartOutputSchema: JsonSchema = {
     "status",
     "progress",
     "processStarted",
+    "pid",
+    "runnerPid",
+    "activePid",
     "currentStep",
+    "logPath",
     "commands",
+    "expectedArtifacts",
+    "resultArtifacts",
+    "errorMessage",
+    "quarantineReason",
+    "cancellation",
+    "startedAt",
+    "finishedAt",
+    "createdAt",
+    "updatedAt",
     "message",
   ],
   properties: {
     trainingRunId: { type: "string" },
+    schemaVersion: { const: "1.0.0" },
+    attempt: { type: "integer", minimum: 1 },
+    retryOfTrainingRunId: {
+      anyOf: [{ type: "string" }, { type: "null" }],
+    },
+    idempotencyKey: { type: "string" },
     planId: { type: "string" },
     planHash: { type: "string" },
     planReviewApprovalId: { type: "string" },
@@ -92,6 +99,8 @@ const trainingStartOutputSchema: JsonSchema = {
     progress: { type: "number" },
     processStarted: { type: "boolean" },
     pid: { anyOf: [{ type: "integer" }, { type: "null" }] },
+    runnerPid: { anyOf: [{ type: "integer" }, { type: "null" }] },
+    activePid: { anyOf: [{ type: "integer" }, { type: "null" }] },
     currentStep: { type: "string" },
     logPath: { anyOf: [{ type: "string" }, { type: "null" }] },
     commands: {
@@ -102,11 +111,19 @@ const trainingStartOutputSchema: JsonSchema = {
       type: "array",
       items: { type: "object", additionalProperties: true },
     },
-    artifacts: {
+    resultArtifacts: {
       type: "array",
       items: { type: "object", additionalProperties: true },
     },
     errorMessage: { anyOf: [{ type: "string" }, { type: "null" }] },
+    quarantineReason: {
+      anyOf: [{ type: "string" }, { type: "null" }],
+    },
+    cancellation: {
+      anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }],
+    },
+    startedAt: { anyOf: [{ type: "string" }, { type: "null" }] },
+    finishedAt: { anyOf: [{ type: "string" }, { type: "null" }] },
     createdAt: { type: "string" },
     updatedAt: { type: "string" },
     message: { type: "string" },
@@ -116,7 +133,7 @@ const trainingStartOutputSchema: JsonSchema = {
 
 export const thetaTrainingStartToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.trainingStart,
-  version: "2.0.0",
+  version: "3.0.0",
   displayName: "Start Training",
   description:
     "Start THETA only with a canonical plan, HumanPlanReview, successful dry-run, and distinct HumanTrainingReview.",
@@ -154,6 +171,12 @@ const normalizeTrainingStartInput = (
     dryRun: dryRunReceiptSchema.parse(value.dryRun),
     trainingReview: approvalReceiptSchema.parse(value.trainingReview),
     idempotencyKey: value.idempotencyKey,
+    ...(value.retryOfTrainingRunId === undefined
+      ? {}
+      : { retryOfTrainingRunId: value.retryOfTrainingRunId }),
+    ...(value.retryReason === undefined
+      ? {}
+      : { retryReason: value.retryReason }),
   };
   if (!normalized.idempotencyKey?.trim())
     throw new Error("idempotencyKey is required.");
@@ -179,5 +202,5 @@ export const thetaTrainingStartHandler: ToolHandler<
       response.error?.message ?? "training.start bridge command failed.",
     );
   }
-  return response.data as unknown as ThetaTrainingStartOutput;
+  return trainingReceiptSchema.parse(response.data);
 };

@@ -12,9 +12,9 @@ import { thetaHyphaToolSpecs } from "./tools/hypha-registry.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
 export const THETA_DOMAIN_PACK_ID = "domain.theta.training";
-export const THETA_DOMAIN_PACK_VERSION = "2.0.0";
+export const THETA_DOMAIN_PACK_VERSION = "3.0.0";
 export const THETA_WORKFLOW_ID = "workflow.theta.training";
-export const THETA_WORKFLOW_VERSION = "2.0.0";
+export const THETA_WORKFLOW_VERSION = "3.0.0";
 export const THETA_AGENT_REF: SpecRef = {
   id: "agent.theta.cli",
   version: "1.0.0",
@@ -37,6 +37,7 @@ export const THETA_WORKFLOW_STATES = {
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",
+  quarantined: "Quarantined",
 } as const;
 
 export const THETA_APPROVAL_KEYS = {
@@ -217,7 +218,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Start training through the governed Bridge.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingStart],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart, "2.0.0")],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart, "3.0.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.trainingWrite],
       humanApprovalPolicyRef: toolRef(trainingControlPolicy.id),
       policyRefs: [trainingControlPolicy.id],
@@ -232,8 +233,8 @@ const workflowStates: WorkflowStateSpec[] = [
         THETA_TOOL_IDS.trainingCancel,
       ],
       allowedToolRefs: [
-        toolRef(THETA_TOOL_IDS.trainingStatus),
-        toolRef(THETA_TOOL_IDS.trainingCancel),
+        toolRef(THETA_TOOL_IDS.trainingStatus, "2.0.0"),
+        toolRef(THETA_TOOL_IDS.trainingCancel, "2.0.0"),
       ],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.trainingRead,
@@ -248,6 +249,10 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(THETA_WORKFLOW_STATES.failed, "Record a normalized failure and stop."),
   state(THETA_WORKFLOW_STATES.cancelled, "Record cancellation and stop."),
+  state(
+    THETA_WORKFLOW_STATES.quarantined,
+    "Stop automatic execution when training state cannot be reconciled safely.",
+  ),
 ];
 
 const forwardTransitions = [
@@ -301,6 +306,7 @@ const forwardTransitions = [
   [THETA_WORKFLOW_STATES.startTraining, THETA_WORKFLOW_STATES.monitorTraining],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.completed],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.cancelled],
+  [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.quarantined],
 ] as const;
 
 const failureTransitions = workflowStates
@@ -311,6 +317,7 @@ const failureTransitions = workflowStates
         THETA_WORKFLOW_STATES.completed,
         THETA_WORKFLOW_STATES.failed,
         THETA_WORKFLOW_STATES.cancelled,
+        THETA_WORKFLOW_STATES.quarantined,
       ].includes(id as never),
   )
   .map((from) => ({ from, to: THETA_WORKFLOW_STATES.failed }));
@@ -462,6 +469,7 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
         THETA_WORKFLOW_STATES.completed,
         THETA_WORKFLOW_STATES.failed,
         THETA_WORKFLOW_STATES.cancelled,
+        THETA_WORKFLOW_STATES.quarantined,
       ],
       states: workflowStates,
       transitions: [

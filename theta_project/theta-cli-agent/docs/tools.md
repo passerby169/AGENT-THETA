@@ -23,11 +23,11 @@ idempotency keys, audit records and human approval rules.
 | `theta.model.recommend` | read | `theta:model:read`, `theta:dataset:read` | Recommend model candidates from deterministic constraints. |
 | `theta.plan.validate` | read | `theta:plan:read`, `theta:model:read` | Validate a TrainingPlan before approval. |
 | `theta.plan.create` v2 | write | `theta:plan:write` | Create a strict canonical planId and planHash after HumanPlanReview. |
-| `theta.plan.approve` v1 | write | `theta:plan:approve` | Legacy compatibility command; not used by the DomainPack 2.0 workflow. |
+| `theta.plan.approve` v1 | write | `theta:plan:approve` | Legacy compatibility command; not used by the DomainPack 3.0 workflow. |
 | `theta.training.dry_run` v2 | read | `theta:training:read` | Validate plan review and derive a hash-bound readiness receipt. |
-| `theta.training.start` v2 | external_effect | `theta:training:write` | Start only with a valid plan, dry-run, and two distinct reviews. |
-| `theta.training.status` | read | `theta:training:read` | Read logs, status and artifact references. |
-| `theta.training.cancel` | external_effect | `theta:training:write` | Request cooperative cancellation. |
+| `theta.training.start` v3 | external_effect | `theta:training:write` | Start or explicitly retry a receipt-bound training attempt. |
+| `theta.training.status` v2 | read | `theta:training:read` | Read the strict TrainingReceipt, logs, and lifecycle events. |
+| `theta.training.cancel` v2 | irreversible | `theta:training:write` | Record an approved cancellation and process termination receipt. |
 | `theta.results.list` | read | `theta:results:read` | List training result artifacts. |
 | `theta.results.summarize` | read | `theta:results:read` | Build deterministic result summaries. |
 | `theta.rag.index` | write | `theta:rag:write` | Index local evidence documents. |
@@ -61,7 +61,7 @@ The first read-only bridge commands are wired through `theta_agent_bridge`:
 `theta.plan.create` v2 is implemented in TypeScript and returns the canonical
 `TrainingPlanRecord`. The DomainPack workflow persists the plan and its
 `HumanPlanReview` in Hypha runtime events. `theta.plan.approve` writes only to
-the legacy Agent SQLite database and is not consulted by DomainPack 2.0.
+the legacy Agent SQLite database and is not consulted by DomainPack 3.0.
 
 `theta.training.dry_run` v2 accepts the canonical plan, the
 `HumanPlanReview` receipt, and the dataset path. The Bridge checks dataset
@@ -70,12 +70,14 @@ directory, disk capacity, GPU requirements, and network policy. TypeScript
 then creates the stable `DryRunReceipt` and `dryRunHash`; no training process
 is spawned.
 
-`theta.training.start` v2 rejects missing, stale, or mismatched plan review,
-dry-run, and training review bindings. It records an approved local training
-run and starts a background Python runner process. The runner executes the resolved
-`prepare_data.py` and `run_pipeline.py` commands, writes a UTF-8 log file under
-`theta_project/.theta_agent/runs/<trainingRunId>/training.log`, and updates
-SQLite status fields.
+`theta.training.start` v3 rejects missing, stale, or mismatched plan review,
+dry-run, and training review bindings. The idempotency key binds the complete
+chain and returns the existing receipt for an already accepted attempt. Failed
+runs require a new key, `retryOfTrainingRunId`, and `retryReason`. The runner
+executes the resolved `prepare_data.py` and `run_pipeline.py` commands, writes a
+UTF-8 log file under
+`theta_project/.theta_agent/runs/<trainingRunId>/training.log`, and updates the
+SQLite receipt.
 
 ## Approval Authority
 
@@ -88,14 +90,18 @@ The canonical workflow has exactly two business approvals:
 Hypha human waits and canonical events are authoritative. Python receives and
 validates the complete chain but cannot create approvals or advance the FSM.
 
-`theta.training.status` returns the run status, progress, runner PID, current
-step, log path, recent log lines, expected artifacts and recorded events. If a
-runner exits before reporting a terminal state, status reconciliation marks the
-run as `failed` or `cancelled` instead of leaving it stuck forever.
+`theta.training.status` v2 returns a strict `TrainingReceipt`, recent log lines,
+and recorded lifecycle events. The receipt binds plan and approval identities,
+attempt ancestry, process state, and actual result artifact metadata. If a
+runner disappears before reporting a terminal state, reconciliation marks the
+run `quarantined`; it never guesses success, failure, cancellation, or an
+automatic restart.
 
-`theta.training.cancel` requests cooperative cancellation. Active runs move to
-`cancel_requested`; the runner then terminates the active THETA subprocess and
-marks the run `cancelled`. Runs without a spawned process can move directly to
+`theta.training.cancel` v2 is an irreversible governed operation. Active runs
+move to `cancel_requested`; the runner then terminates only its recorded child
+process group or tree and marks the run `cancelled`. The cancellation receipt
+records the operator, reason, requested time, target PID, graceful outcome, and
+forced outcome. Runs without a spawned process can move directly to
 `cancelled`.
 
 `theta.results.list` scans local THETA result artifacts under

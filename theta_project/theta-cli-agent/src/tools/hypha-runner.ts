@@ -77,7 +77,8 @@ const thetaTrainingControlToolIds = new Set<string>([
 export const thetaCliPolicyEngine: PolicyEngine = {
   async evaluate(context) {
     if (
-      context.sideEffectLevel === "external_effect" &&
+      (context.sideEffectLevel === "external_effect" ||
+        context.sideEffectLevel === "irreversible") &&
       context.capabilityId &&
       thetaTrainingControlToolIds.has(context.capabilityId)
     ) {

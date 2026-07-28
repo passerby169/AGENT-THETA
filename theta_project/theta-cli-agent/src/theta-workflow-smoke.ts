@@ -22,6 +22,10 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
   private readonly events: FrameworkEvent[] = [];
   private readonly statusCalls = new Map<string, number>();
   private readonly inspectCalls = new Map<string, number>();
+  private readonly trainingReceipts = new Map<
+    string,
+    Record<string, unknown>
+  >();
   private sequence = 0;
 
   async invoke(
@@ -249,9 +253,13 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
           checkedAt: "2026-07-28T00:00:02.000Z",
         });
       }
-      case THETA_TOOL_IDS.trainingStart:
-        return {
-          trainingRunId: "training-smoke-001",
+      case THETA_TOOL_IDS.trainingStart: {
+        const receipt = {
+          schemaVersion: "1.0.0",
+          trainingRunId: "run_0123456789ab",
+          attempt: 1,
+          retryOfTrainingRunId: null,
+          idempotencyKey: String(request.input.idempotencyKey),
           planId: (request.input.plan as { planId: string }).planId,
           planHash: (request.input.plan as { planHash: string }).planHash,
           planReviewApprovalId: (
@@ -265,38 +273,79 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
           status: "running",
           progress: 0,
           processStarted: true,
+          pid: 12345,
           currentStep: "prepare",
-          commands: [],
-          expectedArtifacts: [],
+          logPath: "/redacted/training.log",
+          commands: (request.input.dryRun as { commands: unknown[] }).commands,
+          expectedArtifacts: (
+            request.input.dryRun as { expectedArtifacts: unknown[] }
+          ).expectedArtifacts,
+          resultArtifacts: [],
+          errorMessage: null,
+          quarantineReason: null,
+          cancellation: null,
+          startedAt: "2026-07-28T00:00:03.000Z",
+          finishedAt: null,
+          createdAt: "2026-07-28T00:00:03.000Z",
+          updatedAt: "2026-07-28T00:00:03.000Z",
+          message: "Fake training is running.",
         };
+        this.trainingReceipts.set(request.runId, receipt);
+        return receipt;
+      }
       case THETA_TOOL_IDS.trainingStatus: {
         const statusCalls = (this.statusCalls.get(request.runId) ?? 0) + 1;
         this.statusCalls.set(request.runId, statusCalls);
+        const stored = this.trainingReceipts.get(request.runId);
+        if (!stored) throw new Error("Missing fake training receipt.");
         if (request.runId === "theta-workflow-timer" && statusCalls === 1) {
+          const receipt = {
+            ...stored,
+            status: "running",
+            progress: 50,
+            currentStep: "train",
+            updatedAt: "2026-07-28T00:00:04.000Z",
+            message: "Fake training is still running.",
+          };
+          this.trainingReceipts.set(request.runId, receipt);
           return {
             trainingRunId: request.input.trainingRunId,
             found: true,
             status: "running",
             logs: ["training in progress"],
-            artifacts: [],
-            progress: 50,
-            currentStep: "train",
+            events: [],
+            receipt,
           };
         }
+        const resultArtifacts = [
+          {
+            kind: "model",
+            path: "/results/model",
+            description: "Trained model.",
+            exists: true,
+            fileType: "directory",
+            sizeBytes: null,
+            sha256: null,
+          },
+        ];
+        const receipt = {
+          ...stored,
+          status: "completed",
+          progress: 100,
+          currentStep: "completed",
+          resultArtifacts,
+          finishedAt: "2026-07-28T00:00:05.000Z",
+          updatedAt: "2026-07-28T00:00:05.000Z",
+          message: "Fake training completed.",
+        };
+        this.trainingReceipts.set(request.runId, receipt);
         return {
           trainingRunId: request.input.trainingRunId,
           found: true,
           status: "completed",
           logs: ["training complete"],
-          artifacts: [
-            {
-              kind: "model",
-              path: "/results/model",
-              description: "Trained model.",
-            },
-          ],
-          progress: 100,
-          currentStep: "completed",
+          events: [],
+          receipt,
         };
       }
       default:
