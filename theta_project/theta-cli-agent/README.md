@@ -48,6 +48,50 @@ training commands, but still does not start training:
 npm run cli -- demo --approve --approve-plan
 ```
 
+## Durable Workflow
+
+The complete Agent path is a compiled THETA DomainPack executed by Hypha's
+bounded FSM driver. Run, state transitions, approvals, waits, retries, and
+terminal output are persisted to SQLite events. Tool audit events use a
+separate durable JSONL trace and share the same `runId`.
+
+Compile and inspect the DomainPack before execution:
+
+```powershell
+npm run cli -- workflow compile
+```
+
+Start a Run. The default command performs read-only analysis and stops before
+the first plan write:
+
+```powershell
+npm run cli -- workflow run --file fixtures/sample.jsonl --run-id theta-run-001
+```
+
+Resolve each approval gate explicitly and continue from persisted events:
+
+```powershell
+npm run cli -- workflow resume --run-id theta-run-001 --approve
+```
+
+For an intentional unattended local demonstration, approve both plan writes.
+Adding `--approve-training` also permits the real external training process:
+
+```powershell
+npm run cli -- workflow run --file fixtures/sample.jsonl --approve-plans
+npm run cli -- workflow run --file fixtures/sample.jsonl --approve-plans --approve-training
+```
+
+Inspect evidence or derive a deterministic replay fixture:
+
+```powershell
+npm run cli -- workflow trace --run-id theta-run-001 --json
+npm run cli -- workflow replay --run-id theta-run-001 --json
+```
+
+The default database is `.theta_agent/theta-workflow.sqlite`. Use
+`--runtime-db <path>` on workflow commands to select another file.
+
 ## Commands
 
 Inspect an allowed local dataset:
@@ -150,12 +194,20 @@ The command line does not call THETA Python functions directly:
 
 ```text
 CLI command
-  -> Hypha ToolRegistry
+  -> THETA DomainPack -> FSMProcessSpec
+  -> Hypha fenced bounded FSM driver -> SQLite EventRuntime
+  -> state-scoped Hypha ToolRegistry
   -> GovernedToolRunner
   -> permission, validation, idempotency, approval, and audit
   -> THETA Python Bridge
   -> local THETA state
 ```
+
+The Run is event-first: current state and recovery data are rebuilt from
+canonical events rather than CLI memory. Human decisions use Hypha runtime
+human waits, and training polling uses durable timer waits. Raw dataset rows
+and sample values are removed before any tool result is copied into canonical
+Run transition events.
 
 Dataset paths are resolved to their canonical filesystem location before the
 Bridge starts. The governed handlers reject missing files, directory escapes,

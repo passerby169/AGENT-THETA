@@ -1,0 +1,235 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { THETA_APPROVAL_KEYS } from './theta-domain.js';
+import {
+  ThetaWorkflowService,
+  type ThetaWorkflowInput,
+} from './theta-workflow-service.js';
+
+interface WorkflowCliOutput {
+  write(message: string): void;
+  writeError(message: string): void;
+}
+
+interface ParsedWorkflowArguments {
+  command?: string;
+  flags: Map<string, string | boolean>;
+}
+
+export const thetaWorkflowHelp = `THETA workflow commands:
+  workflow compile
+      Compile the THETA DomainPack and print the FSM contract summary.
+
+  workflow run --file <dataset> [--run-id <id>] [--runtime-db <path>]
+      Start the event-first workflow. It stops at the first approval gate.
+      Add --approve-plans for plan creation and approval. Add
+      --approve-training as well to permit the external training start.
+
+  workflow resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
+      Resume a durable Run and optionally resolve its current human wait.
+
+  workflow trace --run-id <id> [--runtime-db <path>]
+      Print canonical orchestration events and governed tool trace events.
+
+  workflow replay --run-id <id> [--runtime-db <path>]
+      Derive a deterministic replay fixture from persisted events.`;
+
+export const runThetaWorkflowCliCommand = async (
+  args: string[],
+  output: WorkflowCliOutput,
+): Promise<number> => {
+  try {
+    const parsed = parseWorkflowArguments(args);
+    if (!parsed.command || flag(parsed, 'help')) {
+      output.write(thetaWorkflowHelp);
+      return 0;
+    }
+
+    const service = new ThetaWorkflowService();
+    const runtimeDb = stringFlag(parsed, 'runtime-db');
+    const json = flag(parsed, 'json');
+
+    if (parsed.command === 'compile') {
+      write(service.compileSummary(), json, output);
+      return 0;
+    }
+    if (parsed.command === 'run') {
+      const input = await workflowInput(parsed);
+      const approvalKeys: string[] = [];
+      if (flag(parsed, 'approve-plans')) {
+        approvalKeys.push(
+          THETA_APPROVAL_KEYS.planCreate,
+          THETA_APPROVAL_KEYS.planApprove,
+        );
+      }
+      if (flag(parsed, 'approve-training')) {
+        if (!flag(parsed, 'approve-plans')) {
+          throw new Error('--approve-training requires --approve-plans.');
+        }
+        approvalKeys.push(THETA_APPROVAL_KEYS.trainingStart);
+      }
+      const result = await service.run({
+        input,
+        ...(stringFlag(parsed, 'run-id')
+          ? { runId: stringFlag(parsed, 'run-id') }
+          : {}),
+        ...(runtimeDb ? { runtimeDb } : {}),
+        approvalKeys,
+        approvedBy: stringFlag(parsed, 'approved-by') ?? 'local_user',
+      });
+      write(result, json, output);
+      return result.disposition === 'failed' ? 2 : 0;
+    }
+    if (parsed.command === 'resume') {
+      if (flag(parsed, 'approve') && flag(parsed, 'reject')) {
+        throw new Error('--approve and --reject cannot be used together.');
+      }
+      const result = await service.resume({
+        runId: requiredFlag(parsed, 'run-id'),
+        ...(runtimeDb ? { runtimeDb } : {}),
+        approve: flag(parsed, 'approve'),
+        reject: flag(parsed, 'reject'),
+        approvedBy: stringFlag(parsed, 'approved-by') ?? 'local_user',
+      });
+      write(result, json, output);
+      return result.disposition === 'failed' ? 2 : 0;
+    }
+    if (parsed.command === 'trace') {
+      const evidence = await service.evidence(
+        requiredFlag(parsed, 'run-id'),
+        runtimeDb,
+      );
+      write(evidence, json, output);
+      return 0;
+    }
+    if (parsed.command === 'replay') {
+      const replay = await service.replay(
+        requiredFlag(parsed, 'run-id'),
+        runtimeDb,
+      );
+      write(replay, json, output);
+      return 0;
+    }
+
+    throw new Error(`Unknown workflow command: ${parsed.command}`);
+  } catch (error) {
+    output.writeError(
+      `Error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 1;
+  }
+};
+
+const workflowInput = async (
+  parsed: ParsedWorkflowArguments,
+): Promise<ThetaWorkflowInput> => {
+  const inputFile = stringFlag(parsed, 'input');
+  if (inputFile) {
+    const value = JSON.parse(
+      await readFile(path.resolve(inputFile), 'utf8'),
+    ) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('--input must contain a JSON object.');
+    }
+    const input = value as ThetaWorkflowInput;
+    return {
+      ...input,
+      filePath: path.resolve(process.cwd(), input.filePath),
+    };
+  }
+  return {
+    filePath: path.resolve(process.cwd(), requiredFlag(parsed, 'file')),
+    ...(stringFlag(parsed, 'dataset-id')
+      ? { datasetId: stringFlag(parsed, 'dataset-id') }
+      : {}),
+    ...(stringFlag(parsed, 'goal')
+      ? { researchGoal: stringFlag(parsed, 'goal') }
+      : {}),
+    ...(integerFlag(parsed, 'sample-size')
+      ? { sampleSize: integerFlag(parsed, 'sample-size') }
+      : {}),
+  };
+};
+
+const parseWorkflowArguments = (args: string[]): ParsedWorkflowArguments => {
+  const flags = new Map<string, string | boolean>();
+  let command: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (!value.startsWith('--')) {
+      if (command) throw new Error(`Unexpected workflow argument: ${value}`);
+      command = value;
+      continue;
+    }
+    const key = value.slice(2);
+    const next = args[index + 1];
+    if (next !== undefined && !next.startsWith('-')) {
+      flags.set(key, next);
+      index += 1;
+    } else {
+      flags.set(key, true);
+    }
+  }
+  return { command, flags };
+};
+
+const write = (
+  value: unknown,
+  json: boolean,
+  output: WorkflowCliOutput,
+): void => {
+  if (json) {
+    output.write(JSON.stringify(value));
+    return;
+  }
+  const record =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  if (record?.runId) {
+    output.write(
+      [
+        `Run: ${String(record.runId)}`,
+        `Status: ${String(record.status ?? record.disposition ?? 'unknown')}`,
+        `State: ${String(record.currentState ?? 'n/a')}`,
+        `Pending approval: ${String(record.pendingActionRef ?? 'none')}`,
+        `Runtime DB: ${String(record.runtimeDb ?? 'default')}`,
+      ].join('\n'),
+    );
+    return;
+  }
+  output.write(JSON.stringify(value, null, 2));
+};
+
+const flag = (parsed: ParsedWorkflowArguments, name: string): boolean =>
+  parsed.flags.get(name) === true;
+
+const stringFlag = (
+  parsed: ParsedWorkflowArguments,
+  name: string,
+): string | undefined => {
+  const value = parsed.flags.get(name);
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+};
+
+const requiredFlag = (
+  parsed: ParsedWorkflowArguments,
+  name: string,
+): string => {
+  const value = stringFlag(parsed, name);
+  if (!value) throw new Error(`Missing required option --${name}.`);
+  return value;
+};
+
+const integerFlag = (
+  parsed: ParsedWorkflowArguments,
+  name: string,
+): number | undefined => {
+  const value = stringFlag(parsed, name);
+  if (!value) return undefined;
+  const parsedValue = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsedValue) || parsedValue < 1) {
+    throw new Error(`Option --${name} must be a positive integer.`);
+  }
+  return parsedValue;
+};

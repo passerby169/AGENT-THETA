@@ -28,6 +28,7 @@ import type { ThetaPlanCreateInput } from './tools/plan-create-tool.js';
 import type { ThetaPlanValidateInput } from './tools/plan-validate-tool.js';
 import type { ThetaTrainingCancelInput } from './tools/training-cancel-tool.js';
 import type { ThetaTrainingStartInput } from './tools/training-start-tool.js';
+import { runThetaWorkflowCliCommand } from './theta-workflow-cli.js';
 
 interface ParsedArguments {
   positionals: string[];
@@ -83,6 +84,13 @@ Commands:
 
   training cancel --run-id <id> --reason <text> [--approve]
       Request cooperative cancellation only when --approve is explicit.
+
+  workflow compile
+  workflow run --file <dataset> [--approve-plans] [--approve-training]
+  workflow resume --run-id <id> [--approve | --reject]
+  workflow trace --run-id <id>
+  workflow replay --run-id <id>
+      Compile and operate the durable event-first THETA training workflow.
 
   demo [--approve] [--approve-plan]
       Run a local end-to-end showcase. Without --approve, the write stops at
@@ -763,6 +771,9 @@ export const runCli = async (
     if (command === 'training' && subcommand === 'cancel') {
       await trainingCancelCommand(parsed, output);
       return 0;
+    }
+    if (command === 'workflow' && subcommand !== undefined) {
+      return runThetaWorkflowCliCommand(args.slice(1), output);
     }
     if (command === 'demo' && subcommand === undefined) {
       await demoCommand(parsed, output);

@@ -1,0 +1,410 @@
+import type { SpecRef } from '@hypha/core';
+import {
+  compileDomainPackToHarnessedSystem,
+  resolveWorkflowToolExecutionScope,
+  validateDomainPackSpec,
+  type DomainCompilationResult,
+  type DomainPackSpec,
+  type WorkflowStateSpec,
+} from '@hypha/domain';
+import type { ToolExecutionScope } from '@hypha/tools';
+import { thetaHyphaToolSpecs } from './tools/hypha-registry.js';
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tools/tool-ids.js';
+
+export const THETA_DOMAIN_PACK_ID = 'domain.theta.training';
+export const THETA_WORKFLOW_ID = 'workflow.theta.training';
+export const THETA_AGENT_REF: SpecRef = {
+  id: 'agent.theta.cli',
+  version: '1.0.0',
+};
+
+export const THETA_WORKFLOW_STATES = {
+  intake: 'Intake',
+  inspectDataset: 'InspectDataset',
+  recommendModel: 'RecommendModel',
+  validatePlan: 'ValidatePlan',
+  awaitPlanCreationApproval: 'AwaitPlanCreationApproval',
+  createPlan: 'CreatePlan',
+  awaitPlanApproval: 'AwaitPlanApproval',
+  approvePlan: 'ApprovePlan',
+  dryRun: 'DryRun',
+  awaitTrainingStartApproval: 'AwaitTrainingStartApproval',
+  startTraining: 'StartTraining',
+  monitorTraining: 'MonitorTraining',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+} as const;
+
+export const THETA_APPROVAL_KEYS = {
+  planCreate: 'theta.plan.create',
+  planApprove: 'theta.plan.approve',
+  trainingStart: 'theta.training.start',
+} as const;
+
+const toolRef = (id: string): SpecRef => ({ id, version: '1.0.0' });
+
+const state = (
+  id: string,
+  goal: string,
+  options: Partial<WorkflowStateSpec> = {},
+): WorkflowStateSpec => ({
+  id,
+  goal,
+  ...options,
+});
+
+const readonlyPolicy = {
+  id: 'policy.theta.readonly',
+  version: '1.0.0',
+  defaultEffect: 'deny' as const,
+  rules: [
+    {
+      id: 'policy.theta.readonly.allow',
+      version: '1.0.0',
+      effect: 'allow' as const,
+      sideEffectLevels: ['none', 'read'] as const,
+    },
+  ],
+};
+
+const stateWritePolicy = {
+  id: 'policy.theta.state-write',
+  version: '1.0.0',
+  defaultEffect: 'deny' as const,
+  rules: [
+    {
+      id: 'policy.theta.state-write.allow',
+      version: '1.0.0',
+      effect: 'allow' as const,
+      sideEffectLevels: ['write'] as const,
+    },
+  ],
+};
+
+const trainingControlPolicy = {
+  id: 'policy.theta.training-control',
+  version: '1.0.0',
+  defaultEffect: 'deny' as const,
+  rules: [
+    {
+      id: 'policy.theta.training-control.allow',
+      version: '1.0.0',
+      effect: 'allow' as const,
+      sideEffectLevels: ['external_effect'] as const,
+    },
+  ],
+};
+
+const workflowStates: WorkflowStateSpec[] = [
+  state(
+    THETA_WORKFLOW_STATES.intake,
+    'Validate the requested local training workflow.',
+  ),
+  state(
+    THETA_WORKFLOW_STATES.inspectDataset,
+    'Inspect the dataset without persisting raw rows.',
+    {
+      allowedTools: [
+        THETA_TOOL_IDS.datasetInspect,
+        THETA_TOOL_IDS.datasetDetectColumns,
+      ],
+      allowedToolRefs: [
+        toolRef(THETA_TOOL_IDS.datasetInspect),
+        toolRef(THETA_TOOL_IDS.datasetDetectColumns),
+      ],
+      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.recommendModel,
+    'Recommend a model from the sanitized profile.',
+    {
+      allowedTools: [
+        THETA_TOOL_IDS.modelCatalog,
+        THETA_TOOL_IDS.modelRecommend,
+      ],
+      allowedToolRefs: [
+        toolRef(THETA_TOOL_IDS.modelCatalog),
+        toolRef(THETA_TOOL_IDS.modelRecommend),
+      ],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.modelRead,
+        THETA_PERMISSION_SCOPES.datasetRead,
+      ],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.validatePlan,
+    'Validate the candidate plan deterministically.',
+    {
+      allowedTools: [THETA_TOOL_IDS.planValidate],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planValidate)],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.planRead,
+        THETA_PERMISSION_SCOPES.modelRead,
+      ],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
+    'Wait for explicit approval before writing the canonical plan.',
+  ),
+  state(
+    THETA_WORKFLOW_STATES.createPlan,
+    'Create the approved canonical training plan.',
+    {
+      allowedTools: [THETA_TOOL_IDS.planCreate],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.planWrite],
+      humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
+      policyRefs: [stateWritePolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitPlanApproval,
+    'Wait for explicit business approval of the persisted plan.',
+  ),
+  state(
+    THETA_WORKFLOW_STATES.approvePlan,
+    'Approve the plan for downstream execution.',
+    {
+      allowedTools: [THETA_TOOL_IDS.planApprove],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planApprove)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.planApprove],
+      humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
+      policyRefs: [stateWritePolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.dryRun,
+    'Derive commands and expected artifacts without execution.',
+    {
+      allowedTools: [THETA_TOOL_IDS.trainingDryRun],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingDryRun)],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.planRead,
+        THETA_PERMISSION_SCOPES.trainingRead,
+      ],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
+    'Wait for explicit approval before starting the external training process.',
+  ),
+  state(
+    THETA_WORKFLOW_STATES.startTraining,
+    'Start training through the governed Bridge.',
+    {
+      allowedTools: [THETA_TOOL_IDS.trainingStart],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.trainingWrite],
+      humanApprovalPolicyRef: toolRef(trainingControlPolicy.id),
+      policyRefs: [trainingControlPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.monitorTraining,
+    'Read training status until a terminal result.',
+    {
+      allowedTools: [
+        THETA_TOOL_IDS.trainingStatus,
+        THETA_TOOL_IDS.trainingCancel,
+      ],
+      allowedToolRefs: [
+        toolRef(THETA_TOOL_IDS.trainingStatus),
+        toolRef(THETA_TOOL_IDS.trainingCancel),
+      ],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.trainingRead,
+        THETA_PERMISSION_SCOPES.trainingWrite,
+      ],
+      policyRefs: [readonlyPolicy.id, trainingControlPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.completed,
+    'Return the verified training result.',
+  ),
+  state(THETA_WORKFLOW_STATES.failed, 'Record a normalized failure and stop.'),
+  state(THETA_WORKFLOW_STATES.cancelled, 'Record cancellation and stop.'),
+];
+
+const forwardTransitions = [
+  [THETA_WORKFLOW_STATES.intake, THETA_WORKFLOW_STATES.inspectDataset],
+  [THETA_WORKFLOW_STATES.inspectDataset, THETA_WORKFLOW_STATES.recommendModel],
+  [THETA_WORKFLOW_STATES.recommendModel, THETA_WORKFLOW_STATES.validatePlan],
+  [
+    THETA_WORKFLOW_STATES.validatePlan,
+    THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
+    THETA_WORKFLOW_STATES.createPlan,
+  ],
+  [THETA_WORKFLOW_STATES.createPlan, THETA_WORKFLOW_STATES.awaitPlanApproval],
+  [THETA_WORKFLOW_STATES.awaitPlanApproval, THETA_WORKFLOW_STATES.approvePlan],
+  [THETA_WORKFLOW_STATES.approvePlan, THETA_WORKFLOW_STATES.dryRun],
+  [
+    THETA_WORKFLOW_STATES.dryRun,
+    THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
+    THETA_WORKFLOW_STATES.startTraining,
+  ],
+  [THETA_WORKFLOW_STATES.startTraining, THETA_WORKFLOW_STATES.monitorTraining],
+  [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.completed],
+  [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.cancelled],
+] as const;
+
+const failureTransitions = workflowStates
+  .map((item) => item.id)
+  .filter(
+    (id) =>
+      ![
+        THETA_WORKFLOW_STATES.completed,
+        THETA_WORKFLOW_STATES.failed,
+        THETA_WORKFLOW_STATES.cancelled,
+      ].includes(id as never),
+  )
+  .map((from) => ({ from, to: THETA_WORKFLOW_STATES.failed }));
+
+export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
+  id: THETA_DOMAIN_PACK_ID,
+  version: '1.0.0',
+  name: 'THETA Local Training Domain',
+  description:
+    'A governed local dataset-to-training workflow for the THETA CLI Agent.',
+  taskSchemas: [
+    {
+      id: 'task.theta.training',
+      version: '1.0.0',
+      taskType: 'theta.training',
+      inputSchema: {
+        type: 'object',
+        required: ['filePath'],
+        properties: {
+          filePath: { type: 'string', minLength: 1 },
+          datasetId: { type: 'string' },
+          researchGoal: { type: 'string' },
+          constraints: { type: 'object', additionalProperties: true },
+          plan: { type: 'object', additionalProperties: true },
+          sampleSize: { type: 'integer', minimum: 1, maximum: 1000 },
+        },
+        additionalProperties: false,
+      },
+      outputContractRef: 'output.theta.training',
+      defaultWorkflowRef: THETA_WORKFLOW_ID,
+      riskProfile: {
+        defaultRiskLevel: 'high',
+        escalationPolicyRef: trainingControlPolicy.id,
+      },
+    },
+  ],
+  outputContracts: [
+    {
+      id: 'output.theta.training',
+      version: '1.0.0',
+      schema: {
+        type: 'object',
+        required: ['runId', 'status', 'modelId', 'planId', 'trainingRunId'],
+        properties: {
+          runId: { type: 'string' },
+          status: { type: 'string' },
+          modelId: { type: 'string' },
+          planId: { type: 'string' },
+          trainingRunId: { type: 'string' },
+          artifacts: {
+            type: 'array',
+            items: { type: 'object', additionalProperties: true },
+          },
+        },
+        additionalProperties: true,
+      },
+    },
+  ],
+  sessionProfiles: [
+    {
+      id: 'session.theta.local',
+      version: '1.0.0',
+      defaultMetadata: { runtimeMode: 'single-user', surface: 'cli' },
+      defaultPolicyRefs: [
+        readonlyPolicy.id,
+        stateWritePolicy.id,
+        trainingControlPolicy.id,
+      ],
+    },
+  ],
+  workflows: [
+    {
+      id: THETA_WORKFLOW_ID,
+      version: '1.0.0',
+      initialState: THETA_WORKFLOW_STATES.intake,
+      terminalStates: [
+        THETA_WORKFLOW_STATES.completed,
+        THETA_WORKFLOW_STATES.failed,
+        THETA_WORKFLOW_STATES.cancelled,
+      ],
+      states: workflowStates,
+      transitions: [
+        ...forwardTransitions.map(([from, to]) => ({ from, to })),
+        ...failureTransitions,
+      ],
+    },
+  ],
+  defaultWorkflow: THETA_WORKFLOW_ID,
+  tools: [...thetaHyphaToolSpecs],
+  policies: [readonlyPolicy, stateWritePolicy, trainingControlPolicy],
+  evaluationProfiles: [
+    {
+      id: 'eval.theta.output-contract',
+      version: '1.0.0',
+      type: 'output_contract',
+      deterministic: true,
+    },
+  ],
+  regressionCases: [
+    {
+      id: 'regression.theta.training',
+      version: '1.0.0',
+      fixtureRefs: [{ id: 'fixture.theta.training', version: '1.0.0' }],
+      requiredChecks: [
+        'event_types',
+        'state_path',
+        'tool_calls',
+        'policy_decisions',
+        'output_contract',
+      ],
+    },
+  ],
+  deploymentProfile: {
+    id: 'deployment.theta.local',
+    version: '1.0.0',
+    mode: 'local',
+    runtimeMode: 'single-user',
+  },
+});
+
+export const compileThetaTrainingDomain = (): DomainCompilationResult =>
+  compileDomainPackToHarnessedSystem(thetaTrainingDomainPack, {
+    agentRef: THETA_AGENT_REF,
+    taskSchemaId: 'task.theta.training',
+    workflowId: THETA_WORKFLOW_ID,
+    sessionProfileId: 'session.theta.local',
+    evaluationRefs: ['eval.theta.output-contract'],
+    metadata: { owner: 'theta-cli-agent' },
+  });
+
+export const resolveThetaStateToolScope = (
+  compilation: DomainCompilationResult,
+  stateId: string,
+): ToolExecutionScope =>
+  resolveWorkflowToolExecutionScope(
+    compilation.bindings.workflowStates,
+    stateId,
+  );

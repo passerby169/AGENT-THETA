@@ -147,6 +147,19 @@ const cases: CommandCase[] = [
       }
     },
   },
+  {
+    args: ['workflow', 'compile'],
+    verify: (output) => {
+      const compilation = asRecord(output);
+      if (
+        typeof compilation.processHash !== 'string' ||
+        !Array.isArray(compilation.toolRefs) ||
+        compilation.toolRefs.length === 0
+      ) {
+        throw new Error('workflow compile command returned an invalid contract summary.');
+      }
+    },
+  },
 ];
 
 for (const commandCase of cases) {

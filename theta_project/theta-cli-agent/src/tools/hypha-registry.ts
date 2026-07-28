@@ -1,4 +1,4 @@
-import { ToolRegistry } from '@hypha/tools';
+import { ToolRegistry, type ToolSpec } from '@hypha/tools';
 import {
   thetaDatasetDetectColumnsHandler,
   thetaDatasetDetectColumnsToolSpec,
@@ -21,6 +21,20 @@ export const registerThetaModelCatalogTool = (registry: ToolRegistry): ToolRegis
   registry.register(thetaModelCatalogToolSpec, thetaModelCatalogHandler, { replace: true });
   return registry;
 };
+
+export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
+  thetaDatasetInspectToolSpec,
+  thetaDatasetDetectColumnsToolSpec,
+  thetaModelCatalogToolSpec,
+  thetaModelRecommendToolSpec,
+  thetaPlanValidateToolSpec,
+  thetaPlanCreateToolSpec,
+  thetaPlanApproveToolSpec,
+  thetaTrainingDryRunToolSpec,
+  thetaTrainingStartToolSpec,
+  thetaTrainingStatusToolSpec,
+  thetaTrainingCancelToolSpec,
+]);
 
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   const registry = new ToolRegistry();

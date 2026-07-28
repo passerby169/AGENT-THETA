@@ -1,4 +1,4 @@
-import { InMemoryEventStore, type PolicyEngine } from '@hypha/core';
+import { InMemoryEventStore, type PolicyEngine, type TraceRecorder } from '@hypha/core';
 import { GovernedToolRunner, type ToolCallContext, type ToolCallResult } from '@hypha/tools';
 import { createThetaHyphaToolRegistry } from './hypha-registry.js';
 import type { ThetaDatasetDetectColumnsOutput } from './dataset-detect-columns-tool.js';
@@ -44,7 +44,7 @@ const thetaTrainingControlToolIds = new Set<string>([
   THETA_TOOL_IDS.trainingCancel,
 ]);
 
-const thetaCliPolicyEngine: PolicyEngine = {
+export const thetaCliPolicyEngine: PolicyEngine = {
   async evaluate(context) {
     if (
       context.sideEffectLevel === 'external_effect' &&
@@ -82,10 +82,14 @@ const thetaCliPolicyEngine: PolicyEngine = {
   },
 };
 
+export const createThetaGovernedToolRunner = (
+  trace: TraceRecorder
+): GovernedToolRunner =>
+  new GovernedToolRunner(createThetaHyphaToolRegistry(), trace, thetaCliPolicyEngine);
+
 export const createThetaHyphaRuntime = (): ThetaHyphaRuntime => {
-  const registry = createThetaHyphaToolRegistry();
   const trace = new InMemoryEventStore();
-  const runner = new GovernedToolRunner(registry, trace, thetaCliPolicyEngine);
+  const runner = createThetaGovernedToolRunner(trace);
   return { runner, trace };
 };
 
