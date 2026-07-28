@@ -2,6 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FrameworkEvent } from "@hypha/core";
+import {
+  createDryRunReceipt,
+  createTrainingPlanRecord,
+} from "./planning/engine.js";
 import { THETA_APPROVAL_KEYS, THETA_WORKFLOW_STATES } from "./theta-domain.js";
 import {
   ThetaWorkflowService,
@@ -111,7 +115,13 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
             deterministic: true,
             recommendationVersion: "1.0.0",
             catalogSource: "fake-model-catalog",
-            dataProfileSummary: {},
+            dataProfileSummary: {
+              rowCount: 120,
+              textColumnCount: 1,
+              timeColumnCount: 1,
+              metadataColumnCount: 0,
+              averageTextLength: 42,
+            },
             recommendations: [],
             skipped: [
               {
@@ -135,7 +145,13 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
           deterministic: true,
           recommendationVersion: "1.0.0",
           catalogSource: "fake-model-catalog",
-          dataProfileSummary: {},
+          dataProfileSummary: {
+            rowCount: 120,
+            textColumnCount: 1,
+            timeColumnCount: 1,
+            metadataColumnCount: 0,
+            averageTextLength: 42,
+          },
           recommendations: [
             {
               rank: 1,
@@ -190,39 +206,30 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
           catalogSource: "fake-model-catalog",
         };
       case THETA_TOOL_IDS.planCreate:
-        return {
-          planId: "plan-smoke-001",
-          planHash: "plan-hash-smoke-001",
-          valid: true,
-          approvalRequired: true,
+        return createTrainingPlanRecord({
+          ...(request.input as unknown as Parameters<
+            typeof createTrainingPlanRecord
+          >[0]),
           createdAt: "2026-07-28T00:00:00.000Z",
-          normalizedPlan: request.input.plan,
-          validation: { valid: true },
-          stateDb: "not-persisted-in-runtime-events",
+        });
+      case THETA_TOOL_IDS.trainingDryRun: {
+        const plan = request.input.plan as {
+          planId: string;
+          planHash: string;
         };
-      case THETA_TOOL_IDS.planApprove:
-        return {
-          approvalId: "approval-smoke-001",
-          planId: request.input.planId,
-          planHash: request.input.planHash,
-          approvedBy: request.input.approvedBy,
-          approvedAt: "2026-07-28T00:00:01.000Z",
-          stateDb: "not-persisted-in-runtime-events",
-        };
-      case THETA_TOOL_IDS.trainingDryRun:
-        return {
-          planId: request.input.planId,
-          planHash: request.input.planHash,
-          valid: true,
-          approved: true,
-          approvals: [
+        const planReview = request.input.planReview as { approvalId: string };
+        return createDryRunReceipt({
+          planId: plan.planId,
+          planHash: plan.planHash,
+          planReviewApprovalId: planReview.approvalId,
+          passed: true,
+          checks: [
             {
-              approvalId: "approval-smoke-001",
-              approvedBy: "owner.smoke",
-              approvedAt: "2026-07-28T00:00:01.000Z",
+              code: "FAKE_PREFLIGHT",
+              status: "pass",
+              detail: "Deterministic fake preflight passed.",
             },
           ],
-          validation: { valid: true },
           commands: [
             {
               step: "train",
@@ -239,13 +246,22 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
             },
           ],
           notes: [],
-        };
+          checkedAt: "2026-07-28T00:00:02.000Z",
+        });
+      }
       case THETA_TOOL_IDS.trainingStart:
         return {
           trainingRunId: "training-smoke-001",
-          planId: request.input.planId,
-          planHash: request.input.planHash,
-          approvalId: request.input.approvalId,
+          planId: (request.input.plan as { planId: string }).planId,
+          planHash: (request.input.plan as { planHash: string }).planHash,
+          planReviewApprovalId: (
+            request.input.planReview as { approvalId: string }
+          ).approvalId,
+          trainingReviewApprovalId: (
+            request.input.trainingReview as { approvalId: string }
+          ).approvalId,
+          dryRunHash: (request.input.dryRun as { dryRunHash: string })
+            .dryRunHash,
           status: "running",
           progress: 0,
           processStarted: true,
@@ -358,9 +374,8 @@ try {
     runtimeDb,
     columnConfirmation,
     approvalKeys: [
-      THETA_APPROVAL_KEYS.planCreate,
-      THETA_APPROVAL_KEYS.planApprove,
-      THETA_APPROVAL_KEYS.trainingStart,
+      THETA_APPROVAL_KEYS.planReview,
+      THETA_APPROVAL_KEYS.trainingReview,
     ],
     approvedBy: "owner.smoke",
   });
@@ -382,9 +397,6 @@ try {
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
     THETA_WORKFLOW_STATES.createPlan,
-    THETA_WORKFLOW_STATES.awaitPlanApproval,
-    THETA_WORKFLOW_STATES.awaitPlanApproval,
-    THETA_WORKFLOW_STATES.approvePlan,
     THETA_WORKFLOW_STATES.dryRun,
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
@@ -400,10 +412,31 @@ try {
   }
 
   const evidence = await service.evidence(completed.runId, runtimeDb);
-  if (
-    JSON.stringify(evidence.orchestrationEvents).includes(RAW_SAMPLE_SENTINEL)
-  ) {
+  const canonicalEventJson = JSON.stringify(evidence.orchestrationEvents);
+  const toolEventJson = JSON.stringify(evidence.toolEvents);
+  if (canonicalEventJson.includes(RAW_SAMPLE_SENTINEL)) {
     throw new Error("Raw dataset sample leaked into canonical runtime events.");
+  }
+  const approvalIds = new Set(
+    canonicalEventJson.match(/approval_[a-f0-9]{20}/g) ?? [],
+  );
+  if (approvalIds.size < 2) {
+    throw new Error(
+      "Canonical events did not preserve two distinct approval receipts.",
+    );
+  }
+  if (
+    !canonicalEventJson.includes('"planHash"') ||
+    !canonicalEventJson.includes('"dryRunHash"')
+  ) {
+    throw new Error(
+      "Canonical events did not preserve the plan and dry-run bindings.",
+    );
+  }
+  if (toolEventJson.includes(THETA_TOOL_IDS.planApprove)) {
+    throw new Error(
+      "Legacy plan.approve entered the canonical dual-review workflow.",
+    );
   }
   const replay = await service.replay(completed.runId, runtimeDb);
   const replayAgain = await service.replay(completed.runId, runtimeDb);
@@ -422,7 +455,7 @@ try {
     columnConfirmation,
     approvedBy: "owner.smoke",
   });
-  if (second.pendingActionRef !== THETA_APPROVAL_KEYS.planCreate) {
+  if (second.pendingActionRef !== THETA_APPROVAL_KEYS.planReview) {
     throw new Error(
       "Recovered workflow did not stop at the plan creation approval gate.",
     );
@@ -433,9 +466,9 @@ try {
     approve: true,
     approvedBy: "owner.smoke",
   });
-  if (third.pendingActionRef !== THETA_APPROVAL_KEYS.planApprove) {
+  if (third.pendingActionRef !== THETA_APPROVAL_KEYS.trainingReview) {
     throw new Error(
-      "Recovered workflow did not stop at the plan approval gate.",
+      "Recovered workflow did not stop at the training approval gate.",
     );
   }
   const fourth = await service.resume({
@@ -444,18 +477,7 @@ try {
     approve: true,
     approvedBy: "owner.smoke",
   });
-  if (fourth.pendingActionRef !== THETA_APPROVAL_KEYS.trainingStart) {
-    throw new Error(
-      "Recovered workflow did not stop at the training approval gate.",
-    );
-  }
-  const fifth = await service.resume({
-    runId: recoveryRunId,
-    runtimeDb,
-    approve: true,
-    approvedBy: "owner.smoke",
-  });
-  if (fifth.disposition !== "completed") {
+  if (fourth.disposition !== "completed") {
     throw new Error("Recovered workflow did not complete after all approvals.");
   }
 
@@ -546,9 +568,8 @@ try {
     runtimeDb,
     columnConfirmation,
     approvalKeys: [
-      THETA_APPROVAL_KEYS.planCreate,
-      THETA_APPROVAL_KEYS.planApprove,
-      THETA_APPROVAL_KEYS.trainingStart,
+      THETA_APPROVAL_KEYS.planReview,
+      THETA_APPROVAL_KEYS.trainingReview,
     ],
     approvedBy: "owner.smoke",
   });
@@ -602,9 +623,8 @@ try {
     runtimeDb,
     columnConfirmation,
     approvalKeys: [
-      THETA_APPROVAL_KEYS.planCreate,
-      THETA_APPROVAL_KEYS.planApprove,
-      THETA_APPROVAL_KEYS.trainingStart,
+      THETA_APPROVAL_KEYS.planReview,
+      THETA_APPROVAL_KEYS.trainingReview,
     ],
     approvedBy: "owner.smoke",
   });
@@ -627,9 +647,10 @@ try {
       statePath: completed.statePath,
       canonicalEventCount: evidence.orchestrationEvents.length,
       toolEventCount: evidence.toolEvents.length,
+      approvalReceiptCount: approvalIds.size,
       replayDigest: replay.digest,
       recoveryRun: recoveryRunId,
-      recoveryDisposition: fifth.disposition,
+      recoveryDisposition: fourth.disposition,
       clarificationDisposition: clarified.disposition,
       columnHashDisposition: columnHashChanged.disposition,
       trainingHashDisposition: trainingHashChanged.disposition,

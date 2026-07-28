@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1012,112 +1014,93 @@ def plan_approve(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def training_dry_run(payload: dict[str, Any]) -> dict[str, Any]:
-    plan_id = str(payload.get("planId") or "").strip()
-    plan_hash = str(payload.get("planHash") or "").strip()
-    if not plan_id:
-        raise ValueError("planId is required")
-    if not plan_hash:
-        raise ValueError("planHash is required")
+    plan_record = require_mapping(payload.get("plan"), "plan")
+    plan_review = require_mapping(payload.get("planReview"), "planReview")
+    dataset_path = resolve_dataset_path({"filePath": payload.get("datasetPath")})
+    plan_id = required_mapping_text(plan_record, "planId", "plan")
+    plan_hash = required_mapping_text(plan_record, "planHash", "plan")
+    if plan_review.get("approvalType") != "human_plan_review":
+        raise ValueError("planReview must be a HumanPlanReview receipt")
+    if plan_review.get("planId") != plan_id or plan_review.get("planHash") != plan_hash:
+        raise ValueError("planReview does not bind the canonical plan")
 
-    with connect_state_db() as conn:
-        init_state_db(conn)
-        row = conn.execute(
-            "SELECT plan_hash, plan_json, valid, validation_json FROM training_plans WHERE plan_id = ?",
-            (plan_id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown planId: {plan_id}")
-        if row["plan_hash"] != plan_hash:
-            raise ValueError("planHash does not match stored plan")
-        approvals = conn.execute(
-            "SELECT approval_id, approved_by, created_at FROM plan_approvals WHERE plan_id = ? AND plan_hash = ?",
-            (plan_id, plan_hash),
-        ).fetchall()
-
-    plan = json.loads(row["plan_json"])
-    validation = json.loads(row["validation_json"])
+    plan = legacy_plan_from_record(plan_record, dataset_path)
+    checks = training_preflight_checks(plan_record, plan, dataset_path)
     commands = build_training_commands(plan)
-
     return {
-        "planId": plan_id,
-        "planHash": plan_hash,
-        "valid": bool(row["valid"]),
-        "approved": bool(approvals),
-        "approvals": [
-            {
-                "approvalId": approval["approval_id"],
-                "approvedBy": approval["approved_by"],
-                "approvedAt": approval["created_at"],
-            }
-            for approval in approvals
-        ],
-        "validation": validation,
+        "passed": all(check["status"] != "fail" for check in checks),
+        "checks": checks,
         "commands": commands,
         "expectedArtifacts": expected_training_artifacts(plan),
         "notes": [
             "Dry run does not start Python training.",
-            "Training execution must use planId + planHash and verify approval again.",
+            "The returned command and checks are bound by TypeScript to planHash and HumanPlanReview.",
         ],
+        "checkedAt": utc_now_iso(),
     }
 
 
 def training_start(payload: dict[str, Any]) -> dict[str, Any]:
-    plan_id = str(payload.get("planId") or "").strip()
-    plan_hash = str(payload.get("planHash") or "").strip()
-    approval_id = str(payload.get("approvalId") or "").strip()
+    plan_record = require_mapping(payload.get("plan"), "plan")
+    plan_review = require_mapping(payload.get("planReview"), "planReview")
+    dry_run = require_mapping(payload.get("dryRun"), "dryRun")
+    training_review = require_mapping(payload.get("trainingReview"), "trainingReview")
+    plan_id = required_mapping_text(plan_record, "planId", "plan")
+    plan_hash = required_mapping_text(plan_record, "planHash", "plan")
+    plan_review_id = required_mapping_text(plan_review, "approvalId", "planReview")
+    training_review_id = required_mapping_text(training_review, "approvalId", "trainingReview")
+    dry_run_hash = required_mapping_text(dry_run, "dryRunHash", "dryRun")
     idempotency_key = str(payload.get("idempotencyKey") or "").strip()
 
-    if not plan_id:
-        raise ValueError("planId is required")
-    if not plan_hash:
-        raise ValueError("planHash is required")
-    if not approval_id:
-        raise ValueError("approvalId is required")
     if not idempotency_key:
         raise ValueError("idempotencyKey is required")
+    if plan_review_id == training_review_id:
+        raise ValueError("planReview and trainingReview approval IDs must be different")
+    if plan_review.get("approvalType") != "human_plan_review":
+        raise ValueError("planReview must be a HumanPlanReview receipt")
+    if training_review.get("approvalType") != "human_training_review":
+        raise ValueError("trainingReview must be a HumanTrainingReview receipt")
+    for receipt_name, receipt in (
+        ("planReview", plan_review),
+        ("dryRun", dry_run),
+        ("trainingReview", training_review),
+    ):
+        if receipt.get("planId") != plan_id or receipt.get("planHash") != plan_hash:
+            raise ValueError(f"{receipt_name} does not bind the canonical plan")
+    if dry_run.get("planReviewApprovalId") != plan_review_id:
+        raise ValueError("dryRun does not bind planReview")
+    if dry_run.get("passed") is not True:
+        raise ValueError("dryRun must pass before training starts")
+    if training_review.get("dryRunHash") != dry_run_hash:
+        raise ValueError("trainingReview does not bind the current dryRun")
+    commands = dry_run.get("commands")
+    expected_artifacts = dry_run.get("expectedArtifacts")
+    if not isinstance(commands, list) or not commands:
+        raise ValueError("dryRun.commands must not be empty")
+    if not isinstance(expected_artifacts, list):
+        raise ValueError("dryRun.expectedArtifacts must be an array")
 
     with connect_state_db() as conn:
         init_state_db(conn)
-        plan_row = conn.execute(
-            "SELECT plan_hash, plan_json, valid, validation_json FROM training_plans WHERE plan_id = ?",
-            (plan_id,),
-        ).fetchone()
-        if plan_row is None:
-            raise ValueError(f"Unknown planId: {plan_id}")
-        if plan_row["plan_hash"] != plan_hash:
-            raise ValueError("planHash does not match stored plan")
-        if not bool(plan_row["valid"]):
-            raise ValueError("Cannot start an invalid plan")
-
-        approval_row = conn.execute(
-            """
-            SELECT approval_id, approved_by, created_at
-            FROM plan_approvals
-            WHERE approval_id = ? AND plan_id = ? AND plan_hash = ?
-            """,
-            (approval_id, plan_id, plan_hash),
-        ).fetchone()
-        if approval_row is None:
-            raise ValueError("approvalId does not approve this plan hash")
-
         run_hash = sha256_json(
             {
                 "planId": plan_id,
                 "planHash": plan_hash,
-                "approvalId": approval_id,
+                "planReviewApprovalId": plan_review_id,
+                "trainingReviewApprovalId": training_review_id,
+                "dryRunHash": dry_run_hash,
                 "idempotencyKey": idempotency_key,
             }
         )
         training_run_id = f"run_{run_hash[:12]}"
-        plan = json.loads(plan_row["plan_json"])
-        commands = build_training_commands(plan)
         now = utc_now_iso()
         run_dir = RUNS_DIR / training_run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "training.log"
         existing_row = conn.execute(
             """
-            SELECT training_run_id, status, progress, pid, current_step, log_path,
+            SELECT training_run_id, plan_id, plan_hash, approval_id,
+                   status, progress, pid, current_step, log_path,
                    command_json, artifact_json, error_message, created_at, updated_at
             FROM training_runs
             WHERE training_run_id = ?
@@ -1125,7 +1108,12 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
             (training_run_id,),
         ).fetchone()
         if existing_row is not None:
-            return training_run_response(existing_row, process_started=bool(existing_row["pid"]))
+            return training_run_response(
+                existing_row,
+                process_started=bool(existing_row["pid"]),
+                plan_review_approval_id=plan_review_id,
+                dry_run_hash=dry_run_hash,
+            )
 
         conn.execute(
             """
@@ -1139,12 +1127,12 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 training_run_id,
                 plan_id,
                 plan_hash,
-                approval_id,
+                training_review_id,
                 idempotency_key,
                 "queued",
                 0,
                 stable_json(commands),
-                stable_json(expected_training_artifacts(plan)),
+                stable_json(expected_artifacts),
                 "",
                 None,
                 "queued",
@@ -1173,7 +1161,9 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 "trainingRunId": training_run_id,
                 "planId": plan_id,
                 "planHash": plan_hash,
-                "approvalId": approval_id,
+                "planReviewApprovalId": plan_review_id,
+                "trainingReviewApprovalId": training_review_id,
+                "dryRunHash": dry_run_hash,
                 "processStarted": True,
                 "pid": runner_pid,
                 "logPath": str(log_path),
@@ -1184,7 +1174,9 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
         "trainingRunId": training_run_id,
         "planId": plan_id,
         "planHash": plan_hash,
-        "approvalId": approval_id,
+        "planReviewApprovalId": plan_review_id,
+        "trainingReviewApprovalId": training_review_id,
+        "dryRunHash": dry_run_hash,
         "status": "queued",
         "progress": 0,
         "processStarted": True,
@@ -1192,7 +1184,7 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
         "currentStep": "queued",
         "logPath": str(log_path),
         "commands": commands,
-        "expectedArtifacts": expected_training_artifacts(plan),
+        "expectedArtifacts": expected_artifacts,
         "message": "Approved training run queued. The local runner will execute it in the background.",
     }
 
@@ -2443,6 +2435,139 @@ def normalize_optional_string(value: Any) -> str:
     return text
 
 
+def require_mapping(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def required_mapping_text(value: dict[str, Any], key: str, label: str) -> str:
+    resolved = str(value.get(key) or "").strip()
+    if not resolved:
+        raise ValueError(f"{label}.{key} is required")
+    return resolved
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def legacy_plan_from_record(plan_record: dict[str, Any], dataset_path: Path) -> dict[str, Any]:
+    canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
+    model = require_mapping(canonical.get("model"), "plan.canonicalPlan.model")
+    columns = require_mapping(canonical.get("columns"), "plan.canonicalPlan.columns")
+    resources = require_mapping(canonical.get("resources"), "plan.canonicalPlan.resources")
+    parameters = require_mapping(model.get("parameters") or {}, "plan.canonicalPlan.model.parameters")
+    text_columns = columns.get("textColumns") or []
+    if not isinstance(text_columns, list) or not text_columns:
+        raise ValueError("plan.canonicalPlan.columns.textColumns must not be empty")
+    device = str(resources.get("device") or "unknown")
+    return {
+        "datasetId": required_mapping_text(canonical, "datasetId", "plan.canonicalPlan"),
+        "modelId": required_mapping_text(model, "modelId", "plan.canonicalPlan.model"),
+        "mode": required_mapping_text(model, "mode", "plan.canonicalPlan.model"),
+        "numTopics": model.get("numTopics"),
+        "textColumn": str(text_columns[0]),
+        "timeColumn": columns.get("timeColumn"),
+        "metadataColumns": columns.get("metadataColumns") or [],
+        "rawInput": str(dataset_path),
+        "gpu": 0 if device == "gpu" else -1,
+        **parameters,
+    }
+
+
+def training_preflight_checks(
+    plan_record: dict[str, Any],
+    plan: dict[str, Any],
+    dataset_path: Path,
+) -> list[dict[str, str]]:
+    canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
+    resources = require_mapping(canonical.get("resources"), "plan.canonicalPlan.resources")
+    model_id = str(plan.get("modelId") or "").lower()
+    expected_sha = required_mapping_text(canonical, "datasetSha256", "plan.canonicalPlan")
+    actual_sha = sha256_file(dataset_path)
+    catalog = model_catalog({})
+    runnable = {
+        str(item.get("id") or "").lower(): bool(item.get("runnable"))
+        for item in catalog.get("models", [])
+        if isinstance(item, dict)
+    }
+    model_scripts_ready = MODEL_CONFIG_PATH.is_file() and RUN_PIPELINE_PATH.is_file()
+    command_root = PROJECT_ROOT / "THETA" / "src" / "models"
+    command_root_writable = command_root.is_dir() and os.access(command_root, os.W_OK)
+    free_bytes = shutil.disk_usage(PROJECT_ROOT).free
+    gpu_requested = resources.get("device") == "gpu"
+    torch_available = importlib.util.find_spec("torch") is not None
+    gpu_available = False
+    if gpu_requested and torch_available:
+        try:
+            import torch
+
+            gpu_available = bool(torch.cuda.is_available())
+        except Exception:
+            gpu_available = False
+    return [
+        {
+            "code": "DATASET_EXISTS",
+            "status": "pass",
+            "detail": "Dataset exists and passed the configured path policy.",
+        },
+        {
+            "code": "DATASET_HASH_MATCH",
+            "status": "pass" if actual_sha == expected_sha else "fail",
+            "detail": "Dataset SHA-256 matches the canonical plan."
+            if actual_sha == expected_sha
+            else "Dataset SHA-256 changed after plan creation.",
+        },
+        {
+            "code": "PYTHON_RUNTIME",
+            "status": "pass" if Path(PYTHON_BIN).exists() else "fail",
+            "detail": "Configured Python runtime is available."
+            if Path(PYTHON_BIN).exists()
+            else "Configured Python runtime does not exist.",
+        },
+        {
+            "code": "MODEL_DEPENDENCIES",
+            "status": "pass" if model_scripts_ready and runnable.get(model_id, False) else "fail",
+            "detail": "Model is runnable and THETA model scripts are available."
+            if model_scripts_ready and runnable.get(model_id, False)
+            else "Model is unavailable or THETA model scripts are missing.",
+        },
+        {
+            "code": "COMMAND_WORKDIR_WRITABLE",
+            "status": "pass" if command_root_writable else "fail",
+            "detail": "Training working directory is writable."
+            if command_root_writable
+            else "Training working directory is not writable.",
+        },
+        {
+            "code": "DISK_SPACE",
+            "status": "pass" if free_bytes >= 1024 * 1024 * 1024 else "warn",
+            "detail": "At least 1 GiB of free disk space is available."
+            if free_bytes >= 1024 * 1024 * 1024
+            else "Less than 1 GiB of free disk space is available.",
+        },
+        {
+            "code": "GPU_AVAILABILITY",
+            "status": "pass" if not gpu_requested or gpu_available else "fail",
+            "detail": "GPU requirement is satisfied."
+            if not gpu_requested or gpu_available
+            else "The canonical plan requires a GPU, but CUDA is unavailable.",
+        },
+        {
+            "code": "NETWORK_POLICY",
+            "status": "warn" if resources.get("networkAllowed") else "pass",
+            "detail": "Network downloads are allowed and require operator awareness."
+            if resources.get("networkAllowed")
+            else "Network access is disabled by the canonical plan.",
+        },
+    ]
+
+
 def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     dataset_id = str(plan.get("datasetId"))
     model_id = str(plan.get("modelId")).lower()
@@ -2558,12 +2683,19 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def training_run_response(row: sqlite3.Row, process_started: bool) -> dict[str, Any]:
+def training_run_response(
+    row: sqlite3.Row,
+    process_started: bool,
+    plan_review_approval_id: str = "",
+    dry_run_hash: str = "",
+) -> dict[str, Any]:
     return {
         "trainingRunId": row["training_run_id"],
         "planId": row["plan_id"],
         "planHash": row["plan_hash"],
-        "approvalId": row["approval_id"],
+        "planReviewApprovalId": plan_review_approval_id,
+        "trainingReviewApprovalId": row["approval_id"],
+        "dryRunHash": dry_run_hash,
         "status": row["status"],
         "progress": row["progress"],
         "processStarted": process_started,

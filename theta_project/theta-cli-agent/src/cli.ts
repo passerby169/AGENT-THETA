@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createPlanningFixture } from "./planning/test-fixture.js";
 import {
   requestThetaPlanApprove,
   requestThetaPlanCreate,
@@ -27,6 +28,7 @@ import type { ThetaPlanApproveInput } from "./tools/plan-approve-tool.js";
 import type { ThetaPlanCreateInput } from "./tools/plan-create-tool.js";
 import type { ThetaPlanValidateInput } from "./tools/plan-validate-tool.js";
 import type { ThetaTrainingCancelInput } from "./tools/training-cancel-tool.js";
+import type { ThetaTrainingDryRunInput } from "./tools/training-dry-run-tool.js";
 import type { ThetaTrainingStartInput } from "./tools/training-start-tool.js";
 import { runThetaWorkflowCliCommand } from "./theta-workflow-cli.js";
 
@@ -67,17 +69,17 @@ Commands:
   plan validate --file <file>
       Validate a training plan without writing local state.
 
-  plan create --file <file> [--rationale <text>] [--approve]
-      Request plan creation. State is written only when --approve is explicit.
+  plan create --file <bundle> [--approve]
+      Create a canonical plan from the validated plan and binding snapshots.
 
   plan approve --plan-id <id> --plan-hash <hash> --approved-by <user> [--approve]
       Approve a stored plan. The operation also requires explicit --approve.
 
-  training dry-run --plan-id <id> --plan-hash <hash>
-      Show training commands and expected artifacts without starting training.
+  training dry-run --file <request>
+      Validate a plan + HumanPlanReview request without starting training.
 
-  training start --plan-id <id> --plan-hash <hash> --approval-id <id> [--approve]
-      Start a real background training process only when --approve is explicit.
+  training start --file <request> [--approve]
+      Start only with a plan, two approvals, and a successful dry-run receipt.
 
   training status --run-id <id> [--log-limit <number>]
       Read progress, logs, artifacts, and lifecycle events for a training run.
@@ -93,10 +95,9 @@ Commands:
   workflow replay --run-id <id>
       Compile and operate the durable event-first THETA training workflow.
 
-  demo [--approve] [--approve-plan]
+  demo [--approve]
       Run a local end-to-end showcase. Without --approve, the write stops at
-      the Hypha human-review gate. Add both flags for the complete approved
-      plan and training dry-run lifecycle.
+      the Hypha HumanPlanReview gate. Training is never started by this command.
 
 Global options:
   --json      Print machine-readable JSON.
@@ -111,8 +112,8 @@ Examples:
   npm run cli -- plan create --file fixtures/training-plan.json
   npm run cli -- plan create --file fixtures/training-plan.json --approve
   npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
-  npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
-  npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id>
+  npm run cli -- training dry-run --file <dry-run-request.json>
+  npm run cli -- training start --file <training-start-request.json>
   npm run cli -- training status --run-id <id>
   npm run cli -- training cancel --run-id <id> --reason "User requested cancellation"
   npm run cli -- demo
@@ -345,8 +346,7 @@ const readPlanInput = async (
 ): Promise<ThetaPlanCreateInput> => {
   const filename = requiredStringFlag(parsed, "file");
   const value = await readJsonObject(filename);
-  const input = "plan" in value ? value : { plan: value };
-  return input as unknown as ThetaPlanCreateInput;
+  return value as unknown as ThetaPlanCreateInput;
 };
 
 const validatePlanCommand = async (
@@ -355,10 +355,8 @@ const validatePlanCommand = async (
 ): Promise<void> => {
   const planInput = await readPlanInput(parsed);
   const input: ThetaPlanValidateInput = {
-    plan: planInput.plan,
-    ...(planInput.dataProfile === undefined
-      ? {}
-      : { dataProfile: planInput.dataProfile }),
+    plan: planInput.validatedPlan,
+    dataProfile: planInput.datasetProfile as Record<string, unknown>,
   };
   const result = await runThetaPlanValidate(input);
   const validation = requireCompleted(result, "Plan validation");
@@ -415,10 +413,6 @@ const createPlanCommand = async (
   output: CliOutput,
 ): Promise<void> => {
   const input = await readPlanInput(parsed);
-  const rationale = stringFlag(parsed, "rationale");
-  if (rationale) {
-    input.rationale = rationale;
-  }
   const invocationKey = planInvocationKey(input);
   const options = {
     invocationId: invocationKey,
@@ -451,7 +445,7 @@ const createPlanCommand = async (
       "Plan created after Hypha approval.",
       `Plan ID: ${created.planId}`,
       `Plan hash: ${created.planHash}`,
-      `Valid: ${created.valid ? "yes" : "no"}`,
+      `Plan version: ${created.planVersion}`,
     ].join("\n"),
   );
 };
@@ -508,10 +502,10 @@ const trainingDryRunCommand = async (
   parsed: ParsedArguments,
   output: CliOutput,
 ): Promise<void> => {
-  const result = await runThetaTrainingDryRun({
-    planId: requiredStringFlag(parsed, "plan-id"),
-    planHash: requiredStringFlag(parsed, "plan-hash"),
-  });
+  const request = (await readJsonObject(
+    requiredStringFlag(parsed, "file"),
+  )) as unknown as ThetaTrainingDryRunInput;
+  const result = await runThetaTrainingDryRun(request);
   const dryRun = requireCompleted(result, "Training dry run");
   writeResult(dryRun, parsed, output, () => {
     const commands = dryRun.commands.map(
@@ -523,8 +517,8 @@ const trainingDryRunCommand = async (
     );
     return [
       `Training dry run for ${dryRun.planId}`,
-      `Plan valid: ${dryRun.valid ? "yes" : "no"}`,
-      `Business approval present: ${dryRun.approved ? "yes" : "no"}`,
+      `Preflight passed: ${dryRun.passed ? "yes" : "no"}`,
+      `Dry-run hash: ${dryRun.dryRunHash}`,
       "Commands:",
       ...commands,
       "Expected artifacts:",
@@ -538,20 +532,25 @@ const trainingStartCommand = async (
   parsed: ParsedArguments,
   output: CliOutput,
 ): Promise<void> => {
-  const startIdentity = {
-    planId: requiredStringFlag(parsed, "plan-id"),
-    planHash: requiredStringFlag(parsed, "plan-hash"),
-    approvalId: requiredStringFlag(parsed, "approval-id"),
-  };
-  const generatedKey = trainingStartInvocationKey(startIdentity);
-  const idempotencyKey = stringFlag(parsed, "idempotency-key") ?? generatedKey;
+  const loaded = (await readJsonObject(
+    requiredStringFlag(parsed, "file"),
+  )) as unknown as ThetaTrainingStartInput;
+  const generatedKey = trainingStartInvocationKey({
+    plan: loaded.plan,
+    planReview: loaded.planReview,
+    dryRun: loaded.dryRun,
+    trainingReview: loaded.trainingReview,
+  });
   const input: ThetaTrainingStartInput = {
-    ...startIdentity,
-    idempotencyKey,
+    ...loaded,
+    idempotencyKey:
+      stringFlag(parsed, "idempotency-key") ??
+      loaded.idempotencyKey ??
+      generatedKey,
   };
   const options = {
-    invocationId: idempotencyKey,
-    idempotencyKey,
+    invocationId: input.idempotencyKey,
+    idempotencyKey: input.idempotencyKey,
   };
 
   if (!hasFlag(parsed, "approve")) {
@@ -675,27 +674,12 @@ const demoProfile: Record<string, unknown> = {
   columnProfiles: [{ name: "content", avgLength: 92 }],
 };
 
-const demoPlan: ThetaPlanCreateInput = {
-  plan: {
-    datasetId: "demo-dataset",
-    modelId: "lda",
-    mode: "unsupervised",
-    numTopics: 8,
-    textColumn: "content",
-  },
-  rationale: "THETA CLI governed local demonstration.",
-  dataProfile: demoProfile,
-};
+const demoPlan: ThetaPlanCreateInput = createPlanningFixture();
 
 const demoCommand = async (
   parsed: ParsedArguments,
   output: CliOutput,
 ): Promise<void> => {
-  if (hasFlag(parsed, "approve-plan") && !hasFlag(parsed, "approve")) {
-    throw new Error(
-      "--approve-plan requires --approve so the plan exists before business approval.",
-    );
-  }
   const catalog = requireCompleted(
     await runThetaModelCatalog(),
     "Demo model catalog",
@@ -710,8 +694,8 @@ const demoCommand = async (
   );
   const validation = requireCompleted(
     await runThetaPlanValidate({
-      plan: demoPlan.plan,
-      dataProfile: demoPlan.dataProfile,
+      plan: demoPlan.validatedPlan,
+      dataProfile: demoPlan.datasetProfile as Record<string, unknown>,
     }),
     "Demo plan validation",
   );
@@ -723,42 +707,6 @@ const demoCommand = async (
   const creationResult = hasFlag(parsed, "approve")
     ? await runApprovedThetaPlanCreate(demoPlan, options)
     : await requestThetaPlanCreate(demoPlan, options);
-  let planApprovalStatus = "not_requested";
-  let approvalId: string | null = null;
-  let dryRunApproved: boolean | null = null;
-  let commandCount = 0;
-
-  if (
-    hasFlag(parsed, "approve-plan") &&
-    creationResult.status === "completed" &&
-    creationResult.output
-  ) {
-    const approvalInput: ThetaPlanApproveInput = {
-      planId: creationResult.output.planId,
-      planHash: creationResult.output.planHash,
-      approvedBy: "local_user",
-      approvalNote: "THETA CLI complete governed demonstration.",
-    };
-    const approvalKey = approvalInvocationKey(approvalInput);
-    const approvalResult = await runApprovedThetaPlanApprove(approvalInput, {
-      invocationId: approvalKey,
-      idempotencyKey: approvalKey,
-    });
-    const approval = requireCompleted(approvalResult, "Demo plan approval");
-    planApprovalStatus = approvalResult.status;
-    approvalId = approval.approvalId;
-
-    const dryRun = requireCompleted(
-      await runThetaTrainingDryRun({
-        planId: creationResult.output.planId,
-        planHash: creationResult.output.planHash,
-      }),
-      "Demo training dry run",
-    );
-    dryRunApproved = dryRun.approved;
-    commandCount = dryRun.commands.length;
-  }
-
   const result = {
     runner: "Hypha GovernedToolRunner",
     modelCount: catalog.models.length,
@@ -766,11 +714,8 @@ const demoCommand = async (
     planValid: validation.valid,
     planCreationStatus: creationResult.status,
     planId: creationResult.output?.planId ?? null,
-    stateWritten: creationResult.status === "completed",
-    planApprovalStatus,
-    approvalId,
-    dryRunApproved,
-    trainingCommandCount: commandCount,
+    canonicalPlanCreated: creationResult.status === "completed",
+    nextGate: "HumanPlanReview",
     trainingStarted: false,
   };
   writeResult(result, parsed, output, () =>
@@ -780,14 +725,11 @@ const demoCommand = async (
       `2. Recommendation: ${String(result.topRecommendation)}`,
       `3. Plan validation: ${result.planValid ? "passed" : "failed"}`,
       `4. Plan creation: ${result.planCreationStatus}`,
-      result.stateWritten
-        ? `   Local state written for ${String(result.planId)}.`
-        : "   No state written. Add --approve after reviewing the plan.",
-      `5. Business plan approval: ${result.planApprovalStatus}`,
-      result.dryRunApproved === null
-        ? "6. Training dry run: not requested"
-        : `6. Training dry run: ${result.trainingCommandCount} commands, approved=${result.dryRunApproved}`,
-      "7. Training process started: no",
+      result.canonicalPlanCreated
+        ? `   Canonical plan created: ${String(result.planId)}.`
+        : "   No canonical plan created. Add --approve after reviewing the plan.",
+      `5. Next gate: ${result.nextGate}`,
+      "6. Training process started: no",
     ].join("\n"),
   );
 };

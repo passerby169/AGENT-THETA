@@ -22,10 +22,10 @@ idempotency keys, audit records and human approval rules.
 | `theta.model.catalog` | read | `theta:model:read` | Return normalized model catalog. |
 | `theta.model.recommend` | read | `theta:model:read`, `theta:dataset:read` | Recommend model candidates from deterministic constraints. |
 | `theta.plan.validate` | read | `theta:plan:read`, `theta:model:read` | Validate a TrainingPlan before approval. |
-| `theta.plan.create` | write | `theta:plan:write` | Create planId and planHash. |
-| `theta.plan.approve` | write | `theta:plan:approve` | Record human approval. |
-| `theta.training.dry_run` | read | `theta:training:read` | Check resolved commands and artifacts. |
-| `theta.training.start` | external_effect | `theta:training:write` | Start Python Bridge training after approval. |
+| `theta.plan.create` v2 | write | `theta:plan:write` | Create a strict canonical planId and planHash after HumanPlanReview. |
+| `theta.plan.approve` v1 | write | `theta:plan:approve` | Legacy compatibility command; not used by the DomainPack 2.0 workflow. |
+| `theta.training.dry_run` v2 | read | `theta:training:read` | Validate plan review and derive a hash-bound readiness receipt. |
+| `theta.training.start` v2 | external_effect | `theta:training:write` | Start only with a valid plan, dry-run, and two distinct reviews. |
 | `theta.training.status` | read | `theta:training:read` | Read logs, status and artifact references. |
 | `theta.training.cancel` | external_effect | `theta:training:write` | Request cooperative cancellation. |
 | `theta.results.list` | read | `theta:results:read` | List training result artifacts. |
@@ -58,14 +58,35 @@ The first read-only bridge commands are wired through `theta_agent_bridge`:
 - `theta.events.export`
 - `theta.events.replay`
 
-`theta.plan.create` and `theta.plan.approve` write only to the local Agent
-state database at `theta_project/.theta_agent/agent.sqlite`.
+`theta.plan.create` v2 is implemented in TypeScript and returns the canonical
+`TrainingPlanRecord`. The DomainPack workflow persists the plan and its
+`HumanPlanReview` in Hypha runtime events. `theta.plan.approve` writes only to
+the legacy Agent SQLite database and is not consulted by DomainPack 2.0.
 
-`theta.training.start` records an approved local training run and starts a
-background Python runner process. The runner executes the resolved
+`theta.training.dry_run` v2 accepts the canonical plan, the
+`HumanPlanReview` receipt, and the dataset path. The Bridge checks dataset
+existence and hash, Python and model-script availability, writable working
+directory, disk capacity, GPU requirements, and network policy. TypeScript
+then creates the stable `DryRunReceipt` and `dryRunHash`; no training process
+is spawned.
+
+`theta.training.start` v2 rejects missing, stale, or mismatched plan review,
+dry-run, and training review bindings. It records an approved local training
+run and starts a background Python runner process. The runner executes the resolved
 `prepare_data.py` and `run_pipeline.py` commands, writes a UTF-8 log file under
 `theta_project/.theta_agent/runs/<trainingRunId>/training.log`, and updates
 SQLite status fields.
+
+## Approval Authority
+
+The canonical workflow has exactly two business approvals:
+
+1. `HumanPlanReview` binds the reviewer to `planId + planHash`.
+2. `HumanTrainingReview` binds a different approval receipt to the same plan
+   and to the exact `dryRunHash`.
+
+Hypha human waits and canonical events are authoritative. Python receives and
+validates the complete chain but cannot create approvals or advance the FSM.
 
 `theta.training.status` returns the run status, progress, runner PID, current
 step, log path, recent log lines, expected artifacts and recorded events. If a

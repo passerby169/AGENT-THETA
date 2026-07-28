@@ -1,10 +1,10 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { THETA_APPROVAL_KEYS } from './theta-domain.js';
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { THETA_APPROVAL_KEYS } from "./theta-domain.js";
 import {
   ThetaWorkflowService,
   type ThetaWorkflowInput,
-} from './theta-workflow-service.js';
+} from "./theta-workflow-service.js";
 
 interface WorkflowCliOutput {
   write(message: string): void;
@@ -22,7 +22,7 @@ export const thetaWorkflowHelp = `THETA workflow commands:
 
   workflow run --file <dataset> [--run-id <id>] [--runtime-db <path>]
       Start the event-first workflow. It stops at the first approval gate.
-      Add --approve-plans for plan creation and approval. Add
+      Add --approve-plans for HumanPlanReview. Add
       --approve-training as well to permit the external training start.
 
   workflow resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
@@ -42,58 +42,55 @@ export const runThetaWorkflowCliCommand = async (
 ): Promise<number> => {
   try {
     const parsed = parseWorkflowArguments(args);
-    if (!parsed.command || flag(parsed, 'help')) {
+    if (!parsed.command || flag(parsed, "help")) {
       output.write(thetaWorkflowHelp);
       return 0;
     }
 
     const service = new ThetaWorkflowService();
-    const runtimeDb = stringFlag(parsed, 'runtime-db');
-    const json = flag(parsed, 'json');
+    const runtimeDb = stringFlag(parsed, "runtime-db");
+    const json = flag(parsed, "json");
 
-    if (parsed.command === 'compile') {
+    if (parsed.command === "compile") {
       write(service.compileSummary(), json, output);
       return 0;
     }
-    if (parsed.command === 'run') {
+    if (parsed.command === "run") {
       const input = await workflowInput(parsed);
       const approvalKeys: string[] = [];
-      if (flag(parsed, 'approve-plans')) {
-        approvalKeys.push(
-          THETA_APPROVAL_KEYS.planCreate,
-          THETA_APPROVAL_KEYS.planApprove,
-        );
+      if (flag(parsed, "approve-plans")) {
+        approvalKeys.push(THETA_APPROVAL_KEYS.planReview);
       }
-      if (flag(parsed, 'approve-training')) {
-        if (!flag(parsed, 'approve-plans')) {
-          throw new Error('--approve-training requires --approve-plans.');
+      if (flag(parsed, "approve-training")) {
+        if (!flag(parsed, "approve-plans")) {
+          throw new Error("--approve-training requires --approve-plans.");
         }
-        approvalKeys.push(THETA_APPROVAL_KEYS.trainingStart);
+        approvalKeys.push(THETA_APPROVAL_KEYS.trainingReview);
       }
       const result = await service.run({
         input,
-        ...(stringFlag(parsed, 'run-id')
-          ? { runId: stringFlag(parsed, 'run-id') }
+        ...(stringFlag(parsed, "run-id")
+          ? { runId: stringFlag(parsed, "run-id") }
           : {}),
         ...(runtimeDb ? { runtimeDb } : {}),
         approvalKeys,
-        approvedBy: stringFlag(parsed, 'approved-by') ?? 'local_user',
+        approvedBy: stringFlag(parsed, "approved-by") ?? "local_user",
       });
       write(result, json, output);
-      return result.disposition === 'failed' ? 2 : 0;
+      return result.disposition === "failed" ? 2 : 0;
     }
-    if (parsed.command === 'resume') {
-      if (flag(parsed, 'approve') && flag(parsed, 'reject')) {
-        throw new Error('--approve and --reject cannot be used together.');
+    if (parsed.command === "resume") {
+      if (flag(parsed, "approve") && flag(parsed, "reject")) {
+        throw new Error("--approve and --reject cannot be used together.");
       }
-      const researchAnswers = await optionalJsonFlag(parsed, 'answers');
-      const columnConfirmation = await optionalJsonFlag(parsed, 'columns');
+      const researchAnswers = await optionalJsonFlag(parsed, "answers");
+      const columnConfirmation = await optionalJsonFlag(parsed, "columns");
       const result = await service.resume({
-        runId: requiredFlag(parsed, 'run-id'),
+        runId: requiredFlag(parsed, "run-id"),
         ...(runtimeDb ? { runtimeDb } : {}),
-        approve: flag(parsed, 'approve'),
-        reject: flag(parsed, 'reject'),
-        approvedBy: stringFlag(parsed, 'approved-by') ?? 'local_user',
+        approve: flag(parsed, "approve"),
+        reject: flag(parsed, "reject"),
+        approvedBy: stringFlag(parsed, "approved-by") ?? "local_user",
         ...(researchAnswers ? { researchAnswers } : {}),
         ...(columnConfirmation
           ? {
@@ -107,19 +104,19 @@ export const runThetaWorkflowCliCommand = async (
           : {}),
       });
       write(result, json, output);
-      return result.disposition === 'failed' ? 2 : 0;
+      return result.disposition === "failed" ? 2 : 0;
     }
-    if (parsed.command === 'trace') {
+    if (parsed.command === "trace") {
       const evidence = await service.evidence(
-        requiredFlag(parsed, 'run-id'),
+        requiredFlag(parsed, "run-id"),
         runtimeDb,
       );
       write(evidence, json, output);
       return 0;
     }
-    if (parsed.command === 'replay') {
+    if (parsed.command === "replay") {
       const replay = await service.replay(
-        requiredFlag(parsed, 'run-id'),
+        requiredFlag(parsed, "run-id"),
         runtimeDb,
       );
       write(replay, json, output);
@@ -138,13 +135,13 @@ export const runThetaWorkflowCliCommand = async (
 const workflowInput = async (
   parsed: ParsedWorkflowArguments,
 ): Promise<ThetaWorkflowInput> => {
-  const inputFile = stringFlag(parsed, 'input');
+  const inputFile = stringFlag(parsed, "input");
   if (inputFile) {
     const value = JSON.parse(
-      await readFile(path.resolve(inputFile), 'utf8'),
+      await readFile(path.resolve(inputFile), "utf8"),
     ) as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('--input must contain a JSON object.');
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("--input must contain a JSON object.");
     }
     const input = value as ThetaWorkflowInput;
     return {
@@ -153,15 +150,15 @@ const workflowInput = async (
     };
   }
   return {
-    filePath: path.resolve(process.cwd(), requiredFlag(parsed, 'file')),
-    ...(stringFlag(parsed, 'dataset-id')
-      ? { datasetId: stringFlag(parsed, 'dataset-id') }
+    filePath: path.resolve(process.cwd(), requiredFlag(parsed, "file")),
+    ...(stringFlag(parsed, "dataset-id")
+      ? { datasetId: stringFlag(parsed, "dataset-id") }
       : {}),
-    ...(stringFlag(parsed, 'goal')
-      ? { researchGoal: stringFlag(parsed, 'goal') }
+    ...(stringFlag(parsed, "goal")
+      ? { researchGoal: stringFlag(parsed, "goal") }
       : {}),
-    ...(integerFlag(parsed, 'sample-size')
-      ? { sampleSize: integerFlag(parsed, 'sample-size') }
+    ...(integerFlag(parsed, "sample-size")
+      ? { sampleSize: integerFlag(parsed, "sample-size") }
       : {}),
   };
 };
@@ -171,14 +168,14 @@ const parseWorkflowArguments = (args: string[]): ParsedWorkflowArguments => {
   let command: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
-    if (!value.startsWith('--')) {
+    if (!value.startsWith("--")) {
       if (command) throw new Error(`Unexpected workflow argument: ${value}`);
       command = value;
       continue;
     }
     const key = value.slice(2);
     const next = args[index + 1];
-    if (next !== undefined && !next.startsWith('-')) {
+    if (next !== undefined && !next.startsWith("-")) {
       flags.set(key, next);
       index += 1;
     } else {
@@ -198,19 +195,19 @@ const write = (
     return;
   }
   const record =
-    value && typeof value === 'object' && !Array.isArray(value)
+    value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined;
   if (record?.runId) {
     output.write(
       [
         `Run: ${String(record.runId)}`,
-        `Status: ${String(record.status ?? record.disposition ?? 'unknown')}`,
-        `State: ${String(record.currentState ?? 'n/a')}`,
-        `Pending approval: ${String(record.pendingActionRef ?? 'none')}`,
-        `Next action: ${String(record.pendingReason ?? 'none')}`,
-        `Runtime DB: ${String(record.runtimeDb ?? 'default')}`,
-      ].join('\n'),
+        `Status: ${String(record.status ?? record.disposition ?? "unknown")}`,
+        `State: ${String(record.currentState ?? "n/a")}`,
+        `Pending approval: ${String(record.pendingActionRef ?? "none")}`,
+        `Next action: ${String(record.pendingReason ?? "none")}`,
+        `Runtime DB: ${String(record.runtimeDb ?? "default")}`,
+      ].join("\n"),
     );
     return;
   }
@@ -225,7 +222,7 @@ const stringFlag = (
   name: string,
 ): string | undefined => {
   const value = parsed.flags.get(name);
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 };
 
 const requiredFlag = (
@@ -257,9 +254,9 @@ const optionalJsonFlag = async (
   const filename = stringFlag(parsed, name);
   if (!filename) return undefined;
   const value = JSON.parse(
-    await readFile(path.resolve(process.cwd(), filename), 'utf8'),
+    await readFile(path.resolve(process.cwd(), filename), "utf8"),
   ) as unknown;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`--${name} must contain a JSON object.`);
   }
   return value as Record<string, unknown>;

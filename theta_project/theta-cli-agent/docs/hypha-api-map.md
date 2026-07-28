@@ -38,9 +38,10 @@ Important exports:
 
 Initial THETA usage:
 
-- Use `InMemoryEventStore` for the first local smoke slice.
-- Replace with a durable local EventStore before TrainingPlan or TrainingRun authority moves out of
-  Python.
+- Use `InMemoryEventStore` only for isolated tool smoke tests.
+- Use the SQLite-backed EventRuntime for canonical workflows. TrainingPlan,
+  human-review, dry-run, and TrainingRun authority must be represented by
+  TypeScript contracts and Hypha events; Python is an execution adapter.
 - Use `PolicyEngine` directly. Do not create a parallel local policy abstraction.
 
 ## Tools

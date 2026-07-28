@@ -30,7 +30,18 @@ import {
   type ResearchAssessment,
 } from "./agent/research-service.js";
 import {
+  approvalReceiptSchema,
+  dryRunReceiptSchema,
+  trainingPlanRecordSchema,
+} from "./planning/contracts.js";
+import {
+  assertApprovalChain,
+  createApprovalReceipt,
+} from "./planning/engine.js";
+import {
   THETA_APPROVAL_KEYS,
+  THETA_DOMAIN_PACK_ID,
+  THETA_DOMAIN_PACK_VERSION,
   THETA_WORKFLOW_STATES,
   compileThetaTrainingDomain,
   resolveThetaStateToolScope,
@@ -861,89 +872,98 @@ const executeThetaState = async (
         return approvalDecision(
           execution,
           variables,
-          THETA_APPROVAL_KEYS.planCreate,
+          THETA_APPROVAL_KEYS.planReview,
           THETA_WORKFLOW_STATES.createPlan,
+          {
+            validatedPlan: variables.validatedPlan as RuntimeJsonValue,
+            datasetSha256: datasetProfileSchema.parse(variables.datasetProfile)
+              .datasetSha256,
+            columnConfirmation:
+              variables.columnConfirmation as RuntimeJsonValue,
+            recommendation: variables.recommendation as RuntimeJsonValue,
+          },
         );
       case THETA_WORKFLOW_STATES.createPlan: {
         const approvedBy = approvalActor(
           variables,
-          THETA_APPROVAL_KEYS.planCreate,
+          THETA_APPROVAL_KEYS.planReview,
         );
         const created = await invoke(
           THETA_TOOL_IDS.planCreate,
           {
-            plan: requireRecord(variables.validatedPlan, "validated plan"),
-            rationale: "Created by the approved THETA event-first workflow.",
-            dataProfile: requireRecord(
+            validatedPlan: requireRecord(
+              variables.validatedPlan,
+              "validated plan",
+            ),
+            researchBrief: requireRecord(
+              variables.researchBrief,
+              "research brief",
+            ),
+            datasetProfile: requireRecord(
               variables.datasetProfile,
               "dataset profile",
             ),
-          },
-          approvedBy,
-        );
-        return transition(THETA_WORKFLOW_STATES.awaitPlanApproval, {
-          planRecord: {
-            planId: requiredString(created.planId, "created planId"),
-            planHash: requiredString(created.planHash, "created planHash"),
-            normalizedPlan: requireRecord(
-              created.normalizedPlan,
-              "created normalizedPlan",
+            columnConfirmation: requireRecord(
+              variables.columnConfirmation,
+              "column confirmation",
             ),
-          },
-        });
-      }
-      case THETA_WORKFLOW_STATES.awaitPlanApproval:
-        return approvalDecision(
-          execution,
-          variables,
-          THETA_APPROVAL_KEYS.planApprove,
-          THETA_WORKFLOW_STATES.approvePlan,
-        );
-      case THETA_WORKFLOW_STATES.approvePlan: {
-        const plan = requireRecord(variables.planRecord, "plan record");
-        const approvedBy = approvalActor(
-          variables,
-          THETA_APPROVAL_KEYS.planApprove,
-        );
-        const approval = await invoke(
-          THETA_TOOL_IDS.planApprove,
-          {
-            planId: requiredString(plan.planId, "planId"),
-            planHash: requiredString(plan.planHash, "planHash"),
-            approvedBy,
-            approvalNote: "Approved through the THETA runtime human wait.",
+            recommendation: requireRecord(
+              variables.recommendation,
+              "recommendation",
+            ),
+            domainPack: {
+              id: THETA_DOMAIN_PACK_ID,
+              version: THETA_DOMAIN_PACK_VERSION,
+            },
           },
           approvedBy,
         );
+        const planRecord = trainingPlanRecordSchema.parse(created);
+        const reviewDecision = approvalDecisionRecord(
+          variables,
+          THETA_APPROVAL_KEYS.planReview,
+        );
+        const planReview = createApprovalReceipt({
+          approvalType: "human_plan_review",
+          plan: planRecord,
+          approvedBy,
+          approvedAt: reviewDecision.approvedAt,
+        });
         return transition(THETA_WORKFLOW_STATES.dryRun, {
-          planApproval: {
-            approvalId: requiredString(approval.approvalId, "approvalId"),
-            approvedBy,
-            approvedAt:
-              stringValue(approval.approvedAt) ?? new Date().toISOString(),
-          },
+          planRecord,
+          planReview,
         });
       }
       case THETA_WORKFLOW_STATES.dryRun: {
-        const plan = requireRecord(variables.planRecord, "plan record");
+        const input = requireRecord(variables.input, "workflow input");
+        const plan = trainingPlanRecordSchema.parse(variables.planRecord);
+        const planReview = approvalReceiptSchema.parse(variables.planReview);
         const preview = await invoke(THETA_TOOL_IDS.trainingDryRun, {
-          planId: requiredString(plan.planId, "planId"),
-          planHash: requiredString(plan.planHash, "planHash"),
+          plan,
+          planReview,
+          datasetPath: requiredString(input.filePath, "input.filePath"),
         });
-        if (preview.valid !== true || preview.approved !== true) {
+        const dryRun = dryRunReceiptSchema.parse(preview);
+        if (!dryRun.passed) {
           return failed(
             "RUNTIME_INVARIANT_FAILED",
-            "Training dry run did not confirm a valid approved plan.",
+            `Training dry run failed: ${dryRun.checks
+              .filter((check) => check.status === "fail")
+              .map((check) => check.code)
+              .join(", ")}.`,
             execution.state.id,
           );
         }
         return transition(THETA_WORKFLOW_STATES.awaitTrainingStartApproval, {
+          dryRun,
           dryRunSummary: {
-            commandCount: arrayValue(preview.commands).length,
-            expectedArtifacts: arrayValue(preview.expectedArtifacts).map(
-              sanitizeArtifact,
-            ),
-            notes: stringArray(preview.notes),
+            planHash: dryRun.planHash,
+            dryRunHash: dryRun.dryRunHash,
+            commandCount: dryRun.commands.length,
+            commands: dryRun.commands,
+            checks: dryRun.checks,
+            expectedArtifacts: dryRun.expectedArtifacts.map(sanitizeArtifact),
+            notes: dryRun.notes,
           },
         });
       }
@@ -951,8 +971,12 @@ const executeThetaState = async (
         return approvalDecision(
           execution,
           variables,
-          THETA_APPROVAL_KEYS.trainingStart,
+          THETA_APPROVAL_KEYS.trainingReview,
           THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
+          requireRecord(variables.dryRunSummary, "dry-run summary") as Record<
+            string,
+            RuntimeJsonValue
+          >,
         );
       case THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining: {
         const input = requireRecord(variables.input, "workflow input");
@@ -978,25 +1002,52 @@ const executeThetaState = async (
             },
             columnConfirmation: null,
             planRecord: null,
-            planApproval: null,
+            planReview: null,
+            dryRun: null,
+            trainingReview: null,
           });
         }
-        return transition(THETA_WORKFLOW_STATES.startTraining);
+        const plan = trainingPlanRecordSchema.parse(variables.planRecord);
+        const dryRun = dryRunReceiptSchema.parse(variables.dryRun);
+        const reviewDecision = approvalDecisionRecord(
+          variables,
+          THETA_APPROVAL_KEYS.trainingReview,
+        );
+        const trainingReview = createApprovalReceipt({
+          approvalType: "human_training_review",
+          plan,
+          approvedBy: reviewDecision.approvedBy,
+          approvedAt: reviewDecision.approvedAt,
+          dryRunHash: dryRun.dryRunHash,
+        });
+        return transition(THETA_WORKFLOW_STATES.startTraining, {
+          trainingReview,
+        });
       }
       case THETA_WORKFLOW_STATES.startTraining: {
-        const plan = requireRecord(variables.planRecord, "plan record");
-        const approval = requireRecord(variables.planApproval, "plan approval");
+        const plan = trainingPlanRecordSchema.parse(variables.planRecord);
+        const planReview = approvalReceiptSchema.parse(variables.planReview);
+        const dryRun = dryRunReceiptSchema.parse(variables.dryRun);
+        const trainingReview = approvalReceiptSchema.parse(
+          variables.trainingReview,
+        );
+        assertApprovalChain({ plan, planReview, dryRun, trainingReview });
         const approvedBy = approvalActor(
           variables,
-          THETA_APPROVAL_KEYS.trainingStart,
+          THETA_APPROVAL_KEYS.trainingReview,
         );
         const started = await invoke(
           THETA_TOOL_IDS.trainingStart,
           {
-            planId: requiredString(plan.planId, "planId"),
-            planHash: requiredString(plan.planHash, "planHash"),
-            approvalId: requiredString(approval.approvalId, "approvalId"),
-            idempotencyKey: `theta-workflow-training-${execution.scope.runId}`,
+            plan,
+            planReview,
+            dryRun,
+            trainingReview,
+            idempotencyKey: createHash("sha256")
+              .update(
+                `${execution.scope.userId}:${plan.planId}:${plan.planHash}:training.start`,
+              )
+              .digest("hex"),
           },
           approvedBy,
         );
@@ -1097,6 +1148,7 @@ const approvalDecision = (
   variables: Record<string, unknown>,
   pendingActionRef: string,
   approvedTarget: string,
+  metadata: Record<string, RuntimeJsonValue> = {},
 ): BoundedStateExecutionDecision => {
   const payload = isRecord(execution.projection.lastResume?.payload)
     ? execution.projection.lastResume.payload
@@ -1119,6 +1171,17 @@ const approvalDecision = (
           [pendingActionRef]:
             execution.projection.lastResume?.principalId ?? USER_ID,
         },
+        approvalDecisions: {
+          ...(isRecord(variables.approvalDecisions)
+            ? variables.approvalDecisions
+            : {}),
+          [pendingActionRef]: {
+            approvedBy: execution.projection.lastResume?.principalId ?? USER_ID,
+            approvedAt:
+              execution.projection.lastResume?.resumedAt ??
+              new Date().toISOString(),
+          },
+        },
       });
     }
   }
@@ -1129,9 +1192,27 @@ const approvalDecision = (
         type: "human",
         pendingActionRef,
         reason: `Explicit owner approval is required for ${pendingActionRef}.`,
-        metadata: { stateId: execution.state.id },
+        metadata: { stateId: execution.state.id, ...metadata },
       },
     },
+  };
+};
+
+const approvalDecisionRecord = (
+  variables: Record<string, unknown>,
+  key: string,
+): { approvedBy: string; approvedAt: string } => {
+  const decisions = requireRecord(
+    variables.approvalDecisions,
+    "approval decisions",
+  );
+  const decision = requireRecord(
+    decisions[key],
+    `approval decision for ${key}`,
+  );
+  return {
+    approvedBy: requiredString(decision.approvedBy, `approvedBy for ${key}`),
+    approvedAt: requiredString(decision.approvedAt, `approvedAt for ${key}`),
   };
 };
 
@@ -1425,6 +1506,9 @@ const sanitizeRecommendation = (
   deterministic: value.deterministic === true,
   recommendationVersion: stringValue(value.recommendationVersion) ?? "1.0.0",
   catalogSource: stringValue(value.catalogSource) ?? "unknown",
+  dataProfileSummary: (isRecord(value.dataProfileSummary)
+    ? value.dataProfileSummary
+    : {}) as Record<string, RuntimeJsonValue>,
   recommendations: arrayValue(value.recommendations) as RuntimeJsonValue[],
   skipped: arrayValue(value.skipped) as RuntimeJsonValue[],
   warnings: stringArray(value.warnings),

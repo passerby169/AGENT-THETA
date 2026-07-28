@@ -1,133 +1,125 @@
-import type { JsonSchema } from '@hypha/core';
-import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
-import { callThetaBridge } from './bridge.js';
-import type { ThetaTrainingPlan } from './plan-validate-tool.js';
-import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
+import type { JsonSchema } from "@hypha/core";
+import type { ToolCallContext, ToolHandler, ToolSpec } from "@hypha/tools";
+import {
+  createTrainingPlanRecord,
+  type CreateTrainingPlanRecordInput,
+} from "../planning/engine.js";
+import type { TrainingPlanRecord } from "../planning/contracts.js";
+import type { ThetaTrainingPlan } from "./plan-validate-tool.js";
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
-export interface ThetaPlanCreateInput {
-  plan: ThetaTrainingPlan;
-  rationale?: string;
-  dataProfile?: Record<string, unknown>;
+export interface ThetaPlanCreateInput extends Omit<
+  CreateTrainingPlanRecordInput,
+  "validatedPlan" | "createdAt"
+> {
+  validatedPlan: ThetaTrainingPlan;
+  createdAt?: string;
 }
 
-export interface ThetaPlanCreateOutput {
-  planId: string;
-  planHash: string;
-  valid: boolean;
-  approvalRequired: boolean;
-  createdAt: string;
-  normalizedPlan: Record<string, unknown>;
-  validation: Record<string, unknown>;
-  stateDb: string;
-}
+export type ThetaPlanCreateOutput = TrainingPlanRecord;
 
 const planCreateInputSchema: JsonSchema = {
-  type: 'object',
-  required: ['plan'],
+  type: "object",
+  required: [
+    "validatedPlan",
+    "researchBrief",
+    "datasetProfile",
+    "columnConfirmation",
+    "recommendation",
+    "domainPack",
+  ],
   properties: {
-    plan: {
-      type: 'object',
-      required: ['datasetId', 'modelId', 'mode', 'numTopics'],
+    validatedPlan: {
+      type: "object",
+      required: ["datasetId", "modelId", "mode", "numTopics"],
       additionalProperties: true,
     },
-    rationale: { type: 'string' },
-    dataProfile: {
-      type: 'object',
-      additionalProperties: true,
+    researchBrief: { type: "object", additionalProperties: true },
+    datasetProfile: { type: "object", additionalProperties: true },
+    columnConfirmation: { type: "object", additionalProperties: true },
+    recommendation: { type: "object", additionalProperties: true },
+    domainPack: {
+      type: "object",
+      required: ["id", "version"],
+      properties: {
+        id: { type: "string", minLength: 1 },
+        version: { type: "string", minLength: 1 },
+      },
+      additionalProperties: false,
     },
+    createdAt: { type: "string", format: "date-time" },
   },
   additionalProperties: false,
 };
 
 const planCreateOutputSchema: JsonSchema = {
-  type: 'object',
+  type: "object",
   required: [
-    'planId',
-    'planHash',
-    'valid',
-    'approvalRequired',
-    'createdAt',
-    'normalizedPlan',
-    'validation',
-    'stateDb',
+    "schemaVersion",
+    "planId",
+    "planHash",
+    "planVersion",
+    "status",
+    "canonicalPlan",
+    "review",
+    "createdAt",
   ],
   properties: {
-    planId: { type: 'string' },
-    planHash: { type: 'string' },
-    valid: { type: 'boolean' },
-    approvalRequired: { type: 'boolean' },
-    createdAt: { type: 'string' },
-    normalizedPlan: {
-      type: 'object',
-      additionalProperties: true,
-    },
-    validation: {
-      type: 'object',
-      additionalProperties: true,
-    },
-    stateDb: { type: 'string' },
+    schemaVersion: { const: "1.0.0" },
+    planId: { type: "string" },
+    planHash: { type: "string" },
+    planVersion: { type: "integer", minimum: 1 },
+    status: { enum: ["draft", "superseded"] },
+    canonicalPlan: { type: "object", additionalProperties: true },
+    review: { type: "object", additionalProperties: true },
+    createdAt: { type: "string" },
   },
   additionalProperties: false,
 };
 
 export const thetaPlanCreateToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.planCreate,
-  version: '1.0.0',
-  displayName: 'Create Training Plan',
-  description: 'Create a canonical THETA training plan only after Hypha human approval and idempotency checks.',
-  tags: ['theta', 'plan'],
+  version: "2.0.0",
+  displayName: "Create Training Plan",
+  description:
+    "Create the TypeScript-authoritative canonical THETA plan after Hypha HumanPlanReview.",
+  tags: ["theta", "plan"],
   inputSchema: planCreateInputSchema,
   outputSchema: planCreateOutputSchema,
-  sideEffectLevel: 'write',
+  sideEffectLevel: "write",
   permissionScope: [THETA_PERMISSION_SCOPES.planWrite],
   humanApprovalPolicy: {
     required: true,
-    reason: 'Creating a THETA training plan writes local agent state and must be explicitly approved.',
+    reason:
+      "Creating the canonical plan requires the HumanPlanReview decision recorded by Hypha.",
   },
-  idempotencyPolicy: {
-    mode: 'required',
-  },
-  timeoutPolicy: {
-    timeoutMs: 30000,
-    onTimeout: 'fail',
-  },
-  retryPolicy: {
-    maxAttempts: 1,
-  },
+  idempotencyPolicy: { mode: "required" },
+  timeoutPolicy: { timeoutMs: 30000, onTimeout: "fail" },
+  retryPolicy: { maxAttempts: 1 },
   auditPolicy: {
     enabled: true,
     includeInput: false,
     includeOutput: true,
   },
-  source: 'local',
+  source: "local",
 };
 
 const normalizePlanCreateInput = (input: unknown): ThetaPlanCreateInput => {
-  if (!input || typeof input !== 'object' || !('plan' in input)) {
-    throw new Error('plan.create input must include plan.');
+  if (!input || typeof input !== "object" || !("validatedPlan" in input)) {
+    throw new Error(
+      "plan.create input must include validatedPlan and binding snapshots.",
+    );
   }
   return input as ThetaPlanCreateInput;
 };
 
-const ensurePlanCreateOutput = (data: unknown): ThetaPlanCreateOutput => {
-  if (!data || typeof data !== 'object') {
-    throw new Error('plan.create bridge returned a non-object payload.');
-  }
-  return data as ThetaPlanCreateOutput;
-};
-
-export const thetaPlanCreateHandler: ToolHandler<unknown, ThetaPlanCreateOutput> = async (
-  input: unknown,
-  context: ToolCallContext
-) => {
-  const response = await callThetaBridge('plan.create', normalizePlanCreateInput(input), {
-    runId: context.runId,
-    stepId: context.stepId,
+export const thetaPlanCreateHandler: ToolHandler<
+  unknown,
+  ThetaPlanCreateOutput
+> = async (input: unknown, _context: ToolCallContext) => {
+  const value = normalizePlanCreateInput(input);
+  return createTrainingPlanRecord({
+    ...value,
+    createdAt: value.createdAt ?? new Date().toISOString(),
   });
-
-  if (response.status !== 'ok') {
-    throw new Error(response.error?.message ?? 'plan.create bridge command failed.');
-  }
-
-  return ensurePlanCreateOutput(response.data);
 };

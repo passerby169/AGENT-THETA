@@ -52,19 +52,20 @@ After reviewing the example plan, explicitly approve the local write:
 npm run cli -- demo --approve
 ```
 
-Run the complete planning lifecycle. This approves the stored plan and derives
-training commands, but still does not start training:
+Run the governed planning preview. This may create a canonical plan record but
+never starts training:
 
 ```powershell
-npm run cli -- demo --approve --approve-plan
+npm run cli -- demo --approve
 ```
 
 ## Durable Workflow
 
-The complete Agent path is a compiled THETA DomainPack executed by Hypha's
-bounded FSM driver. Run, state transitions, approvals, waits, retries, and
-terminal output are persisted to SQLite events. Tool audit events use a
-separate durable JSONL trace and share the same `runId`.
+The complete Agent path is the versioned `domain.theta.training@2.0.0`
+DomainPack executed by Hypha's bounded FSM driver. Run state, transitions,
+human decisions, waits, retries, plans, dry-run receipts, and terminal output
+are persisted as SQLite events. Tool audit events use a separate durable JSONL
+trace and share the same `runId`.
 
 Compile and inspect the DomainPack before execution:
 
@@ -92,16 +93,17 @@ detected column roles explicitly before model recommendation:
 npm run cli -- workflow resume --run-id theta-run-001 --columns fixtures/column-confirmation.json
 ```
 
-Resolve each later approval gate explicitly and continue from persisted
-events:
+Resolve each later human gate explicitly and continue from persisted events.
+The first approval is `HumanPlanReview`; after dry-run, the second is
+`HumanTrainingReview`:
 
 ```powershell
 npm run cli -- workflow resume --run-id theta-run-001 --approve
 ```
 
-`--approve-plans` and `--approve-training` apply only to plan and training
-approval gates. They never bypass research clarification or column
-confirmation:
+`--approve-plans` and `--approve-training` apply only to their respective
+human reviews. They never bypass research clarification, column confirmation,
+plan validation, dry-run checks, or the pre-start dataset hash check:
 
 ```powershell
 npm run cli -- workflow run --file fixtures/recommendation-sample.jsonl --approve-plans
@@ -117,6 +119,32 @@ npm run cli -- workflow replay --run-id theta-run-001 --json
 
 The default database is `.theta_agent/theta-workflow.sqlite`. Use
 `--runtime-db <path>` on workflow commands to select another file.
+
+## Canonical Plan And Approval Chain
+
+TypeScript is authoritative for `TrainingPlan`. A canonical plan binds the
+validated parameters to the dataset SHA-256, confirmed columns, research
+brief, dataset profile, recommendation result, DomainPack version, resource
+policy, and preprocessing policy. `planHash` is SHA-256 over canonical sorted
+JSON and excludes observation fields such as `createdAt`, so equivalent plans
+produce the same identity.
+
+The executable chain is:
+
+```text
+Validated candidate
+  -> HumanPlanReview
+  -> canonical TrainingPlan
+  -> dry-run checks and DryRunReceipt
+  -> HumanTrainingReview bound to dryRunHash
+  -> pre-start dataset hash verification
+  -> training.start
+```
+
+The two approval receipts have different IDs and approval types. Training
+cannot start if the plan hash, dry-run hash, dataset hash, or either receipt is
+missing or stale. Python validates and executes the supplied chain, but it
+does not decide plan identity, approval authority, or FSM state.
 
 ## Commands
 
@@ -162,43 +190,45 @@ Validate a training plan:
 npm run cli -- plan validate --file fixtures/training-plan.json
 ```
 
-Request plan creation without writing state:
+Request canonical plan creation without approving the governed write:
 
 ```powershell
 npm run cli -- plan create --file fixtures/training-plan.json
 ```
 
-Create the plan after explicit approval:
+Create and print the canonical plan record after explicit tool approval:
 
 ```powershell
 npm run cli -- plan create --file fixtures/training-plan.json --approve
 ```
 
-Approve the stored business plan. Use the `planId` and `planHash` returned by
-the previous command:
+`plan approve` remains available only as a legacy compatibility command. It is
+not used by the DomainPack 2.0 workflow and is not an authority for training.
 
 ```powershell
 npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
 ```
 
-Preview the exact training commands and expected artifacts:
+Preview the exact training commands and expected artifacts from a complete
+request containing `plan`, `planReview`, and `datasetPath`:
 
 ```powershell
-npm run cli -- training dry-run --plan-id <id> --plan-hash <hash>
+npm run cli -- training dry-run --file <dry-run-request.json>
 ```
 
-Request a real training start. The first command stops at the Hypha approval
-gate and does not start a process:
+Request a real training start from a complete request containing `plan`,
+`planReview`, `dryRun`, and `trainingReview`. Without `--approve`, the command
+stops at the Hypha external-effect gate and does not start a process:
 
 ```powershell
-npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id>
+npm run cli -- training start --file <training-start-request.json>
 ```
 
-After reviewing the resolved plan, approval, commands, and expected artifacts,
-repeat with `--approve` to start the background process:
+After reviewing the canonical plan, both approval receipts, commands, checks,
+and expected artifacts, repeat with `--approve`:
 
 ```powershell
-npm run cli -- training start --plan-id <id> --plan-hash <hash> --approval-id <id> --approve
+npm run cli -- training start --file <training-start-request.json> --approve
 ```
 
 Read training progress, recent logs, artifacts, and events:
@@ -225,6 +255,7 @@ npm run typecheck
 npm run build
 npm run smoke:research-agent
 npm run smoke:recommendation-golden
+npm run smoke:planning-chain
 npm run smoke:theta-domain
 npm run smoke:theta-workflow
 npm run smoke:architecture-boundary
@@ -243,7 +274,7 @@ CLI command
   -> GovernedToolRunner
   -> permission, validation, idempotency, approval, and audit
   -> THETA Python Bridge
-  -> local THETA state
+  -> local training process and artifacts
 ```
 
 The Run is event-first: current state and recovery data are rebuilt from
@@ -273,13 +304,14 @@ Bridge starts. The governed handlers reject missing files, directory escapes,
 symlink escapes, unsupported suffixes, non-regular files, and oversized files.
 Raw sample rows and sample values are excluded from Hypha audit event payloads.
 
-`plan create` is a write operation. Without `--approve`, it returns
-`human_review_required` and no local state is written.
+`plan create` is a governed write that returns a strict, immutable
+`TrainingPlanRecord`. In the canonical workflow, `HumanPlanReview` is persisted
+by Hypha before plan creation. `training dry-run` consumes that plan and review,
+runs deterministic readiness checks, and returns a hash-bound receipt without
+spawning a training process.
 
-`plan approve` is a separate governed write. It records business approval for
-the immutable `planId + planHash` pair. `training dry-run` reads that record and
-returns commands and artifacts without spawning a training process.
-
-`training start` and `training cancel` are external-effect tools. Both require
-the `theta:training:write` permission, an idempotency key, and Hypha human
-approval. `training status` is read-only and exposes the event-backed run view.
+`training start` requires the canonical plan, `HumanPlanReview`,
+`DryRunReceipt`, and a distinct `HumanTrainingReview`, plus the
+`theta:training:write` permission, an idempotency key, and Hypha external-effect
+approval. `training cancel` has the same external-effect governance.
+`training status` is read-only and exposes the event-backed run view.

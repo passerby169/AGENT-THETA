@@ -12,7 +12,9 @@ import { thetaHyphaToolSpecs } from "./tools/hypha-registry.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
 export const THETA_DOMAIN_PACK_ID = "domain.theta.training";
+export const THETA_DOMAIN_PACK_VERSION = "2.0.0";
 export const THETA_WORKFLOW_ID = "workflow.theta.training";
+export const THETA_WORKFLOW_VERSION = "2.0.0";
 export const THETA_AGENT_REF: SpecRef = {
   id: "agent.theta.cli",
   version: "1.0.0",
@@ -27,8 +29,6 @@ export const THETA_WORKFLOW_STATES = {
   validatePlan: "ValidatePlan",
   awaitPlanCreationApproval: "AwaitPlanCreationApproval",
   createPlan: "CreatePlan",
-  awaitPlanApproval: "AwaitPlanApproval",
-  approvePlan: "ApprovePlan",
   dryRun: "DryRun",
   awaitTrainingStartApproval: "AwaitTrainingStartApproval",
   verifyDatasetBeforeTraining: "VerifyDatasetBeforeTraining",
@@ -42,9 +42,8 @@ export const THETA_WORKFLOW_STATES = {
 export const THETA_APPROVAL_KEYS = {
   researchClarification: "theta.research.clarify",
   columnConfirmation: "theta.columns.confirm",
-  planCreate: "theta.plan.create",
-  planApprove: "theta.plan.approve",
-  trainingStart: "theta.training.start",
+  planReview: "theta.plan.review",
+  trainingReview: "theta.training.review",
 } as const;
 
 const toolRef = (id: string, version = "1.0.0"): SpecRef => ({ id, version });
@@ -173,30 +172,15 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
-    "Wait for explicit approval before writing the canonical plan.",
+    "HumanPlanReview: confirm the research goal, dataset hash, columns, model, parameters, warnings, and evidence.",
   ),
   state(
     THETA_WORKFLOW_STATES.createPlan,
     "Create the approved canonical training plan.",
     {
       allowedTools: [THETA_TOOL_IDS.planCreate],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate)],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate, "2.0.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.planWrite],
-      humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
-      policyRefs: [stateWritePolicy.id],
-    },
-  ),
-  state(
-    THETA_WORKFLOW_STATES.awaitPlanApproval,
-    "Wait for explicit business approval of the persisted plan.",
-  ),
-  state(
-    THETA_WORKFLOW_STATES.approvePlan,
-    "Approve the plan for downstream execution.",
-    {
-      allowedTools: [THETA_TOOL_IDS.planApprove],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planApprove)],
-      permissionScopes: [THETA_PERMISSION_SCOPES.planApprove],
       humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
       policyRefs: [stateWritePolicy.id],
     },
@@ -206,7 +190,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Derive commands and expected artifacts without execution.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingDryRun],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingDryRun)],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingDryRun, "2.0.0")],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.planRead,
         THETA_PERMISSION_SCOPES.trainingRead,
@@ -216,7 +200,7 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
-    "Wait for explicit approval before starting the external training process.",
+    "HumanTrainingReview: confirm the dry-run command summary, device, working directory, downloads, writes, and plan hash.",
   ),
   state(
     THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
@@ -233,7 +217,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Start training through the governed Bridge.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingStart],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart)],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart, "2.0.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.trainingWrite],
       humanApprovalPolicyRef: toolRef(trainingControlPolicy.id),
       policyRefs: [trainingControlPolicy.id],
@@ -297,9 +281,7 @@ const forwardTransitions = [
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
     THETA_WORKFLOW_STATES.createPlan,
   ],
-  [THETA_WORKFLOW_STATES.createPlan, THETA_WORKFLOW_STATES.awaitPlanApproval],
-  [THETA_WORKFLOW_STATES.awaitPlanApproval, THETA_WORKFLOW_STATES.approvePlan],
-  [THETA_WORKFLOW_STATES.approvePlan, THETA_WORKFLOW_STATES.dryRun],
+  [THETA_WORKFLOW_STATES.createPlan, THETA_WORKFLOW_STATES.dryRun],
   [
     THETA_WORKFLOW_STATES.dryRun,
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
@@ -335,7 +317,7 @@ const failureTransitions = workflowStates
 
 export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   id: THETA_DOMAIN_PACK_ID,
-  version: "1.0.0",
+  version: THETA_DOMAIN_PACK_VERSION,
   name: "THETA Local Training Domain",
   description:
     "A governed local dataset-to-training workflow for the THETA CLI Agent.",
@@ -474,7 +456,7 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   workflows: [
     {
       id: THETA_WORKFLOW_ID,
-      version: "1.0.0",
+      version: THETA_WORKFLOW_VERSION,
       initialState: THETA_WORKFLOW_STATES.intake,
       terminalStates: [
         THETA_WORKFLOW_STATES.completed,
