@@ -14,6 +14,21 @@ import type {
   BoundedStateExecutorInput,
 } from '@hypha/harness';
 import type { ToolCallResult } from '@hypha/tools';
+import { decideResearchGrilling } from './agent/grilling-engine.js';
+import {
+  RESEARCH_CONTRACT_VERSION,
+  columnConfirmationDraftSchema,
+  columnConfirmationSchema,
+  datasetProfileSchema,
+  researchBriefPatchSchema,
+  researchBriefSchema,
+  type ColumnConfirmationDraft,
+  type DatasetProfile,
+} from './agent/research-contracts.js';
+import {
+  ResearchService,
+  type ResearchAssessment,
+} from './agent/research-service.js';
 import {
   THETA_APPROVAL_KEYS,
   THETA_WORKFLOW_STATES,
@@ -45,6 +60,7 @@ export interface ThetaWorkflowInput {
   filePath: string;
   datasetId?: string;
   researchGoal?: string;
+  research?: Record<string, unknown>;
   constraints?: Record<string, unknown>;
   plan?: Record<string, unknown>;
   sampleSize?: number;
@@ -65,6 +81,8 @@ export interface ThetaWorkflowResumeRequest {
   reject?: boolean;
   approvedBy?: string;
   approvalKeys?: readonly string[];
+  researchAnswers?: Record<string, unknown>;
+  columnConfirmation?: ColumnConfirmationDraft;
 }
 
 export interface ThetaWorkflowToolRequest {
@@ -89,6 +107,7 @@ export interface ThetaWorkflowRunResult {
   status: RuntimeOrchestrationProjection['runStatus'];
   currentState?: string;
   pendingActionRef?: string;
+  pendingReason?: string;
   statePath: string[];
   output?: RuntimeJsonValue;
 }
@@ -229,10 +248,40 @@ export class ThetaWorkflowService {
       });
       const tools = this.toolPort(runtimeDb, runId);
       let result = await this.runDriver(runtime, scope, tools);
+      const hasResearchAnswers = request.researchAnswers !== undefined;
+      const hasColumnConfirmation = request.columnConfirmation !== undefined;
+      if (hasResearchAnswers && hasColumnConfirmation) {
+        throw new Error(
+          'A resume command can submit research answers or a column confirmation, not both.',
+        );
+      }
+      if (hasResearchAnswers || hasColumnConfirmation) {
+        await this.recordStructuredResumeInput(
+          runtime,
+          scope,
+          result.projection,
+          request,
+        );
+      }
+      if (
+        request.approve &&
+        !hasResearchAnswers &&
+        !hasColumnConfirmation &&
+        requiresStructuredHumanInput(
+          result.projection.pendingWait?.pendingActionRef,
+        )
+      ) {
+        throw new Error(
+          'This human wait requires structured input instead of a bare approval.',
+        );
+      }
       if (
         result.disposition === 'waiting' &&
         result.projection.pendingWait?.type === 'human' &&
-        (request.approve || request.reject)
+        (request.approve ||
+          request.reject ||
+          hasResearchAnswers ||
+          hasColumnConfirmation)
       ) {
         await this.resolveHumanWait(
           runtime,
@@ -379,6 +428,7 @@ export class ThetaWorkflowService {
         result.disposition !== 'waiting' ||
         pending?.type !== 'human' ||
         !pending.pendingActionRef ||
+        requiresStructuredHumanInput(pending.pendingActionRef) ||
         !approvals.has(pending.pendingActionRef)
       ) {
         return result;
@@ -422,6 +472,80 @@ export class ThetaWorkflowService {
     });
   }
 
+  private async recordStructuredResumeInput(
+    runtime: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>,
+    scope: RuntimeScope,
+    projection: RuntimeOrchestrationProjection,
+    request: ThetaWorkflowResumeRequest,
+  ): Promise<void> {
+    const pending = projection.pendingWait;
+    if (pending?.type !== 'human' || !pending.pendingActionRef) {
+      throw new Error(
+        'Structured resume input requires a pending human workflow action.',
+      );
+    }
+    const payload: Record<string, unknown> = {
+      pendingActionRef: pending.pendingActionRef,
+    };
+    if (request.researchAnswers !== undefined) {
+      if (
+        pending.pendingActionRef !== THETA_APPROVAL_KEYS.researchClarification
+      ) {
+        throw new Error(
+          `Research answers cannot resolve ${pending.pendingActionRef}.`,
+        );
+      }
+      payload.researchAnswers = researchBriefPatchSchema.parse(
+        request.researchAnswers,
+      );
+    }
+    if (request.columnConfirmation !== undefined) {
+      if (
+        pending.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation
+      ) {
+        throw new Error(
+          `Column confirmation cannot resolve ${pending.pendingActionRef}.`,
+        );
+      }
+      const variables = await hydrateVariables(runtime.events, scope);
+      const profile = datasetProfileSchema.parse(variables.datasetProfile);
+      payload.columnConfirmation = {
+        draft: columnConfirmationDraftSchema.parse(
+          request.columnConfirmation,
+        ),
+        datasetSha256: profile.datasetSha256,
+      };
+    }
+    const head = await runtime.events.getStreamHead(streamScope(scope));
+    const submissionId = createHash('sha256')
+      .update(canonicalJson(payload))
+      .digest('hex')
+      .slice(0, 24);
+    await runtime.events.append({
+      scope: streamScope(scope),
+      events: [
+        {
+          id: `${scope.runId}:structured-resume:${submissionId}`,
+          type: 'reasoning.decision.recorded',
+          version: '1.0.0',
+          userId: scope.userId,
+          workspaceId: scope.workspaceId,
+          sessionId: scope.sessionId,
+          runId: scope.runId,
+          agentId: scope.agentId,
+          correlationId: scope.runId,
+          timestamp: this.now(),
+          payload,
+        },
+      ],
+      expectedLastSequence: head?.lastSequence ?? 0,
+      ...(head?.fencingToken === undefined
+        ? {}
+        : { fencingToken: head.fencingToken }),
+      idempotencyKey: `theta-structured-resume:${scope.runId}:${submissionId}`,
+    });
+  }
+
   private runDriver(
     runtime: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>,
     scope: RuntimeScope,
@@ -448,6 +572,7 @@ const executeThetaState = async (
   tools: ThetaWorkflowToolPort,
 ): Promise<BoundedStateExecutionDecision> => {
   const variables = await hydrateVariables(events, execution.scope);
+  const researchService = new ResearchService();
   const invoke = (
     toolId: string,
     input: Record<string, unknown>,
@@ -464,14 +589,80 @@ const executeThetaState = async (
     });
   try {
     switch (execution.state.id) {
-      case THETA_WORKFLOW_STATES.intake:
-        validateInput(
-          requireRecord(
-            variables.input,
-            'workflow input',
-          ) as unknown as ThetaWorkflowInput,
+      case THETA_WORKFLOW_STATES.intake: {
+        const input = requireRecord(
+          variables.input,
+          'workflow input',
+        ) as unknown as ThetaWorkflowInput;
+        validateInput(input);
+        const assessment = researchService.assess(
+          researchService.createBrief(input),
+          { currentState: execution.state.id },
         );
-        return transition(THETA_WORKFLOW_STATES.inspectDataset);
+        return transition(
+          assessment.blocking
+            ? THETA_WORKFLOW_STATES.awaitResearchClarification
+            : THETA_WORKFLOW_STATES.inspectDataset,
+          {
+            researchBrief: runtimeRecord({ ...assessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(assessment),
+          },
+        );
+      }
+      case THETA_WORKFLOW_STATES.awaitResearchClarification: {
+        const resume = isRecord(execution.projection.lastResume?.payload)
+          ? execution.projection.lastResume.payload
+          : undefined;
+        if (
+          resume?.pendingActionRef !==
+          THETA_APPROVAL_KEYS.researchClarification
+        ) {
+          const assessment = researchService.assess(
+            researchBriefSchema.parse(variables.researchBrief),
+            { currentState: execution.state.id },
+          );
+          return researchClarificationWait(assessment);
+        }
+        if (resume.decision === 'rejected') {
+          return failed(
+            'RUNTIME_CANCELLED',
+            'Human rejected the research clarification request.',
+            execution.state.id,
+          );
+        }
+        const answers = requireRecord(
+          variables.researchAnswers,
+          'research clarification answers',
+        );
+        const assessment = researchService.assess(
+          researchService.applyAnswers(
+            researchBriefSchema.parse(variables.researchBrief),
+            answers,
+          ),
+          { currentState: execution.state.id },
+        );
+        const grilling = decideResearchGrilling(
+          assessment,
+          execution.projection.stateAttempt,
+        );
+        if (grilling.kind === 'unresolved') {
+          return failed(
+            'RUNTIME_INVARIANT_FAILED',
+            `Blocking research information remains unresolved: ${assessment.gaps
+              .filter((item) => item.severity === 'blocking')
+              .map((item) => item.field)
+              .join(', ')}.`,
+            execution.state.id,
+          );
+        }
+        if (grilling.kind === 'ask') {
+          return researchClarificationWait(assessment);
+        }
+        return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+          researchBrief: runtimeRecord({ ...assessment.brief }),
+          researchAssessment: sanitizeResearchAssessment(assessment),
+        });
+      }
       case THETA_WORKFLOW_STATES.inspectDataset: {
         const input = requireRecord(variables.input, 'workflow input');
         const toolInput = {
@@ -484,8 +675,100 @@ const executeThetaState = async (
           invoke(THETA_TOOL_IDS.datasetInspect, toolInput),
           invoke(THETA_TOOL_IDS.datasetDetectColumns, toolInput),
         ]);
+        const datasetProfile = sanitizeDatasetProfile(inspection, columns);
+        const observedBrief = researchService.applyAnswers(
+          researchBriefSchema.parse(variables.researchBrief),
+          {
+            expectedRowCount: datasetProfile.rowCount,
+            candidateTimeColumns: datasetProfile.columnCandidates.time.map(
+              (candidate) => candidate.name,
+            ),
+            candidateGroupColumns:
+              datasetProfile.columnCandidates.metadata.map(
+                (candidate) => candidate.name,
+              ),
+          },
+        );
+        const observedAssessment = researchService.assess(observedBrief, {
+          currentState: execution.state.id,
+        });
+        return transition(THETA_WORKFLOW_STATES.awaitColumnConfirmation, {
+          datasetProfile,
+          researchBrief: runtimeRecord({ ...observedAssessment.brief }),
+          researchAssessment:
+            sanitizeResearchAssessment(observedAssessment),
+        });
+      }
+      case THETA_WORKFLOW_STATES.awaitColumnConfirmation: {
+        const datasetProfile = datasetProfileSchema.parse(
+          variables.datasetProfile,
+        );
+        const resume = isRecord(execution.projection.lastResume?.payload)
+          ? execution.projection.lastResume.payload
+          : undefined;
+        if (
+          resume?.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation
+        ) {
+          return columnConfirmationWait(datasetProfile);
+        }
+        if (resume.decision === 'rejected') {
+          return failed(
+            'RUNTIME_CANCELLED',
+            'Human rejected the dataset column confirmation.',
+            execution.state.id,
+          );
+        }
+        if (!isRecord(variables.columnConfirmation)) {
+          return columnConfirmationWait(datasetProfile);
+        }
+        const submission = variables.columnConfirmation;
+        if (
+          requiredString(
+            submission.datasetSha256,
+            'submitted datasetSha256',
+          ) !== datasetProfile.datasetSha256
+        ) {
+          return columnConfirmationWait(datasetProfile);
+        }
+        const input = requireRecord(variables.input, 'workflow input');
+        const latestInspection = await invoke(THETA_TOOL_IDS.datasetInspect, {
+          filePath: requiredString(input.filePath, 'input.filePath'),
+          ...(numberValue(input.sampleSize) === undefined
+            ? {}
+            : { sampleSize: numberValue(input.sampleSize) }),
+        });
+        if (
+          requiredString(
+            latestInspection.datasetSha256,
+            'latest datasetSha256',
+          ) !== datasetProfile.datasetSha256
+        ) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            datasetInvalidation: {
+              reason: 'dataset_hash_changed_before_column_confirmation',
+              previousDatasetSha256: datasetProfile.datasetSha256,
+              detectedDatasetSha256: requiredString(
+                latestInspection.datasetSha256,
+                'latest datasetSha256',
+              ),
+            },
+            columnConfirmation: null,
+          });
+        }
+        const draft = columnConfirmationDraftSchema.parse(submission.draft);
+        validateConfirmedColumns(draft, datasetProfile.columns);
+        const confirmation = columnConfirmationSchema.parse({
+          ...draft,
+          schemaVersion: RESEARCH_CONTRACT_VERSION,
+          datasetSha256: datasetProfile.datasetSha256,
+          confirmedBy:
+            execution.projection.lastResume?.principalId ?? USER_ID,
+          confirmedAt:
+            execution.projection.lastResume?.resumedAt ??
+            new Date().toISOString(),
+        });
         return transition(THETA_WORKFLOW_STATES.recommendModel, {
-          datasetProfile: sanitizeDatasetProfile(inspection, columns),
+          columnConfirmation: confirmation,
         });
       }
       case THETA_WORKFLOW_STATES.recommendModel: {
@@ -509,7 +792,15 @@ const executeThetaState = async (
         return transition(THETA_WORKFLOW_STATES.validatePlan, {
           modelCatalog: sanitizeCatalog(catalog),
           recommendation: sanitizeRecommendation(recommendation),
-          candidatePlan: candidatePlan(input, datasetProfile, recommendation),
+          candidatePlan: candidatePlan(
+            input,
+            datasetProfile,
+            recommendation,
+            requireRecord(
+              variables.columnConfirmation,
+              'column confirmation',
+            ),
+          ),
         });
       }
       case THETA_WORKFLOW_STATES.validatePlan: {
@@ -638,8 +929,37 @@ const executeThetaState = async (
           execution,
           variables,
           THETA_APPROVAL_KEYS.trainingStart,
-          THETA_WORKFLOW_STATES.startTraining,
+          THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
         );
+      case THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining: {
+        const input = requireRecord(variables.input, 'workflow input');
+        const profile = datasetProfileSchema.parse(variables.datasetProfile);
+        const inspection = await invoke(THETA_TOOL_IDS.datasetInspect, {
+          filePath: requiredString(input.filePath, 'input.filePath'),
+          ...(numberValue(input.sampleSize) === undefined
+            ? {}
+            : { sampleSize: numberValue(input.sampleSize) }),
+        });
+        const currentSha256 = requiredString(
+          inspection.datasetSha256,
+          'training datasetSha256',
+        );
+        if (currentSha256 !== profile.datasetSha256) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            datasetInvalidation: {
+              reason: 'dataset_hash_changed_before_training',
+              previousDatasetSha256: profile.datasetSha256,
+              detectedDatasetSha256: currentSha256,
+              planApprovalInvalidated: true,
+              trainingApprovalInvalidated: true,
+            },
+            columnConfirmation: null,
+            planRecord: null,
+            planApproval: null,
+          });
+        }
+        return transition(THETA_WORKFLOW_STATES.startTraining);
+      }
       case THETA_WORKFLOW_STATES.startTraining: {
         const plan = requireRecord(variables.planRecord, 'plan record');
         const approval = requireRecord(variables.planApproval, 'plan approval');
@@ -792,6 +1112,79 @@ const approvalDecision = (
   };
 };
 
+const requiresStructuredHumanInput = (
+  pendingActionRef: string | undefined,
+): boolean =>
+  pendingActionRef === THETA_APPROVAL_KEYS.researchClarification ||
+  pendingActionRef === THETA_APPROVAL_KEYS.columnConfirmation;
+
+const researchClarificationWait = (
+  assessment: ResearchAssessment,
+): BoundedStateExecutionDecision => {
+  const grilling = decideResearchGrilling(assessment, 1);
+  return {
+    result: {
+      kind: 'waiting',
+      wait: {
+        type: 'human',
+        pendingActionRef: THETA_APPROVAL_KEYS.researchClarification,
+        reason:
+          grilling.activeQuestion ??
+          'Structured research clarification is required.',
+        metadata: sanitizeResearchAssessment(assessment),
+      },
+    },
+  };
+};
+
+const columnConfirmationWait = (
+  profile: DatasetProfile,
+): BoundedStateExecutionDecision => ({
+  result: {
+    kind: 'waiting',
+    wait: {
+      type: 'human',
+      pendingActionRef: THETA_APPROVAL_KEYS.columnConfirmation,
+      reason:
+        'Confirm the text, time, ID, and metadata column roles for this dataset hash.',
+      metadata: {
+        datasetSha256: profile.datasetSha256,
+        columns: profile.columns,
+        columnCandidates: profile.columnCandidates,
+      },
+    },
+  },
+});
+
+const sanitizeResearchAssessment = (
+  assessment: ResearchAssessment,
+): Record<string, RuntimeJsonValue> =>
+  runtimeRecord({
+    brief: assessment.brief,
+    gaps: assessment.gaps,
+    conflicts: assessment.conflicts,
+    questions: assessment.questions,
+    blocking: assessment.blocking,
+  });
+
+const validateConfirmedColumns = (
+  confirmation: ColumnConfirmationDraft,
+  columns: readonly string[],
+): void => {
+  const selected = [
+    ...confirmation.textColumns,
+    ...(confirmation.timeColumn ? [confirmation.timeColumn] : []),
+    ...(confirmation.idColumn ? [confirmation.idColumn] : []),
+    ...confirmation.metadataColumns,
+  ];
+  const unknown = selected.filter((name) => !columns.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Column confirmation references unknown columns: ${unique(unknown).join(', ')}.`,
+    );
+  }
+};
+
 const transition = (
   to: string,
   variablesPatch?: Record<string, unknown>,
@@ -876,6 +1269,30 @@ const hydrateVariables = async (
       const patch = recordProperty(event.payload, 'variablesPatch');
       if (patch) Object.assign(variables, patch);
     }
+    if (
+      event.type === 'reasoning.decision.recorded' &&
+      stringProperty(event.payload, 'pendingActionRef')
+    ) {
+      const researchAnswers = recordProperty(
+        event.payload,
+        'researchAnswers',
+      );
+      if (researchAnswers) {
+        variables.researchAnswers = {
+          ...(isRecord(variables.researchAnswers)
+            ? variables.researchAnswers
+            : {}),
+          ...researchAnswers,
+        };
+      }
+      const columnConfirmation = recordProperty(
+        event.payload,
+        'columnConfirmation',
+      );
+      if (columnConfirmation) {
+        variables.columnConfirmation = columnConfirmation;
+      }
+    }
   }
   return variables;
 };
@@ -883,40 +1300,75 @@ const hydrateVariables = async (
 const sanitizeDatasetProfile = (
   inspection: Record<string, unknown>,
   columns: Record<string, unknown>,
-): Record<string, RuntimeJsonValue> => ({
-  fileName: stringValue(inspection.fileName) ?? 'unknown',
-  suffix: stringValue(inspection.suffix) ?? '',
-  supported: inspection.supported === true,
-  rowCount: numberValue(inspection.rowCount) ?? 0,
-  sampleRowCount: numberValue(inspection.sampleRowCount) ?? 0,
-  columns: stringArray(inspection.columns),
-  columnProfiles: arrayValue(inspection.columnProfiles).map((value) => {
-    const profile = isRecord(value) ? value : {};
-    return {
-      name: stringValue(profile.name) ?? '',
-      nonEmptySampleCount: numberValue(profile.nonEmptySampleCount) ?? 0,
-      missingSampleCount: numberValue(profile.missingSampleCount) ?? 0,
-      missingSampleRatio: numberValue(profile.missingSampleRatio) ?? 0,
-      uniqueSampleCount: numberValue(profile.uniqueSampleCount) ?? 0,
-      avgLength: numberValue(profile.avgLength) ?? 0,
-      maxLength: numberValue(profile.maxLength) ?? 0,
-      inferredType: stringValue(profile.inferredType) ?? 'string',
-      estimatedTotalRows: numberValue(profile.estimatedTotalRows) ?? 0,
-    };
-  }),
-  textColumnCandidates: sanitizeCandidates(inspection.textColumnCandidates),
-  detectedColumns: {
-    ...(stringValue(columns.recommendedTextColumn) === undefined
-      ? {}
-      : { recommendedTextColumn: stringValue(columns.recommendedTextColumn) }),
-    textColumns: sanitizeCandidates(columns.textColumns),
-    timeColumns: sanitizeCandidates(columns.timeColumns),
-    metadataColumns: sanitizeCandidates(columns.metadataColumns),
-    warnings: stringArray(columns.warnings),
-  },
-});
+): DatasetProfile => {
+  const columnNames = stringArray(inspection.columns);
+  const profiles = arrayValue(inspection.columnProfiles).map((value) =>
+    isRecord(value) ? value : {},
+  );
+  const missingRatio =
+    profiles.length === 0
+      ? 0
+      : profiles.reduce(
+          (total, profile) =>
+            total + (numberValue(profile.missingSampleRatio) ?? 0),
+          0,
+        ) / profiles.length;
+  const averageTextLength =
+    profiles.length === 0
+      ? 0
+      : profiles.reduce(
+          (total, profile) => total + (numberValue(profile.avgLength) ?? 0),
+          0,
+        ) / profiles.length;
+  const maximumTextLength = profiles.reduce(
+    (maximum, profile) =>
+      Math.max(maximum, numberValue(profile.maxLength) ?? 0),
+    0,
+  );
+  return datasetProfileSchema.parse({
+    schemaVersion: RESEARCH_CONTRACT_VERSION,
+    datasetSha256: requiredString(
+      inspection.datasetSha256,
+      'datasetSha256',
+    ),
+    fileName: stringValue(inspection.fileName) ?? 'unknown',
+    fileSizeBytes: numberValue(inspection.fileSizeBytes) ?? 0,
+    format: stringValue(inspection.suffix)?.replace(/^\./, '') || 'unknown',
+    encoding: stringValue(inspection.encoding) ?? 'unknown',
+    rowCount: numberValue(inspection.rowCount) ?? 0,
+    columnCount: columnNames.length,
+    columns: columnNames,
+    missingRatio,
+    duplicateRatio: numberValue(inspection.sampleDuplicateRatio) ?? 0,
+    textLengthDistribution: {
+      average: averageTextLength,
+      maximum: maximumTextLength,
+    },
+    languageDistribution: arrayValue(inspection.languageDistribution).map(
+      (value) => {
+        const distribution = isRecord(value) ? value : {};
+        return {
+          language: stringValue(distribution.language) ?? 'unknown',
+          ratio: numberValue(distribution.ratio) ?? 0,
+        };
+      },
+    ),
+    timeCoverage: {
+      start: nullableStringProperty(inspection.timeCoverage, 'start'),
+      end: nullableStringProperty(inspection.timeCoverage, 'end'),
+    },
+    columnCandidates: {
+      text: sanitizeCandidates(columns.textColumns),
+      time: sanitizeCandidates(columns.timeColumns),
+      metadata: sanitizeCandidates(columns.metadataColumns),
+    },
+    sensitiveRiskCodes: sensitiveRiskCodes(columnNames),
+  });
+};
 
-const sanitizeCandidates = (value: unknown): RuntimeJsonValue[] =>
+const sanitizeCandidates = (
+  value: unknown,
+): Array<{ name: string; score: number; reason: string }> =>
   arrayValue(value).map((candidate) => {
     const item = isRecord(candidate) ? candidate : {};
     return {
@@ -925,6 +1377,22 @@ const sanitizeCandidates = (value: unknown): RuntimeJsonValue[] =>
       reason: stringValue(item.reason) ?? '',
     };
   });
+
+const sensitiveRiskCodes = (columns: readonly string[]): string[] => {
+  const risks = new Set<string>();
+  for (const column of columns) {
+    const normalized = column.toLowerCase();
+    if (/(email|e-mail)/.test(normalized)) risks.add('possible_email');
+    if (/(phone|mobile|tel)/.test(normalized)) risks.add('possible_phone');
+    if (/(name|user_name|username)/.test(normalized))
+      risks.add('possible_person_name');
+    if (/(address|location|gps)/.test(normalized))
+      risks.add('possible_location');
+    if (/(id_card|identity|passport|ssn)/.test(normalized))
+      risks.add('possible_government_id');
+  }
+  return [...risks].sort();
+};
 
 const sanitizeCatalog = (
   value: Record<string, unknown>,
@@ -949,6 +1417,7 @@ const candidatePlan = (
   input: Record<string, unknown>,
   datasetProfile: Record<string, unknown>,
   recommendation: Record<string, unknown>,
+  columnConfirmation: Record<string, unknown>,
 ): ThetaTrainingPlan => {
   if (isRecord(input.plan)) return input.plan as ThetaTrainingPlan;
   const top = isRecord(arrayValue(recommendation.recommendations)[0])
@@ -956,9 +1425,6 @@ const candidatePlan = (
     : {};
   const patch = isRecord(top.recommendedPlanPatch)
     ? top.recommendedPlanPatch
-    : {};
-  const detected = isRecord(datasetProfile.detectedColumns)
-    ? datasetProfile.detectedColumns
     : {};
   const constraints = isRecord(input.constraints) ? input.constraints : {};
   const fileName = stringValue(datasetProfile.fileName) ?? 'dataset';
@@ -970,8 +1436,8 @@ const candidatePlan = (
     mode: normalizedMode(patch.mode),
     numTopics:
       numberValue(patch.numTopics) ?? numberValue(constraints.maxTopics) ?? 10,
-    ...(stringValue(detected.recommendedTextColumn)
-      ? { textColumn: detected.recommendedTextColumn }
+    ...(stringArray(columnConfirmation.textColumns)[0]
+      ? { textColumn: stringArray(columnConfirmation.textColumns)[0] }
       : {}),
   };
 };
@@ -1041,6 +1507,9 @@ const toRunResult = (
   ...(result.projection.pendingWait?.pendingActionRef
     ? { pendingActionRef: result.projection.pendingWait.pendingActionRef }
     : {}),
+  ...(result.projection.pendingWait?.reason
+    ? { pendingReason: result.projection.pendingWait.reason }
+    : {}),
   statePath: result.projection.statePath,
   ...(output === undefined ? {} : { output }),
 });
@@ -1105,6 +1574,11 @@ const canonicalJson = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+const runtimeRecord = (
+  value: Record<string, unknown>,
+): Record<string, RuntimeJsonValue> =>
+  JSON.parse(JSON.stringify(value)) as Record<string, RuntimeJsonValue>;
+
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
 const arrayValue = (value: unknown): unknown[] =>
   Array.isArray(value) ? value : [];
@@ -1142,3 +1616,8 @@ const stringProperty = (
   property: string,
 ): string | undefined =>
   isRecord(value) ? stringValue(value[property]) : undefined;
+const nullableStringProperty = (
+  value: unknown,
+  property: string,
+): string | null =>
+  isRecord(value) ? stringValue(value[property]) ?? null : null;

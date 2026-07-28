@@ -61,21 +61,36 @@ Compile and inspect the DomainPack before execution:
 npm run cli -- workflow compile
 ```
 
-Start a Run. The default command performs read-only analysis and stops before
-the first plan write:
+Start a Run. Research intake is deterministic and stops for structured
+clarification when blocking facts are missing:
 
 ```powershell
-npm run cli -- workflow run --file fixtures/sample.jsonl --run-id theta-run-001
+npm run cli -- workflow run --file fixtures/sample.jsonl --goal "Discover stable research topics" --run-id theta-run-001
 ```
 
-Resolve each approval gate explicitly and continue from persisted events:
+Submit research answers through the durable HumanWait:
+
+```powershell
+npm run cli -- workflow resume --run-id theta-run-001 --answers fixtures/research-answers.json
+```
+
+Dataset inspection records only a sanitized `DatasetProfile`. Confirm the
+detected column roles explicitly before model recommendation:
+
+```powershell
+npm run cli -- workflow resume --run-id theta-run-001 --columns fixtures/column-confirmation.json
+```
+
+Resolve each later approval gate explicitly and continue from persisted
+events:
 
 ```powershell
 npm run cli -- workflow resume --run-id theta-run-001 --approve
 ```
 
-For an intentional unattended local demonstration, approve both plan writes.
-Adding `--approve-training` also permits the real external training process:
+`--approve-plans` and `--approve-training` apply only to plan and training
+approval gates. They never bypass research clarification or column
+confirmation:
 
 ```powershell
 npm run cli -- workflow run --file fixtures/sample.jsonl --approve-plans
@@ -188,6 +203,19 @@ npm run cli -- training cancel --run-id <id> --reason "User requested cancellati
 
 Add `--json` to any command for machine-readable output.
 
+## Verification
+
+```powershell
+npm run hypha:check
+npm run typecheck
+npm run build
+npm run smoke:research-agent
+npm run smoke:theta-domain
+npm run smoke:theta-workflow
+npm run smoke:architecture-boundary
+npm run smoke:cli
+```
+
 ## Governance Boundary
 
 The command line does not call THETA Python functions directly:
@@ -208,6 +236,14 @@ canonical events rather than CLI memory. Human decisions use Hypha runtime
 human waits, and training polling uses durable timer waits. Raw dataset rows
 and sample values are removed before any tool result is copied into canonical
 Run transition events.
+
+Research intake uses strict `ResearchBrief` contracts plus deterministic gap,
+conflict, and question-priority rules. It does not call an LLM. Dataset
+inspection calculates a SHA-256 identity and stores only bounded observation
+data in canonical events. Column confirmations are bound to that hash; a hash
+change invalidates the confirmation. The hash is checked again immediately
+before training, and a mismatch invalidates the current plan and approvals and
+returns the FSM to dataset inspection.
 
 Dataset paths are resolved to their canonical filesystem location before the
 Bridge starts. The governed handlers reject missing files, directory escapes,

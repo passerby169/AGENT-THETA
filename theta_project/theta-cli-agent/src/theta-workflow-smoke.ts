@@ -11,10 +11,13 @@ import {
 import { THETA_TOOL_IDS } from './tools/tool-ids.js';
 
 const RAW_SAMPLE_SENTINEL = 'RAW_SAMPLE_MUST_NOT_ENTER_CANONICAL_EVENTS';
+const DATASET_SHA_A = 'a'.repeat(64);
+const DATASET_SHA_B = 'b'.repeat(64);
 
 class FakeThetaTools implements ThetaWorkflowToolPort {
   private readonly events: FrameworkEvent[] = [];
   private readonly statusCalls = new Map<string, number>();
+  private readonly inspectCalls = new Map<string, number>();
   private sequence = 0;
 
   async invoke(
@@ -27,15 +30,33 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
     this.record(request, 'tool.call.completed', { toolId: request.toolId });
     switch (request.toolId) {
       case THETA_TOOL_IDS.datasetInspect:
+        {
+          const inspectCalls = (this.inspectCalls.get(request.runId) ?? 0) + 1;
+          this.inspectCalls.set(request.runId, inspectCalls);
+          const datasetSha256 =
+            (request.runId === 'theta-workflow-column-hash-change' &&
+              inspectCalls > 1) ||
+            (request.runId === 'theta-workflow-training-hash-change' &&
+              inspectCalls > 2)
+              ? DATASET_SHA_B
+              : DATASET_SHA_A;
         return {
           filePath: request.input.filePath,
           fileName: 'research.csv',
+          datasetSha256,
+          fileSizeBytes: 4096,
           suffix: '.csv',
           supported: true,
           encoding: 'utf8',
           delimiter: ',',
           rowCount: 120,
           sampleRowCount: 1,
+          sampleDuplicateRatio: 0,
+          languageDistribution: [{ language: 'latin', ratio: 1 }],
+          timeCoverage: {
+            start: '2026-07-01T00:00:00.000Z',
+            end: '2026-07-01T00:00:00.000Z',
+          },
           columns: ['text', 'created_at'],
           columnProfiles: [
             {
@@ -56,6 +77,7 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
             { name: 'text', score: 1, reason: 'Long-form text column.' },
           ],
         };
+        }
       case THETA_TOOL_IDS.datasetDetectColumns:
         return {
           filePath: request.input.filePath,
@@ -242,15 +264,42 @@ const input = {
   filePath: path.join(root, 'research.csv'),
   datasetId: 'research-smoke',
   researchGoal: 'Discover stable research topics.',
+  research: {
+    analysisUnit: 'one research document',
+    textFieldIntent: 'analyze the primary document body',
+    sensitiveData: { status: 'no' as const, categories: [] },
+    successCriteria: ['Produce stable, interpretable topics.'],
+    hardwareLimit: { device: 'cpu' as const, memoryGb: 16 },
+  },
   constraints: { maxTopics: 8 },
+};
+const columnConfirmation = {
+  textColumns: ['text'],
+  timeColumn: 'created_at',
+  idColumn: null,
+  metadataColumns: [],
 };
 
 try {
-  const completed = await service.run({
+  const completedWait = await service.run({
     input,
     runId: 'theta-workflow-completed',
     runtimeDb,
-    approvalKeys: Object.values(THETA_APPROVAL_KEYS),
+  });
+  if (
+    completedWait.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation
+  ) {
+    throw new Error('Completed workflow did not require column confirmation.');
+  }
+  const completed = await service.resume({
+    runId: completedWait.runId,
+    runtimeDb,
+    columnConfirmation,
+    approvalKeys: [
+      THETA_APPROVAL_KEYS.planCreate,
+      THETA_APPROVAL_KEYS.planApprove,
+      THETA_APPROVAL_KEYS.trainingStart,
+    ],
     approvedBy: 'owner.smoke',
   });
   if (
@@ -264,6 +313,8 @@ try {
   const expectedPath = [
     THETA_WORKFLOW_STATES.intake,
     THETA_WORKFLOW_STATES.inspectDataset,
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
     THETA_WORKFLOW_STATES.recommendModel,
     THETA_WORKFLOW_STATES.validatePlan,
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
@@ -275,6 +326,7 @@ try {
     THETA_WORKFLOW_STATES.dryRun,
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
+    THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
     THETA_WORKFLOW_STATES.startTraining,
     THETA_WORKFLOW_STATES.monitorTraining,
     THETA_WORKFLOW_STATES.completed,
@@ -299,20 +351,20 @@ try {
 
   const recoveryRunId = 'theta-workflow-recovery';
   const first = await service.run({ input, runId: recoveryRunId, runtimeDb });
-  if (first.pendingActionRef !== THETA_APPROVAL_KEYS.planCreate) {
+  if (first.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation) {
     throw new Error(
-      'Workflow did not stop at the plan creation approval gate.',
+      'Workflow did not stop at the column confirmation gate.',
     );
   }
   const second = await service.resume({
     runId: recoveryRunId,
     runtimeDb,
-    approve: true,
+    columnConfirmation,
     approvedBy: 'owner.smoke',
   });
-  if (second.pendingActionRef !== THETA_APPROVAL_KEYS.planApprove) {
+  if (second.pendingActionRef !== THETA_APPROVAL_KEYS.planCreate) {
     throw new Error(
-      'Recovered workflow did not stop at the plan approval gate.',
+      'Recovered workflow did not stop at the plan creation approval gate.',
     );
   }
   const third = await service.resume({
@@ -321,9 +373,9 @@ try {
     approve: true,
     approvedBy: 'owner.smoke',
   });
-  if (third.pendingActionRef !== THETA_APPROVAL_KEYS.trainingStart) {
+  if (third.pendingActionRef !== THETA_APPROVAL_KEYS.planApprove) {
     throw new Error(
-      'Recovered workflow did not stop at the training approval gate.',
+      'Recovered workflow did not stop at the plan approval gate.',
     );
   }
   const fourth = await service.resume({
@@ -332,18 +384,126 @@ try {
     approve: true,
     approvedBy: 'owner.smoke',
   });
-  if (fourth.disposition !== 'completed') {
+  if (fourth.pendingActionRef !== THETA_APPROVAL_KEYS.trainingStart) {
+    throw new Error(
+      'Recovered workflow did not stop at the training approval gate.',
+    );
+  }
+  const fifth = await service.resume({
+    runId: recoveryRunId,
+    runtimeDb,
+    approve: true,
+    approvedBy: 'owner.smoke',
+  });
+  if (fifth.disposition !== 'completed') {
     throw new Error('Recovered workflow did not complete after all approvals.');
+  }
+
+  const clarificationRunId = 'theta-workflow-clarification';
+  const clarificationWait = await service.run({
+    input: {
+      filePath: input.filePath,
+      researchGoal: input.researchGoal,
+    },
+    runId: clarificationRunId,
+    runtimeDb,
+  });
+  if (
+    clarificationWait.pendingActionRef !==
+    THETA_APPROVAL_KEYS.researchClarification
+  ) {
+    throw new Error('Incomplete research intake did not request clarification.');
+  }
+  const clarified = await service.resume({
+    runId: clarificationRunId,
+    runtimeDb,
+    researchAnswers: input.research,
+    approvedBy: 'owner.smoke',
+  });
+  if (
+    clarified.pendingActionRef !== THETA_APPROVAL_KEYS.columnConfirmation
+  ) {
+    throw new Error(
+      'Structured research answers did not advance to column confirmation.',
+    );
+  }
+
+  const columnHashRunId = 'theta-workflow-column-hash-change';
+  const columnHashWait = await service.run({
+    input,
+    runId: columnHashRunId,
+    runtimeDb,
+  });
+  const columnHashChanged = await service.resume({
+    runId: columnHashRunId,
+    runtimeDb,
+    columnConfirmation,
+    approvedBy: 'owner.smoke',
+  });
+  if (
+    columnHashChanged.pendingActionRef !==
+      THETA_APPROVAL_KEYS.columnConfirmation ||
+    columnHashChanged.currentState !==
+      THETA_WORKFLOW_STATES.awaitColumnConfirmation
+  ) {
+    const columnHashEvidence = await service.evidence(
+      columnHashRunId,
+      runtimeDb,
+    );
+    throw new Error(
+      `A changed dataset hash did not invalidate column confirmation: ${JSON.stringify(
+        {
+          columnHashChanged,
+          events: columnHashEvidence.orchestrationEvents
+            .slice(-8)
+            .map((event) => ({ type: event.type, payload: event.payload })),
+        },
+      )}`,
+    );
+  }
+
+  const trainingHashRunId = 'theta-workflow-training-hash-change';
+  await service.run({ input, runId: trainingHashRunId, runtimeDb });
+  const trainingHashChanged = await service.resume({
+    runId: trainingHashRunId,
+    runtimeDb,
+    columnConfirmation,
+    approvalKeys: [
+      THETA_APPROVAL_KEYS.planCreate,
+      THETA_APPROVAL_KEYS.planApprove,
+      THETA_APPROVAL_KEYS.trainingStart,
+    ],
+    approvedBy: 'owner.smoke',
+  });
+  if (
+    trainingHashChanged.pendingActionRef !==
+      THETA_APPROVAL_KEYS.columnConfirmation ||
+    trainingHashChanged.currentState !==
+      THETA_WORKFLOW_STATES.awaitColumnConfirmation
+  ) {
+    throw new Error(
+      `A changed preflight dataset hash did not invalidate approvals and return to confirmation: ${JSON.stringify(
+        trainingHashChanged,
+      )}`,
+    );
   }
 
   const rejectedRunId = 'theta-workflow-rejected';
   const rejectedWait = await service.run({
-    input,
+    input: {
+      filePath: input.filePath,
+      researchGoal: input.researchGoal,
+    },
     runId: rejectedRunId,
     runtimeDb,
   });
-  if (rejectedWait.pendingActionRef !== THETA_APPROVAL_KEYS.planCreate) {
-    throw new Error('Rejected workflow did not reach the expected approval gate.');
+  if (
+    rejectedWait.pendingActionRef !==
+    THETA_APPROVAL_KEYS.researchClarification
+  ) {
+    throw new Error(
+      'Rejected workflow did not reach the research clarification gate.',
+    );
   }
   const rejected = await service.resume({
     runId: rejectedRunId,
@@ -360,12 +520,21 @@ try {
     input,
     runId: timerRunId,
     runtimeDb,
-    approvalKeys: Object.values(THETA_APPROVAL_KEYS),
+  });
+  const timerStarted = await service.resume({
+    runId: timerRunId,
+    runtimeDb,
+    columnConfirmation,
+    approvalKeys: [
+      THETA_APPROVAL_KEYS.planCreate,
+      THETA_APPROVAL_KEYS.planApprove,
+      THETA_APPROVAL_KEYS.trainingStart,
+    ],
     approvedBy: 'owner.smoke',
   });
   if (
-    timerWait.disposition !== 'waiting' ||
-    timerWait.status !== 'waiting_timer'
+    timerStarted.disposition !== 'waiting' ||
+    timerStarted.status !== 'waiting_timer'
   ) {
     throw new Error('Running training did not create a durable timer wait.');
   }
@@ -384,7 +553,10 @@ try {
       toolEventCount: evidence.toolEvents.length,
       replayDigest: replay.digest,
       recoveryRun: recoveryRunId,
-      recoveryDisposition: fourth.disposition,
+      recoveryDisposition: fifth.disposition,
+      clarificationDisposition: clarified.disposition,
+      columnHashDisposition: columnHashChanged.disposition,
+      trainingHashDisposition: trainingHashChanged.disposition,
       rejectionDisposition: rejected.disposition,
       timerDisposition: timerCompleted.disposition,
     }),

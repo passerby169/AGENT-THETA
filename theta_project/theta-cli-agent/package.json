@@ -18,6 +18,7 @@
     "hypha:build": "npm --prefix ../Hypha run build:packages",
     "smoke:architecture-boundary": "node dist/architecture-boundary-smoke.js",
     "smoke:theta-domain": "node dist/theta-domain-smoke.js",
+    "smoke:research-agent": "node dist/research-agent-smoke.js",
     "smoke:theta-workflow": "node dist/theta-workflow-smoke.js",
     "smoke:hypha-dataset-tools": "node dist/hypha-dataset-tools-smoke.js",
     "smoke:hypha-import": "node dist/hypha-import-smoke.js",

@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import type { JsonSchema } from '@hypha/core';
 import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
 import { callThetaBridge } from './bridge.js';
@@ -31,12 +34,17 @@ export interface ThetaDatasetColumnCandidate {
 export interface ThetaDatasetInspectOutput {
   filePath: string;
   fileName: string;
+  datasetSha256: string;
+  fileSizeBytes: number;
   suffix: string;
   supported: boolean;
   encoding: string;
   delimiter: string | null;
   rowCount: number;
   sampleRowCount: number;
+  sampleDuplicateRatio: number;
+  languageDistribution: Array<{ language: string; ratio: number }>;
+  timeCoverage: { start: string | null; end: string | null };
   columns: string[];
   columnProfiles: ThetaDatasetColumnProfile[];
   sampleRows: Array<Record<string, unknown>>;
@@ -98,12 +106,17 @@ const thetaDatasetInspectOutputSchema: JsonSchema = {
   required: [
     'filePath',
     'fileName',
+    'datasetSha256',
+    'fileSizeBytes',
     'suffix',
     'supported',
     'encoding',
     'delimiter',
     'rowCount',
     'sampleRowCount',
+    'sampleDuplicateRatio',
+    'languageDistribution',
+    'timeCoverage',
     'columns',
     'columnProfiles',
     'sampleRows',
@@ -112,12 +125,36 @@ const thetaDatasetInspectOutputSchema: JsonSchema = {
   properties: {
     filePath: { type: 'string' },
     fileName: { type: 'string' },
+    datasetSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+    fileSizeBytes: { type: 'integer', minimum: 0 },
     suffix: { type: 'string' },
     supported: { type: 'boolean' },
     encoding: { type: 'string' },
     delimiter: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     rowCount: { type: 'integer', minimum: 0 },
     sampleRowCount: { type: 'integer', minimum: 0 },
+    sampleDuplicateRatio: { type: 'number', minimum: 0, maximum: 1 },
+    languageDistribution: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['language', 'ratio'],
+        properties: {
+          language: { type: 'string', minLength: 1 },
+          ratio: { type: 'number', minimum: 0, maximum: 1 },
+        },
+        additionalProperties: false,
+      },
+    },
+    timeCoverage: {
+      type: 'object',
+      required: ['start', 'end'],
+      properties: {
+        start: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        end: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      },
+      additionalProperties: false,
+    },
     columns: { type: 'array', items: { type: 'string' } },
     columnProfiles: { type: 'array', items: thetaDatasetColumnProfileSchema },
     sampleRows: {
@@ -194,5 +231,93 @@ export const thetaDatasetInspectHandler: ToolHandler<unknown, ThetaDatasetInspec
     throw new Error(response.error?.message ?? 'dataset.inspect bridge command failed.');
   }
 
-  return ensureDatasetInspectOutput(response.data);
+  const output = ensureDatasetInspectOutput(response.data);
+  const [datasetSha256, fileInfo] = await Promise.all([
+    sha256File(resolved.filePath),
+    stat(resolved.filePath),
+  ]);
+  return {
+    ...output,
+    datasetSha256,
+    fileSizeBytes: fileInfo.size,
+    sampleDuplicateRatio: sampleDuplicateRatio(output.sampleRows),
+    languageDistribution: sampleLanguageDistribution(output.sampleRows),
+    timeCoverage: sampleTimeCoverage(output.columnProfiles),
+  };
+};
+
+const sha256File = async (filename: string): Promise<string> => {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filename)) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
+};
+
+const sampleDuplicateRatio = (
+  rows: Array<Record<string, unknown>>,
+): number => {
+  if (rows.length === 0) return 0;
+  const uniqueRows = new Set(
+    rows.map((row) =>
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(row).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        ),
+      ),
+    ),
+  );
+  return (rows.length - uniqueRows.size) / rows.length;
+};
+
+const sampleLanguageDistribution = (
+  rows: Array<Record<string, unknown>>,
+): Array<{ language: string; ratio: number }> => {
+  const text = rows
+    .flatMap((row) => Object.values(row))
+    .filter((value): value is string => typeof value === 'string')
+    .join('');
+  const cjkCount = [...text].filter((character) =>
+    /[\u3400-\u9fff]/.test(character),
+  ).length;
+  const latinCount = [...text].filter((character) =>
+    /[A-Za-z]/.test(character),
+  ).length;
+  const total = cjkCount + latinCount;
+  if (total === 0) return [];
+  return [
+    ...(cjkCount === 0
+      ? []
+      : [{ language: 'zh-Hans', ratio: cjkCount / total }]),
+    ...(latinCount === 0
+      ? []
+      : [{ language: 'latin', ratio: latinCount / total }]),
+  ];
+};
+
+const sampleTimeCoverage = (
+  profiles: ThetaDatasetColumnProfile[],
+): { start: string | null; end: string | null } => {
+  const timestamps = profiles
+    .filter(
+      (profile) =>
+        profile.inferredType === 'datetime' ||
+        /(date|time|created|updated|timestamp)/i.test(profile.name),
+    )
+    .flatMap((profile) => profile.sampleValues)
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  return {
+    start:
+      timestamps.length === 0
+        ? null
+        : new Date(timestamps[0]).toISOString(),
+    end:
+      timestamps.length === 0
+        ? null
+        : new Date(timestamps[timestamps.length - 1]).toISOString(),
+  };
 };

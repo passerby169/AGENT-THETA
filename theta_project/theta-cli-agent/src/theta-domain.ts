@@ -20,7 +20,9 @@ export const THETA_AGENT_REF: SpecRef = {
 
 export const THETA_WORKFLOW_STATES = {
   intake: 'Intake',
+  awaitResearchClarification: 'ResearchClarification',
   inspectDataset: 'InspectDataset',
+  awaitColumnConfirmation: 'ColumnConfirmation',
   recommendModel: 'RecommendModel',
   validatePlan: 'ValidatePlan',
   awaitPlanCreationApproval: 'AwaitPlanCreationApproval',
@@ -29,6 +31,7 @@ export const THETA_WORKFLOW_STATES = {
   approvePlan: 'ApprovePlan',
   dryRun: 'DryRun',
   awaitTrainingStartApproval: 'AwaitTrainingStartApproval',
+  verifyDatasetBeforeTraining: 'VerifyDatasetBeforeTraining',
   startTraining: 'StartTraining',
   monitorTraining: 'MonitorTraining',
   completed: 'Completed',
@@ -37,6 +40,8 @@ export const THETA_WORKFLOW_STATES = {
 } as const;
 
 export const THETA_APPROVAL_KEYS = {
+  researchClarification: 'theta.research.clarify',
+  columnConfirmation: 'theta.columns.confirm',
   planCreate: 'theta.plan.create',
   planApprove: 'theta.plan.approve',
   trainingStart: 'theta.training.start',
@@ -99,7 +104,11 @@ const trainingControlPolicy = {
 const workflowStates: WorkflowStateSpec[] = [
   state(
     THETA_WORKFLOW_STATES.intake,
-    'Validate the requested local training workflow.',
+    'Build a strict ResearchBrief and detect blocking information gaps.',
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+    'Wait for structured answers to blocking research questions.',
   ),
   state(
     THETA_WORKFLOW_STATES.inspectDataset,
@@ -113,6 +122,16 @@ const workflowStates: WorkflowStateSpec[] = [
         toolRef(THETA_TOOL_IDS.datasetInspect),
         toolRef(THETA_TOOL_IDS.datasetDetectColumns),
       ],
+      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+    'Require explicit confirmation of dataset column roles.',
+    {
+      allowedTools: [THETA_TOOL_IDS.datasetInspect],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetInspect)],
       permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
       policyRefs: [readonlyPolicy.id],
     },
@@ -197,6 +216,16 @@ const workflowStates: WorkflowStateSpec[] = [
     'Wait for explicit approval before starting the external training process.',
   ),
   state(
+    THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
+    'Recompute the dataset hash before applying the training approval.',
+    {
+      allowedTools: [THETA_TOOL_IDS.datasetInspect],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetInspect)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
     THETA_WORKFLOW_STATES.startTraining,
     'Start training through the governed Bridge.',
     {
@@ -235,8 +264,27 @@ const workflowStates: WorkflowStateSpec[] = [
 ];
 
 const forwardTransitions = [
+  [
+    THETA_WORKFLOW_STATES.intake,
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+  ],
   [THETA_WORKFLOW_STATES.intake, THETA_WORKFLOW_STATES.inspectDataset],
-  [THETA_WORKFLOW_STATES.inspectDataset, THETA_WORKFLOW_STATES.recommendModel],
+  [
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+    THETA_WORKFLOW_STATES.inspectDataset,
+  ],
+  [
+    THETA_WORKFLOW_STATES.inspectDataset,
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+    THETA_WORKFLOW_STATES.inspectDataset,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+    THETA_WORKFLOW_STATES.recommendModel,
+  ],
   [THETA_WORKFLOW_STATES.recommendModel, THETA_WORKFLOW_STATES.validatePlan],
   [
     THETA_WORKFLOW_STATES.validatePlan,
@@ -255,7 +303,15 @@ const forwardTransitions = [
   ],
   [
     THETA_WORKFLOW_STATES.awaitTrainingStartApproval,
+    THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
+  ],
+  [
+    THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
     THETA_WORKFLOW_STATES.startTraining,
+  ],
+  [
+    THETA_WORKFLOW_STATES.verifyDatasetBeforeTraining,
+    THETA_WORKFLOW_STATES.inspectDataset,
   ],
   [THETA_WORKFLOW_STATES.startTraining, THETA_WORKFLOW_STATES.monitorTraining],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.completed],
@@ -292,6 +348,78 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
           filePath: { type: 'string', minLength: 1 },
           datasetId: { type: 'string' },
           researchGoal: { type: 'string' },
+          research: {
+            type: 'object',
+            properties: {
+              researchQuestion: { type: 'string', minLength: 1 },
+              dataSources: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+              collectionMethod: { type: 'string', minLength: 1 },
+              analysisUnit: { type: 'string', minLength: 1 },
+              timeRange: {
+                type: 'object',
+                properties: {
+                  start: { type: 'string', minLength: 1 },
+                  end: { type: 'string', minLength: 1 },
+                },
+                additionalProperties: false,
+              },
+              language: { type: 'string', minLength: 1 },
+              comparisonGroups: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+              topicGranularity: { enum: ['broad', 'medium', 'fine'] },
+              knownBiases: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+              sensitiveData: {
+                type: 'object',
+                required: ['status'],
+                properties: {
+                  status: { enum: ['yes', 'no', 'unknown'] },
+                  categories: {
+                    type: 'array',
+                    items: { type: 'string', minLength: 1 },
+                  },
+                },
+                additionalProperties: false,
+              },
+              successCriteria: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+              hardwareLimit: {
+                type: 'object',
+                required: ['device'],
+                properties: {
+                  device: { enum: ['cpu', 'gpu', 'unknown'] },
+                  memoryGb: { type: 'number', exclusiveMinimum: 0 },
+                },
+                additionalProperties: false,
+              },
+              textFieldIntent: { type: 'string', minLength: 1 },
+              trendAnalysis: { type: 'boolean' },
+              offlineOnly: { type: 'boolean' },
+              requestedEmbedding: {
+                enum: ['local', 'remote', 'none', 'unknown'],
+              },
+              timeLimitHours: { type: 'number', exclusiveMinimum: 0 },
+              expectedRowCount: { type: 'integer', minimum: 0 },
+              candidateTimeColumns: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+              candidateGroupColumns: {
+                type: 'array',
+                items: { type: 'string', minLength: 1 },
+              },
+            },
+            additionalProperties: false,
+          },
           constraints: { type: 'object', additionalProperties: true },
           plan: { type: 'object', additionalProperties: true },
           sampleSize: { type: 'integer', minimum: 1, maximum: 1000 },

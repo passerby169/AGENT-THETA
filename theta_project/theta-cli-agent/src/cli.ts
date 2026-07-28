@@ -87,6 +87,7 @@ Commands:
 
   workflow compile
   workflow run --file <dataset> [--approve-plans] [--approve-training]
+  workflow resume --run-id <id> [--answers <json> | --columns <json>]
   workflow resume --run-id <id> [--approve | --reject]
   workflow trace --run-id <id>
   workflow replay --run-id <id>

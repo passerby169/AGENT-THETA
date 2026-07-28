@@ -26,7 +26,9 @@ export const thetaWorkflowHelp = `THETA workflow commands:
       --approve-training as well to permit the external training start.
 
   workflow resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
-      Resume a durable Run and optionally resolve its current human wait.
+      Resume a durable Run and optionally resolve an approval wait.
+      Use --answers <json> for research clarification or --columns <json>
+      for explicit dataset column confirmation.
 
   workflow trace --run-id <id> [--runtime-db <path>]
       Print canonical orchestration events and governed tool trace events.
@@ -84,12 +86,25 @@ export const runThetaWorkflowCliCommand = async (
       if (flag(parsed, 'approve') && flag(parsed, 'reject')) {
         throw new Error('--approve and --reject cannot be used together.');
       }
+      const researchAnswers = await optionalJsonFlag(parsed, 'answers');
+      const columnConfirmation = await optionalJsonFlag(parsed, 'columns');
       const result = await service.resume({
         runId: requiredFlag(parsed, 'run-id'),
         ...(runtimeDb ? { runtimeDb } : {}),
         approve: flag(parsed, 'approve'),
         reject: flag(parsed, 'reject'),
         approvedBy: stringFlag(parsed, 'approved-by') ?? 'local_user',
+        ...(researchAnswers ? { researchAnswers } : {}),
+        ...(columnConfirmation
+          ? {
+              columnConfirmation: columnConfirmation as {
+                textColumns: string[];
+                timeColumn: string | null;
+                idColumn: string | null;
+                metadataColumns: string[];
+              },
+            }
+          : {}),
       });
       write(result, json, output);
       return result.disposition === 'failed' ? 2 : 0;
@@ -193,6 +208,7 @@ const write = (
         `Status: ${String(record.status ?? record.disposition ?? 'unknown')}`,
         `State: ${String(record.currentState ?? 'n/a')}`,
         `Pending approval: ${String(record.pendingActionRef ?? 'none')}`,
+        `Next action: ${String(record.pendingReason ?? 'none')}`,
         `Runtime DB: ${String(record.runtimeDb ?? 'default')}`,
       ].join('\n'),
     );
@@ -232,4 +248,19 @@ const integerFlag = (
     throw new Error(`Option --${name} must be a positive integer.`);
   }
   return parsedValue;
+};
+
+const optionalJsonFlag = async (
+  parsed: ParsedWorkflowArguments,
+  name: string,
+): Promise<Record<string, unknown> | undefined> => {
+  const filename = stringFlag(parsed, name);
+  if (!filename) return undefined;
+  const value = JSON.parse(
+    await readFile(path.resolve(process.cwd(), filename), 'utf8'),
+  ) as unknown;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`--${name} must contain a JSON object.`);
+  }
+  return value as Record<string, unknown>;
 };

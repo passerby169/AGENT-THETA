@@ -33,7 +33,12 @@ const cases: CommandCase[] = [
     args: ['dataset', 'inspect', '--file', 'fixtures/sample.jsonl'],
     verify: (output) => {
       const profile = asRecord(output);
-      if (profile.rowCount !== 3 || !Array.isArray(profile.columns)) {
+      if (
+        profile.rowCount !== 3 ||
+        !Array.isArray(profile.columns) ||
+        typeof profile.datasetSha256 !== 'string' ||
+        profile.datasetSha256.length !== 64
+      ) {
         throw new Error('dataset inspect command returned an invalid profile.');
       }
     },

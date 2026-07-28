@@ -27,12 +27,29 @@ const trainingScope = resolveThetaStateToolScope(
   first,
   THETA_WORKFLOW_STATES.startTraining,
 );
+const columnScope = resolveThetaStateToolScope(
+  first,
+  THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+);
+const researchScope = resolveThetaStateToolScope(
+  first,
+  THETA_WORKFLOW_STATES.awaitResearchClarification,
+);
 
 if (!inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.datasetInspect)) {
   throw new Error('InspectDataset does not allow theta.dataset.inspect.');
 }
 if (inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.trainingStart)) {
   throw new Error('InspectDataset improperly allows theta.training.start.');
+}
+if (
+  columnScope.allowedToolIds?.length !== 1 ||
+  columnScope.allowedToolIds[0] !== THETA_TOOL_IDS.datasetInspect
+) {
+  throw new Error('ColumnConfirmation may only re-read dataset identity.');
+}
+if ((researchScope.allowedToolIds?.length ?? 0) !== 0) {
+  throw new Error('ResearchClarification must not execute tools.');
 }
 if (
   trainingScope.allowedToolIds?.length !== 1 ||
