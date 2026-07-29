@@ -84,6 +84,95 @@ export class ConversationService {
         json: options.booleans.has('json'),
       });
     }
+    if (command === 'plan') {
+      const action = rest[0];
+      if (action !== 'show' && action !== 'approve') {
+        throw new Error('Expected "plan show" or "plan approve".');
+      }
+      const options = parseOptions(
+        rest.slice(1),
+        new Set([
+          'run-id',
+          'runtime-db',
+          ...(action === 'approve' ? ['approved-by'] : []),
+        ]),
+        new Set(['json']),
+      );
+      return agentInvocationSchema.parse({
+        kind: action === 'show' ? 'planShow' : 'planApprove',
+        runId: requiredOption(options.values, 'run-id'),
+        runtimeDb: options.values.get('runtime-db'),
+        approvedBy: options.values.get('approved-by'),
+        json: options.booleans.has('json'),
+      });
+    }
+    if (command === 'train') {
+      const action = rest[0];
+      if (action === 'status') {
+        const options = parseOptions(
+          rest.slice(1),
+          new Set(['run-id', 'log-limit']),
+          new Set(['json']),
+        );
+        const logLimit = optionalPositiveInteger(
+          options.values.get('log-limit'),
+          'log-limit',
+          500,
+        );
+        return agentInvocationSchema.parse({
+          kind: 'trainingStatus',
+          trainingRunId: requiredOption(options.values, 'run-id'),
+          logLimit,
+          json: options.booleans.has('json'),
+        });
+      }
+      if (action === 'cancel') {
+        const options = parseOptions(
+          rest.slice(1),
+          new Set(['run-id', 'reason']),
+          new Set(['approve', 'json']),
+        );
+        return agentInvocationSchema.parse({
+          kind: 'trainingCancel',
+          trainingRunId: requiredOption(options.values, 'run-id'),
+          reason: requiredOption(options.values, 'reason'),
+          approve: options.booleans.has('approve'),
+          json: options.booleans.has('json'),
+        });
+      }
+      throw new Error('Expected "train status" or "train cancel".');
+    }
+    if (command === 'evidence') {
+      if (rest[0] !== 'show') {
+        throw new Error('Expected "evidence show".');
+      }
+      const options = parseOptions(
+        rest.slice(1),
+        new Set(['run-id', 'runtime-db']),
+        new Set(['json']),
+      );
+      return agentInvocationSchema.parse({
+        kind: 'evidenceShow',
+        runId: requiredOption(options.values, 'run-id'),
+        runtimeDb: options.values.get('runtime-db'),
+        json: options.booleans.has('json'),
+      });
+    }
+    if (command === 'rag') {
+      const action = rest[0];
+      if (action !== 'build' && action !== 'status') {
+        throw new Error('Expected "rag build" or "rag status".');
+      }
+      const options = parseOptions(
+        rest.slice(1),
+        new Set(),
+        new Set(['json']),
+      );
+      return agentInvocationSchema.parse({
+        kind: action === 'build' ? 'ragBuild' : 'ragStatus',
+        json: options.booleans.has('json'),
+      });
+    }
     if (command === 'repl') {
       const options = parseOptions(
         rest,
@@ -192,6 +281,21 @@ const requiredOption = (values: Map<string, string>, name: string): string => {
 const optional = (value: string): string | undefined => {
   const trimmed = value.trim();
   return trimmed || undefined;
+};
+
+const optionalPositiveInteger = (
+  value: string | undefined,
+  name: string,
+  maximum: number,
+): number | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > maximum) {
+    throw new Error(
+      `Option --${name} must be a positive integer no greater than ${maximum}.`,
+    );
+  }
+  return parsed;
 };
 
 const requireNoArgument = (

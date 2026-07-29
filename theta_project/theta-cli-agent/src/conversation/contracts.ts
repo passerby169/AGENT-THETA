@@ -32,6 +32,38 @@ export const agentInvocationSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.enum(['planShow', 'planApprove', 'evidenceShow']),
+      runId: z.string().min(1),
+      runtimeDb: z.string().min(1).optional(),
+      approvedBy: z.string().min(1).optional(),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('trainingStatus'),
+      trainingRunId: z.string().min(1),
+      logLimit: z.number().int().positive().max(500).optional(),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('trainingCancel'),
+      trainingRunId: z.string().min(1),
+      reason: z.string().min(1),
+      approve: z.boolean(),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.enum(['ragBuild', 'ragStatus']),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('repl'),
       runId: z.string().min(1).optional(),
       runtimeDb: z.string().min(1).optional(),

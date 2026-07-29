@@ -1,4 +1,5 @@
 import { ConversationService } from './conversation/conversation-service.js';
+import { runThetaAgentCliCommand } from './agent-cli.js';
 
 const conversation = new ConversationService();
 
@@ -55,6 +56,69 @@ if (audit.kind !== 'audit' || audit.runId !== 'run-001') {
   throw new Error('Audit export command was not validated.');
 }
 
+const planShow = conversation.parseInvocation([
+  'plan',
+  'show',
+  '--run-id',
+  'run-001',
+]);
+if (planShow.kind !== 'planShow' || planShow.runId !== 'run-001') {
+  throw new Error('Plan show command was not validated.');
+}
+
+const planApprove = conversation.parseInvocation([
+  'plan',
+  'approve',
+  '--run-id',
+  'run-001',
+  '--approved-by',
+  'operator-001',
+]);
+if (
+  planApprove.kind !== 'planApprove' ||
+  planApprove.approvedBy !== 'operator-001'
+) {
+  throw new Error('Plan approval command was not validated.');
+}
+
+const trainingStatus = conversation.parseInvocation([
+  'train',
+  'status',
+  '--run-id',
+  'training-001',
+  '--log-limit',
+  '80',
+]);
+if (
+  trainingStatus.kind !== 'trainingStatus' ||
+  trainingStatus.logLimit !== 80
+) {
+  throw new Error('Training status command was not validated.');
+}
+
+const trainingCancel = conversation.parseInvocation([
+  'train',
+  'cancel',
+  '--run-id',
+  'training-001',
+  '--reason',
+  'operator request',
+]);
+if (
+  trainingCancel.kind !== 'trainingCancel' ||
+  trainingCancel.approve !== false
+) {
+  throw new Error('Training cancellation defaulted to approval.');
+}
+
+for (const args of [
+  ['evidence', 'show', '--run-id', 'run-001'],
+  ['rag', 'build'],
+  ['rag', 'status'],
+]) {
+  conversation.parseInvocation(args);
+}
+
 const why = conversation.parseReplLine('/why run-001');
 if (why.kind !== 'why' || why.runId !== 'run-001') {
   throw new Error('REPL why command was not normalized.');
@@ -94,10 +158,37 @@ if (!rejectedUnknownOption) {
   throw new Error('Agent command accepted an unknown option.');
 }
 
+let delegatedKind = '';
+const writes: string[] = [];
+const exitCode = await runThetaAgentCliCommand(
+  ['rag', 'status', '--json'],
+  {
+    write: (message) => writes.push(message),
+    writeError: (message) => {
+      throw new Error(message);
+    },
+  },
+  {
+    operator: {
+      execute: async (invocation) => {
+        delegatedKind = invocation.kind;
+        return { status: 'ready' };
+      },
+    },
+  },
+);
+if (
+  exitCode !== 0 ||
+  delegatedKind !== 'ragStatus' ||
+  writes[0] !== '{"status":"ready"}'
+) {
+  throw new Error('Agent CLI did not delegate the structured RAG command.');
+}
+
 console.log(
   JSON.stringify({
     status: 'ok',
-    structuredCommands: 11,
+    structuredCommands: 19,
     freeFormInput: 'rejected',
   }),
 );

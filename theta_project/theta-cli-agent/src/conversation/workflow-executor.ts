@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { FrameworkEvent } from '@hypha/core';
+import { THETA_APPROVAL_KEYS } from '../theta-domain.js';
 import {
   ThetaWorkflowService,
   type ThetaWorkflowEvidence,
@@ -65,7 +66,8 @@ export class ThetaConversationWorkflowExecutor {
           pendingActionRef: status.pendingActionRef ?? null,
           pendingReason: status.pendingReason ?? null,
           statePath: status.statePath,
-          approvalReady: status.pendingActionRef === 'HumanPlanReview',
+          approvalReady:
+            status.pendingActionRef === THETA_APPROVAL_KEYS.planReview,
         },
         activeRunId: runId,
       };

@@ -13,7 +13,7 @@
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "rag:build": "node dist/rag/build-index.js",
+    "rag:build": "node dist/cli.js rag build --json",
     "cli": "node dist/cli.js",
     "demo": "node dist/cli.js demo",
     "hypha:check": "node ../scripts/check-hypha-version.mjs",
@@ -36,6 +36,8 @@
     "smoke:hypha-training-controls": "node dist/hypha-training-controls-smoke.js",
     "smoke:training-runtime": "node dist/training-runtime-smoke.js",
     "smoke:agent-cli": "node dist/agent-cli-smoke.js",
+    "smoke:operator-commands": "node dist/operator-command-smoke.js",
+    "smoke:rag-governance": "node dist/rag-governance-smoke.js",
     "test:python-runtime": "python -m unittest discover ../theta_agent_bridge/tests -p \"test_*.py\"",
     "smoke:cli": "node dist/cli-smoke.js"
   },

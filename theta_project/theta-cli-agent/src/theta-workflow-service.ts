@@ -145,6 +145,20 @@ export interface ThetaWorkflowEvidence {
   toolEvents: FrameworkEvent[];
 }
 
+export interface ThetaWorkflowPlan {
+  runId: string;
+  runtimeDb: string;
+  source: 'canonical_events';
+  currentState?: string;
+  pendingActionRef?: string;
+  pendingReason?: string;
+  approvalReady: boolean;
+  candidatePlan?: RuntimeJsonValue;
+  validatedPlan?: RuntimeJsonValue;
+  planRecord?: RuntimeJsonValue;
+  planReview?: RuntimeJsonValue;
+}
+
 export interface ThetaWorkflowReplay {
   runId: string;
   eventTypes: string[];
@@ -392,6 +406,57 @@ export class ThetaWorkflowService {
         toolEvents: await this.toolPort(resolvedDb, resolvedRunId).listTrace(
           resolvedRunId,
         ),
+      };
+    } finally {
+      runtime.close();
+    }
+  }
+
+  async plan(
+    runId: string,
+    runtimeDb = defaultThetaWorkflowDb(),
+  ): Promise<ThetaWorkflowPlan> {
+    const resolvedRunId = required(runId, 'runId');
+    const resolvedDb = path.resolve(runtimeDb);
+    const scope = runtimeScope(resolvedRunId);
+    const runtime = await createThetaWorkflowRuntime({ filename: resolvedDb });
+    try {
+      const events = await runtime.events.read({
+        scope: streamScope(scope),
+      });
+      if (events.length === 0) {
+        throw new Error(`Run not found: ${resolvedRunId}`);
+      }
+      const projection = (
+        await runtime.projections.update(
+          createRuntimeOrchestrationProjectionDefinition(resolvedRunId),
+          runtime.projectionStore,
+          streamScope(scope),
+        )
+      ).state;
+      const variables = await hydrateVariables(runtime.events, scope);
+      return {
+        runId: resolvedRunId,
+        runtimeDb: resolvedDb,
+        source: 'canonical_events',
+        ...(projection.currentState === undefined
+          ? {}
+          : { currentState: projection.currentState }),
+        ...(projection.pendingWait?.pendingActionRef === undefined
+          ? {}
+          : {
+              pendingActionRef: projection.pendingWait.pendingActionRef,
+            }),
+        ...(projection.pendingWait?.reason === undefined
+          ? {}
+          : { pendingReason: projection.pendingWait.reason }),
+        approvalReady:
+          projection.pendingWait?.pendingActionRef ===
+          THETA_APPROVAL_KEYS.planReview,
+        ...runtimeVariable(variables, 'candidatePlan'),
+        ...runtimeVariable(variables, 'validatedPlan'),
+        ...runtimeVariable(variables, 'planRecord'),
+        ...runtimeVariable(variables, 'planReview'),
       };
     } finally {
       runtime.close();
@@ -1461,6 +1526,14 @@ const hydrateVariables = async (
     }
   }
   return variables;
+};
+
+const runtimeVariable = (
+  variables: Record<string, unknown>,
+  key: 'candidatePlan' | 'validatedPlan' | 'planRecord' | 'planReview',
+): Partial<ThetaWorkflowPlan> => {
+  const value = variables[key];
+  return value === undefined ? {} : { [key]: value as RuntimeJsonValue };
 };
 
 const sanitizeDatasetProfile = (

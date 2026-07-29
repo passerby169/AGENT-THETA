@@ -22,10 +22,12 @@ import type {
   ThetaModelRecommendInput,
   ThetaModelRecommendOutput,
 } from "./model-recommend-tool.js";
+import type { ThetaRagIndexOutput } from "./rag-index-tool.js";
 import type {
   ThetaRagSearchInput,
   ThetaRagSearchOutput,
 } from "./rag-search-tool.js";
+import type { ThetaRagStatusOutput } from "./rag-status-tool.js";
 import type {
   ThetaPlanApproveInput,
   ThetaPlanApproveOutput,
@@ -249,6 +251,38 @@ export const runThetaRagSearch = async (
       ],
     }),
   }) as Promise<ToolCallResult<ThetaRagSearchOutput>>;
+};
+
+export const runThetaRagBuild = async (
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaRagIndexOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.ragIndex,
+    input: {},
+    context: createThetaToolCallContext("theta-rag-build", "rag_build", {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.ragWrite,
+      ],
+    }),
+  }) as Promise<ToolCallResult<ThetaRagIndexOutput>>;
+};
+
+export const runThetaRagStatus = async (
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaRagStatusOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.ragStatus,
+    input: {},
+    context: createThetaToolCallContext("theta-rag-status", "rag_status", {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.ragRead,
+      ],
+    }),
+  }) as Promise<ToolCallResult<ThetaRagStatusOutput>>;
 };
 
 export const runThetaPlanValidate = async (

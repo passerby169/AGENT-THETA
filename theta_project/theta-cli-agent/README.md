@@ -22,14 +22,17 @@ npm run build
 ```
 
 Build or incrementally refresh the local evidence index before requesting
-evidence-backed recommendations:
+evidence-backed recommendations. The operator command executes the index write
+through Hypha policy, schema validation, trace, and Harness hooks:
 
 ```powershell
-npm run rag:build
+npm run cli -- rag build
+npm run cli -- rag status
 ```
 
 The source allowlist is declared in `knowledge/manifest.yaml`. The generated
 SQLite file is stored under the ignored `.theta_agent/` directory.
+`npm run rag:build` is a convenience alias for the same governed command.
 
 ## Run
 
@@ -59,10 +62,34 @@ npm run cli -- start --file fixtures/recommendation-sample.jsonl --run-id theta-
 npm run cli -- status --run-id theta-run-001
 npm run cli -- resume --run-id theta-run-001 --columns fixtures/column-confirmation.json
 npm run cli -- audit export --run-id theta-run-001 --json
+npm run cli -- plan show --run-id theta-run-001
+npm run cli -- evidence show --run-id theta-run-001
 ```
 
 These aliases delegate to `ThetaWorkflowService`; they do not read Runtime
 SQLite, call Python, create approvals, or execute tools directly.
+
+Review and approve only the canonical Runtime plan gate:
+
+```powershell
+npm run cli -- plan show --run-id theta-run-001
+npm run cli -- plan approve --run-id theta-run-001 --approved-by local_user
+```
+
+`plan approve --run-id` fails unless the Run is currently waiting at
+`HumanPlanReview`. It cannot approve column confirmation, training review, or
+another HumanWait.
+
+Read or cancel a training process through governed operator commands:
+
+```powershell
+npm run cli -- train status --run-id <training-run-id> --log-limit 80
+npm run cli -- train cancel --run-id <training-run-id> --reason "Operator request"
+npm run cli -- train cancel --run-id <training-run-id> --reason "Operator request" --approve
+```
+
+The first cancellation command only returns the approval gate. No cancellation
+is recorded until the operator repeats the same request with `--approve`.
 
 For an interactive deterministic loop:
 
@@ -312,6 +339,8 @@ npm run smoke:architecture-boundary
 npm run test:python-runtime
 npm run smoke:training-runtime
 npm run smoke:agent-cli
+npm run smoke:operator-commands
+npm run smoke:rag-governance
 npm run smoke:cli
 ```
 

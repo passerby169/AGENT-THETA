@@ -32,7 +32,7 @@ import type { ThetaTrainingDryRunInput } from "./tools/training-dry-run-tool.js"
 import type { ThetaTrainingStartInput } from "./tools/training-start-tool.js";
 import { runThetaWorkflowCliCommand } from "./theta-workflow-cli.js";
 import {
-  agentCommandNames,
+  isThetaAgentCommand,
   runThetaAgentCliCommand,
 } from "./agent-cli.js";
 
@@ -72,6 +72,27 @@ Commands:
 
   audit export --run-id <id> [--runtime-db <path>] [--json]
       Export orchestration events and governed tool trace to the terminal.
+
+  plan show --run-id <id> [--runtime-db <path>] [--json]
+      Show the candidate or canonical plan derived from Runtime events.
+
+  plan approve --run-id <id> [--approved-by <user>]
+      Approve only a Run currently waiting at HumanPlanReview.
+
+  train status --run-id <id> [--log-limit <number>] [--json]
+      Read governed training progress, receipts, logs, and lifecycle events.
+
+  train cancel --run-id <id> --reason <text> [--approve] [--json]
+      Request cancellation; repeat with --approve after explicit review.
+
+  evidence show --run-id <id> [--runtime-db <path>] [--json]
+      Show canonical orchestration events and governed tool events.
+
+  rag build [--json]
+      Build the allowlisted local evidence index through Hypha governance.
+
+  rag status [--json]
+      Read evidence-index readiness and source/chunk counts.
 
   repl [--run-id <id>] [--runtime-db <path>]
       Open the deterministic command REPL. Free-form model chat is disabled.
@@ -138,6 +159,9 @@ Examples:
   npm run cli -- training start --file <training-start-request.json>
   npm run cli -- training status --run-id <id>
   npm run cli -- training cancel --run-id <id> --reason "User requested cancellation"
+  npm run cli -- plan show --run-id theta-run-001
+  npm run cli -- evidence show --run-id theta-run-001
+  npm run cli -- rag status
   npm run cli -- demo
 `;
 
@@ -772,8 +796,7 @@ export const runCli = async (
       return 0;
     }
 
-    const topLevelCommand = parsed.positionals[0];
-    if (topLevelCommand && agentCommandNames.has(topLevelCommand)) {
+    if (isThetaAgentCommand(args)) {
       return runThetaAgentCliCommand(args, output);
     }
 

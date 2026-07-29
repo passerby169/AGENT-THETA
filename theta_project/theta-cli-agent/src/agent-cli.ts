@@ -2,6 +2,11 @@ import { createInterface } from 'node:readline';
 import { ConversationService } from './conversation/conversation-service.js';
 import { ThetaConversationWorkflowExecutor } from './conversation/workflow-executor.js';
 import { DoctorService, type DoctorReport } from './doctor-service.js';
+import {
+  ThetaOperatorCommandService,
+  type OperatorCommandExecutor,
+  type OperatorInvocation,
+} from './operator-command-service.js';
 import { runThetaWorkflowCliCommand } from './theta-workflow-cli.js';
 
 export interface AgentCliOutput {
@@ -13,6 +18,7 @@ export interface AgentCliDependencies {
   conversation?: ConversationService;
   doctor?: DoctorService;
   executor?: ThetaConversationWorkflowExecutor;
+  operator?: OperatorCommandExecutor;
 }
 
 export const agentCommandNames = new Set([
@@ -21,8 +27,25 @@ export const agentCommandNames = new Set([
   'resume',
   'status',
   'audit',
+  'evidence',
+  'rag',
+  'train',
   'repl',
 ]);
+
+export const isThetaAgentCommand = (args: readonly string[]): boolean => {
+  const [command, subcommand] = args;
+  if (command && agentCommandNames.has(command)) return true;
+  if (command !== 'plan') return false;
+  if (subcommand === 'show') return true;
+  return (
+    subcommand === 'approve' &&
+    args.some(
+      (argument) =>
+        argument === '--run-id' || argument.startsWith('--run-id='),
+    )
+  );
+};
 
 export const runThetaAgentCliCommand = async (
   args: string[],
@@ -74,6 +97,17 @@ export const runThetaAgentCliCommand = async (
       const report = await (dependencies.doctor ?? new DoctorService()).run();
       writeDoctor(report, invocation.json, output);
       return report.status === 'blocked' ? 2 : 0;
+    }
+    if (invocation.kind !== 'repl') {
+      const value = await (
+        dependencies.operator ?? new ThetaOperatorCommandService()
+      ).execute(invocation as OperatorInvocation);
+      output.write(
+        invocation.json
+          ? JSON.stringify(value)
+          : JSON.stringify(value, null, 2),
+      );
+      return 0;
     }
     await runRepl(
       {

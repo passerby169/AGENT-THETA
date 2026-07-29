@@ -28,6 +28,11 @@ export interface KnowledgeBuildResult {
   indexedChunks: number;
 }
 
+export interface KnowledgeIndexCounts {
+  totalSources: number;
+  totalChunks: number;
+}
+
 const authorityScore: Record<EvidenceRef["authority"], number> = {
   L1: 40,
   L2: 30,
@@ -93,6 +98,19 @@ export class FtsEvidenceIndex {
       indexedSources: sources.length - unchangedSources,
       unchangedSources,
       indexedChunks,
+    };
+  }
+
+  counts(): KnowledgeIndexCounts {
+    const sources = this.db
+      .prepare('SELECT COUNT(*) AS count FROM knowledge_sources')
+      .get() as { count: number };
+    const chunks = this.db
+      .prepare('SELECT COUNT(*) AS count FROM knowledge_chunks')
+      .get() as { count: number };
+    return {
+      totalSources: Number(sources.count),
+      totalChunks: Number(chunks.count),
     };
   }
 

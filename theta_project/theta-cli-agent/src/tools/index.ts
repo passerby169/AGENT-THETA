@@ -17,9 +17,15 @@ export type {
   ThetaModelRecommendOutput,
 } from "./model-recommend-tool.js";
 export type {
+  ThetaRagIndexOutput,
+} from "./rag-index-tool.js";
+export type {
   ThetaRagSearchInput,
   ThetaRagSearchOutput,
 } from "./rag-search-tool.js";
+export type {
+  ThetaRagStatusOutput,
+} from "./rag-status-tool.js";
 export type {
   ThetaPlanApproveInput,
   ThetaPlanApproveOutput,

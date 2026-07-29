@@ -16,9 +16,17 @@ import {
   thetaModelRecommendToolSpec,
 } from "./model-recommend-tool.js";
 import {
+  thetaRagIndexHandler,
+  thetaRagIndexToolSpec,
+} from "./rag-index-tool.js";
+import {
   thetaRagSearchHandler,
   thetaRagSearchToolSpec,
 } from "./rag-search-tool.js";
+import {
+  thetaRagStatusHandler,
+  thetaRagStatusToolSpec,
+} from "./rag-status-tool.js";
 import {
   thetaPlanApproveHandler,
   thetaPlanApproveToolSpec,
@@ -62,6 +70,8 @@ export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaDatasetDetectColumnsToolSpec,
   thetaModelCatalogToolSpec,
   thetaModelRecommendToolSpec,
+  thetaRagIndexToolSpec,
+  thetaRagStatusToolSpec,
   thetaRagSearchToolSpec,
   thetaPlanValidateToolSpec,
   thetaPlanCreateToolSpec,
@@ -86,6 +96,12 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   );
   registerThetaModelCatalogTool(registry);
   registry.register(thetaModelRecommendToolSpec, thetaModelRecommendHandler, {
+    replace: true,
+  });
+  registry.register(thetaRagIndexToolSpec, thetaRagIndexHandler, {
+    replace: true,
+  });
+  registry.register(thetaRagStatusToolSpec, thetaRagStatusHandler, {
     replace: true,
   });
   registry.register(thetaRagSearchToolSpec, thetaRagSearchHandler, {

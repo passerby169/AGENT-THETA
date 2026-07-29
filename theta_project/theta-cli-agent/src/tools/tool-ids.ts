@@ -14,6 +14,7 @@ export const THETA_TOOL_IDS = {
   resultsList: "theta.results.list",
   resultsSummarize: "theta.results.summarize",
   ragIndex: "theta.rag.index",
+  ragStatus: "theta.rag.status",
   ragSearch: "theta.rag.search",
   eventsExport: "theta.events.export",
   eventsReplay: "theta.events.replay"
