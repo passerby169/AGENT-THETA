@@ -38,6 +38,7 @@
     "smoke:agent-cli": "node dist/agent-cli-smoke.js",
     "smoke:operator-commands": "node dist/operator-command-smoke.js",
     "smoke:rag-governance": "node dist/rag-governance-smoke.js",
+    "smoke:language-governance": "node dist/language-governance-smoke.js",
     "test:python-runtime": "python -m unittest discover ../theta_agent_bridge/tests -p \"test_*.py\"",
     "smoke:cli": "node dist/cli-smoke.js"
   },

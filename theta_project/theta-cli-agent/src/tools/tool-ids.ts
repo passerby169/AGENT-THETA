@@ -16,6 +16,7 @@ export const THETA_TOOL_IDS = {
   ragIndex: "theta.rag.index",
   ragStatus: "theta.rag.status",
   ragSearch: "theta.rag.search",
+  languageGenerate: "theta.language.generate",
   eventsExport: "theta.events.export",
   eventsReplay: "theta.events.replay"
 } as const;
@@ -34,5 +35,6 @@ export const THETA_PERMISSION_SCOPES = {
   resultsRead: "theta:results:read",
   ragRead: "theta:rag:read",
   ragWrite: "theta:rag:write",
+  inferenceUse: "theta:inference:use",
   eventsRead: "theta:events:read"
 } as const;

@@ -57,3 +57,7 @@ export type {
   ThetaTrainingStatusInput,
   ThetaTrainingStatusOutput,
 } from "./training-status-tool.js";
+export type {
+  ThetaLanguageGenerateInput,
+  ThetaLanguageGenerateOutput,
+} from "./language-generate-tool.js";

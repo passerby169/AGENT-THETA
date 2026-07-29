@@ -35,6 +35,7 @@ import {
   isThetaAgentCommand,
   runThetaAgentCliCommand,
 } from "./agent-cli.js";
+import { loadThetaProjectEnvironment } from "./environment.js";
 
 interface ParsedArguments {
   positionals: string[];
@@ -93,6 +94,16 @@ Commands:
 
   rag status [--json]
       Read evidence-index readiness and source/chunk counts.
+
+  language intent --text <text> [--approve] [--json]
+      Classify only bounded read-only intent; external use requires approval.
+
+  language question --text <draft> --field <field> --reason <reason> [--approve]
+      Improve question wording without changing workflow decisions.
+
+  language explain --model-id <id> --score <0-100> --confidence <level>
+      --reason-codes <csv> [--warnings <csv>] [--evidence <text>] [--approve]
+      Explain an existing deterministic recommendation without changing it.
 
   repl [--run-id <id>] [--runtime-db <path>]
       Open the deterministic command REPL. Free-form model chat is disabled.
@@ -871,6 +882,7 @@ const isMainModule =
   pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
 
 if (isMainModule) {
+  loadThetaProjectEnvironment();
   const exitCode = await runCli(process.argv.slice(2));
   if (process.exitCode === undefined) {
     process.exitCode = exitCode;

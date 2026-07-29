@@ -46,6 +46,7 @@ for (const file of files) {
   const isSmoke = relativeFile.endsWith('-smoke.ts');
   const isAgentCli = relativeFile === 'agent-cli.ts';
   const isConversationLayer = relativeFile.startsWith('conversation/');
+  const isMiniMaxProvider = relativeFile === 'providers/minimax.ts';
 
   if (source.includes('callThetaBridge') && !isToolHandler && !isBridgeAdapter) {
     throw new Error(`Bridge call escaped a governed Tool Handler: ${relativeFile}`);
@@ -57,6 +58,17 @@ for (const file of files) {
     !isSmoke
   ) {
     throw new Error(`Direct process execution escaped the Bridge Adapter: ${relativeFile}`);
+  }
+  if (
+    ((source.includes('fetch(') || source.includes('fetch (')) &&
+      !isMiniMaxProvider) ||
+    (source.includes('api.minimax.io') &&
+      !isMiniMaxProvider &&
+      !isSmoke)
+  ) {
+    throw new Error(
+      `Direct language-provider network access escaped providers/minimax.ts: ${relativeFile}`,
+    );
   }
   if (
     (isAgentCli || isConversationLayer) &&

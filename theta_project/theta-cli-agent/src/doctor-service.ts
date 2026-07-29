@@ -9,6 +9,7 @@ import path from 'node:path';
 import { ThetaWorkflowService } from './theta-workflow-service.js';
 import { createThetaWorkflowRuntime } from './theta-workflow-runtime.js';
 import { runThetaModelCatalog } from './tools/hypha-runner.js';
+import { createMiniMaxProviderFromEnv } from './providers/minimax.js';
 
 export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
 
@@ -274,14 +275,28 @@ const gpuCheck = (): DoctorCheck => {
       );
 };
 
-const minimaxCheck = (): DoctorCheck =>
-  process.env.MINIMAX_API_KEY
-    ? pass('minimax.optional', 'Optional MiniMax configuration is present.')
-    : warn(
-        'minimax.optional',
-        'MiniMax is not configured; deterministic CLI operation is unaffected.',
-        'Set MINIMAX_API_KEY only when an approved provider-neutral inference path uses it.',
-      );
+const minimaxCheck = (): DoctorCheck => {
+  if (!process.env.MINIMAX_API_KEY?.trim()) {
+    return warn(
+      'minimax.optional',
+      'MiniMax is not configured; deterministic CLI operation is unaffected.',
+      'Set MINIMAX_API_KEY in theta_project/.env only when bounded external language inference is required.',
+    );
+  }
+  try {
+    const provider = createMiniMaxProviderFromEnv();
+    return pass(
+      'minimax.optional',
+      `Optional MiniMax provider configuration is valid for model ${provider?.model ?? 'unknown'}.`,
+    );
+  } catch (error) {
+    return fail(
+      'minimax.optional',
+      `MiniMax configuration is invalid: ${message(error)}`,
+      'Correct MINIMAX_API_BASE, MINIMAX_MODEL, or MINIMAX_TIMEOUT_MS without exposing MINIMAX_API_KEY.',
+    );
+  }
+};
 
 const exists = async (filename: string): Promise<boolean> => {
   try {

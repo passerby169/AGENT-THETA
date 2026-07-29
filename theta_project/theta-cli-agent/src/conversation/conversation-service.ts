@@ -4,6 +4,7 @@ import {
   type AgentInvocation,
   type ConversationCommand,
 } from './contracts.js';
+import { LANGUAGE_CONTRACT_VERSION } from '../language/contracts.js';
 
 const startValueOptions = new Set([
   'file',
@@ -173,6 +174,82 @@ export class ConversationService {
         json: options.booleans.has('json'),
       });
     }
+    if (command === 'language') {
+      const action = rest[0];
+      if (
+        action !== 'intent' &&
+        action !== 'question' &&
+        action !== 'explain'
+      ) {
+        throw new Error(
+          'Expected "language intent", "language question", or "language explain".',
+        );
+      }
+      const options = parseOptions(
+        rest.slice(1),
+        new Set([
+          'text',
+          ...(action === 'question' ? ['field', 'reason'] : []),
+          ...(action === 'explain'
+            ? [
+                'model-id',
+                'score',
+                'confidence',
+                'reason-codes',
+                'warnings',
+                'evidence',
+              ]
+            : []),
+        ]),
+        new Set(['approve', 'json']),
+      );
+      const request =
+        action === 'intent'
+          ? {
+              schemaVersion: LANGUAGE_CONTRACT_VERSION,
+              task: 'classify_intent' as const,
+              sourceText: requiredOption(options.values, 'text'),
+            }
+          : action === 'question'
+            ? {
+                schemaVersion: LANGUAGE_CONTRACT_VERSION,
+                task: 'word_question' as const,
+                field: requiredOption(options.values, 'field'),
+                reason: requiredOption(options.values, 'reason'),
+                draftQuestion: requiredOption(options.values, 'text'),
+              }
+            : {
+                schemaVersion: LANGUAGE_CONTRACT_VERSION,
+                task: 'explain_recommendation' as const,
+                recommendation: {
+                  modelId: requiredOption(options.values, 'model-id'),
+                  score: requiredBoundedInteger(
+                    options.values,
+                    'score',
+                    0,
+                    100,
+                  ),
+                  confidence: requiredConfidence(options.values),
+                  reasonCodes: requiredCsv(options.values, 'reason-codes'),
+                  warnings: optionalCsv(options.values.get('warnings')),
+                },
+                evidence: options.values.get('evidence')
+                  ? [
+                      {
+                        evidenceId: 'cli-evidence-1',
+                        authority: 'L3' as const,
+                        excerpt: requiredOption(options.values, 'evidence'),
+                      },
+                    ]
+                  : [],
+              };
+      return agentInvocationSchema.parse({
+        kind: 'languageGenerate',
+        request,
+        approve: options.booleans.has('approve'),
+        json: options.booleans.has('json'),
+      });
+    }
     if (command === 'repl') {
       const options = parseOptions(
         rest,
@@ -297,6 +374,50 @@ const optionalPositiveInteger = (
   }
   return parsed;
 };
+
+const requiredBoundedInteger = (
+  values: Map<string, string>,
+  name: string,
+  minimum: number,
+  maximum: number,
+): number => {
+  const parsed = Number(requiredOption(values, name));
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(
+      `Option --${name} must be an integer between ${minimum} and ${maximum}.`,
+    );
+  }
+  return parsed;
+};
+
+const requiredConfidence = (
+  values: Map<string, string>,
+): 'low' | 'medium' | 'high' => {
+  const value = requiredOption(values, 'confidence');
+  if (value !== 'low' && value !== 'medium' && value !== 'high') {
+    throw new Error('Option --confidence must be low, medium, or high.');
+  }
+  return value;
+};
+
+const requiredCsv = (
+  values: Map<string, string>,
+  name: string,
+): string[] => {
+  const entries = optionalCsv(requiredOption(values, name));
+  if (entries.length === 0) {
+    throw new Error(`Option --${name} must contain at least one value.`);
+  }
+  return entries;
+};
+
+const optionalCsv = (value: string | undefined): string[] =>
+  value
+    ? value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : [];
 
 const requireNoArgument = (
   command: string,

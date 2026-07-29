@@ -55,6 +55,10 @@ import {
   thetaTrainingStatusHandler,
   thetaTrainingStatusToolSpec,
 } from "./training-status-tool.js";
+import {
+  thetaLanguageGenerateHandler,
+  thetaLanguageGenerateToolSpec,
+} from "./language-generate-tool.js";
 
 export const registerThetaModelCatalogTool = (
   registry: ToolRegistry,
@@ -80,6 +84,7 @@ export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaTrainingStartToolSpec,
   thetaTrainingStatusToolSpec,
   thetaTrainingCancelToolSpec,
+  thetaLanguageGenerateToolSpec,
 ]);
 
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
@@ -126,6 +131,9 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
     replace: true,
   });
   registry.register(thetaTrainingCancelToolSpec, thetaTrainingCancelHandler, {
+    replace: true,
+  });
+  registry.register(thetaLanguageGenerateToolSpec, thetaLanguageGenerateHandler, {
     replace: true,
   });
   return registry;

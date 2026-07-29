@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { languageRequestSchema } from '../language/contracts.js';
 
 export const agentInvocationSchema = z.discriminatedUnion('kind', [
   z
@@ -59,6 +60,14 @@ export const agentInvocationSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.enum(['ragBuild', 'ragStatus']),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('languageGenerate'),
+      request: languageRequestSchema,
+      approve: z.boolean(),
       json: z.boolean(),
     })
     .strict(),

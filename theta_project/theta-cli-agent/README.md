@@ -54,6 +54,27 @@ artifact and dataset roots, THETA configuration, the governed Python model
 catalog, GPU visibility, and optional MiniMax configuration. Every failed
 check includes a concrete remediation.
 
+MiniMax is optional and cannot make Runtime decisions. With no key, network
+failure, timeout, invalid JSON, schema failure, illegal intent, or output that
+tries to change a model, parameter, plan, approval, training action, or tool,
+the language layer returns a deterministic template. The only allowed uses are
+read-only intent classification, question wording, and explanation of an
+already deterministic recommendation.
+
+Configure the optional provider in `../.env`:
+
+```dotenv
+MINIMAX_API_KEY=
+MINIMAX_API_BASE=https://api.minimax.io/v1
+MINIMAX_MODEL=MiniMax-M2.7
+MINIMAX_TIMEOUT_MS=15000
+```
+
+The key is ignored by Git. The compiled CLI loads `../.env` at startup, or the
+file selected by `THETA_ENV_FILE`. Existing process environment variables keep
+their precedence. `doctor` only reports whether the key is present and never
+prints it.
+
 The operator-facing aliases keep CLI responsibilities limited to arguments,
 terminal I/O, and confirmation:
 
@@ -90,6 +111,22 @@ npm run cli -- train cancel --run-id <training-run-id> --reason "Operator reques
 
 The first cancellation command only returns the approval gate. No cancellation
 is recorded until the operator repeats the same request with `--approve`.
+
+Use the bounded language surface. When MiniMax is configured, the first command
+returns a Hypha human-review gate because sanitized context would leave the
+local machine. Repeat the same command with `--approve` only after reviewing
+that transfer. Without MiniMax, the same commands complete deterministically
+without an external call:
+
+```powershell
+npm run cli -- language intent --text "show the current status"
+npm run cli -- language question --text "What is the analysis unit" --field analysisUnit --reason "required for comparison"
+npm run cli -- language explain --model-id theta --score 84 --confidence high --reason-codes "THETA_NATIVE_MODEL,EVIDENCE_SUPPORTED"
+```
+
+MiniMax output is explanatory only. It cannot select or execute a Tool, mutate
+an FSM transition, alter recommendation parameters, approve a plan, or start
+training.
 
 For an interactive deterministic loop:
 
@@ -341,6 +378,7 @@ npm run smoke:training-runtime
 npm run smoke:agent-cli
 npm run smoke:operator-commands
 npm run smoke:rag-governance
+npm run smoke:language-governance
 npm run smoke:cli
 ```
 

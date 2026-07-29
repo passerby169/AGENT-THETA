@@ -56,6 +56,10 @@ import type {
   ThetaTrainingStatusInput,
   ThetaTrainingStatusOutput,
 } from "./training-status-tool.js";
+import type {
+  ThetaLanguageGenerateInput,
+  ThetaLanguageGenerateOutput,
+} from "./language-generate-tool.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
 export interface ThetaHyphaRunnerOptions {
@@ -76,21 +80,26 @@ const thetaTrainingControlToolIds = new Set<string>([
   THETA_TOOL_IDS.trainingCancel,
 ]);
 
+const thetaApprovedExternalToolIds = new Set<string>([
+  ...thetaTrainingControlToolIds,
+  THETA_TOOL_IDS.languageGenerate,
+]);
+
 export const thetaCliPolicyEngine: PolicyEngine = {
   async evaluate(context) {
     if (
       (context.sideEffectLevel === "external_effect" ||
         context.sideEffectLevel === "irreversible") &&
       context.capabilityId &&
-      thetaTrainingControlToolIds.has(context.capabilityId)
+      thetaApprovedExternalToolIds.has(context.capabilityId)
     ) {
       return {
         allowed: true,
         requiresHumanReview: true,
-        policyId: "theta-cli-training-controls",
-        ruleId: "allow-approved-training-control",
+        policyId: "theta-cli-external-effects",
+        ruleId: "allow-approved-external-effect",
         reason:
-          "THETA training external effects require explicit human approval.",
+          "THETA external effects require explicit human approval.",
       };
     }
 
@@ -100,17 +109,17 @@ export const thetaCliPolicyEngine: PolicyEngine = {
     ) {
       return {
         allowed: false,
-        policyId: "theta-cli-training-controls",
+        policyId: "theta-cli-external-effects",
         ruleId: "deny-unlisted-external-effects",
         reason: `Capability ${
           context.capabilityId ?? "unknown"
-        } is not an approved THETA training control.`,
+        } is not an approved THETA external effect.`,
       };
     }
 
     return {
       allowed: true,
-      policyId: "theta-cli-training-controls",
+      policyId: "theta-cli-external-effects",
       ruleId: "allow-local-capability",
     };
   },
@@ -579,4 +588,61 @@ export const runApprovedThetaTrainingCancel = async (
     invocationId,
     options.userId ?? "local_user",
   ) as Promise<ToolCallResult<ThetaTrainingCancelOutput>>;
+};
+
+export const requestThetaLanguageGenerate = async (
+  input: ThetaLanguageGenerateInput,
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaLanguageGenerateOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.languageGenerate,
+    input,
+    context: createThetaToolCallContext(
+      "theta-language-generate-request",
+      "language_generate",
+      {
+        ...options,
+        idempotencyKey:
+          options.idempotencyKey ?? "theta-language-generate-request",
+        permissionScopes: options.permissionScopes ?? [
+          THETA_PERMISSION_SCOPES.inferenceUse,
+        ],
+      },
+    ),
+  }) as Promise<ToolCallResult<ThetaLanguageGenerateOutput>>;
+};
+
+export const runApprovedThetaLanguageGenerate = async (
+  input: ThetaLanguageGenerateInput,
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaLanguageGenerateOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  const invocationId =
+    options.invocationId ?? "theta-language-generate-approved";
+  const context = createThetaToolCallContext(
+    "theta-language-generate-approved",
+    "language_generate",
+    {
+      ...options,
+      invocationId,
+      idempotencyKey:
+        options.idempotencyKey ?? "theta-language-generate-approved",
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.inferenceUse,
+      ],
+    },
+  );
+  const requested = await runner.run({
+    toolId: THETA_TOOL_IDS.languageGenerate,
+    input,
+    context,
+  });
+  if (requested.status !== "human_review_required") {
+    return requested as ToolCallResult<ThetaLanguageGenerateOutput>;
+  }
+  return runner.approveAndResume(
+    invocationId,
+    options.userId ?? "local_user",
+  ) as Promise<ToolCallResult<ThetaLanguageGenerateOutput>>;
 };

@@ -119,6 +119,56 @@ for (const args of [
   conversation.parseInvocation(args);
 }
 
+const languageIntent = conversation.parseInvocation([
+  'language',
+  'intent',
+  '--text',
+  'show status',
+]);
+if (
+  languageIntent.kind !== 'languageGenerate' ||
+  languageIntent.request.task !== 'classify_intent'
+) {
+  throw new Error('Bounded language intent command was not validated.');
+}
+
+const languageQuestion = conversation.parseInvocation([
+  'language',
+  'question',
+  '--text',
+  'What is the analysis unit',
+  '--field',
+  'analysisUnit',
+  '--reason',
+  'required for comparison',
+]);
+if (
+  languageQuestion.kind !== 'languageGenerate' ||
+  languageQuestion.request.task !== 'word_question'
+) {
+  throw new Error('Bounded question-wording command was not validated.');
+}
+
+const languageExplain = conversation.parseInvocation([
+  'language',
+  'explain',
+  '--model-id',
+  'theta',
+  '--score',
+  '84',
+  '--confidence',
+  'high',
+  '--reason-codes',
+  'THETA_NATIVE_MODEL,EVIDENCE_SUPPORTED',
+]);
+if (
+  languageExplain.kind !== 'languageGenerate' ||
+  languageExplain.request.task !== 'explain_recommendation' ||
+  languageExplain.request.recommendation.reasonCodes.length !== 2
+) {
+  throw new Error('Bounded recommendation explanation was not validated.');
+}
+
 const why = conversation.parseReplLine('/why run-001');
 if (why.kind !== 'why' || why.runId !== 'run-001') {
   throw new Error('REPL why command was not normalized.');
@@ -188,7 +238,7 @@ if (
 console.log(
   JSON.stringify({
     status: 'ok',
-    structuredCommands: 19,
+    structuredCommands: 22,
     freeFormInput: 'rejected',
   }),
 );

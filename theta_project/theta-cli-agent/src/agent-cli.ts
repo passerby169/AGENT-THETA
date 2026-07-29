@@ -30,6 +30,7 @@ export const agentCommandNames = new Set([
   'evidence',
   'rag',
   'train',
+  'language',
   'repl',
 ]);
 

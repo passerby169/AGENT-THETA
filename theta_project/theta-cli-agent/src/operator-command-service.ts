@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
 import type { ToolCallResult } from '@hypha/tools';
 import type { AgentInvocation } from './conversation/contracts.js';
+import type { LanguageRequest, LanguageResult } from './language/contracts.js';
+import { deterministicLanguageResult } from './language/fallback.js';
+import { sanitizeLanguageRequest } from './language/sanitizer.js';
+import { isMiniMaxConfigured } from './providers/minimax.js';
 import { THETA_APPROVAL_KEYS } from './theta-domain.js';
 import { ThetaWorkflowService } from './theta-workflow-service.js';
 import {
   requestThetaTrainingCancel,
+  requestThetaLanguageGenerate,
   runApprovedThetaTrainingCancel,
+  runApprovedThetaLanguageGenerate,
   runThetaRagBuild,
   runThetaRagStatus,
   runThetaTrainingStatus,
@@ -34,6 +40,12 @@ export interface OperatorCommandDependencies {
   approveTrainingCancel?: typeof runApprovedThetaTrainingCancel;
   ragBuild?: typeof runThetaRagBuild;
   ragStatus?: typeof runThetaRagStatus;
+  requestLanguageGenerate?: typeof requestThetaLanguageGenerate;
+  approveLanguageGenerate?: typeof runApprovedThetaLanguageGenerate;
+  languageProviderConfigured?: () => boolean;
+  deterministicLanguage?: (
+    request: LanguageRequest,
+  ) => LanguageResult;
 }
 
 export class ThetaOperatorCommandService implements OperatorCommandExecutor {
@@ -122,6 +134,47 @@ export class ThetaOperatorCommandService implements OperatorCommandExecutor {
       return requireCompleted(
         await (this.dependencies.ragBuild ?? runThetaRagBuild)(),
         'RAG index build',
+      );
+    }
+    if (invocation.kind === 'languageGenerate') {
+      const request = sanitizeLanguageRequest(invocation.request);
+      const configured = (
+        this.dependencies.languageProviderConfigured ?? isMiniMaxConfigured
+      )();
+      if (!configured) {
+        return (
+          this.dependencies.deterministicLanguage ??
+          deterministicLanguageResult
+        )(request);
+      }
+      const key = `theta-agent-language-${createHash('sha256')
+        .update(JSON.stringify(request))
+        .digest('hex')
+        .slice(0, 20)}`;
+      const options = {
+        invocationId: key,
+        idempotencyKey: key,
+      };
+      if (!invocation.approve) {
+        const result = await (
+          this.dependencies.requestLanguageGenerate ??
+          requestThetaLanguageGenerate
+        )(request, options);
+        return {
+          status: result.status,
+          toolId: result.toolId,
+          approvalRequired: result.status === 'human_review_required',
+          providerConfigured: true,
+          message:
+            'Review the sanitized external inference request, then repeat with --approve.',
+        };
+      }
+      return requireCompleted(
+        await (
+          this.dependencies.approveLanguageGenerate ??
+          runApprovedThetaLanguageGenerate
+        )(request, options),
+        'Approved language generation',
       );
     }
     return requireCompleted(
