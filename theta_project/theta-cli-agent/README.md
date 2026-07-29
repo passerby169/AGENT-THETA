@@ -363,10 +363,33 @@ Add `--json` to any command for machine-readable output.
 
 ## Verification
 
+Run the complete deterministic release gate:
+
+```powershell
+npm run release:verify
+```
+
+Verify a clean dependency installation and build in a disposable directory:
+
+```powershell
+npm run release:clean-install
+```
+
+The clean-install check uses the exact Hypha commit in
+`../hypha.lock.json`. Neither release command calls MiniMax or starts real
+training. The operator checklist is documented in
+[`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md).
+
+Individual checks remain available:
+
 ```powershell
 npm run hypha:check
 npm run typecheck
 npm run build
+npm run test:contracts
+npm run test:policy
+npm run test:replay
+npm run test:rag-eval
 npm run smoke:research-agent
 npm run smoke:recommendation-golden
 npm run smoke:planning-chain

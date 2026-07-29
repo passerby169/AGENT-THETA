@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1.0.0",
+  "minimumRecallAt5": 1,
+  "cases": [
+    {
+      "id": "dynamic-topic-model",
+      "query": "dtm time topic evolution requirements",
+      "expectedSourceIds": [
+        "theta-model-catalog",
+        "theta-model-comparison"
+      ]
+    },
+    {
+      "id": "bertopic-runtime",
+      "query": "bertopic sentence transformer gpu",
+      "expectedSourceIds": [
+        "theta-model-catalog"
+      ]
+    },
+    {
+      "id": "hardware-requirements",
+      "query": "hardware memory gpu requirements",
+      "expectedSourceIds": [
+        "theta-hardware-guide"
+      ]
+    }
+  ],
+  "noEvidenceCases": [
+    {
+      "id": "unindexable-query",
+      "query": "!!!"
+    }
+  ]
+}

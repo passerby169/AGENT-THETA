@@ -39,8 +39,14 @@
     "smoke:operator-commands": "node dist/operator-command-smoke.js",
     "smoke:rag-governance": "node dist/rag-governance-smoke.js",
     "smoke:language-governance": "node dist/language-governance-smoke.js",
+    "test:contracts": "node dist/contract-suite-smoke.js",
+    "test:policy": "node dist/policy-suite-smoke.js",
+    "test:replay": "node dist/theta-workflow-smoke.js",
+    "test:rag-eval": "node dist/rag-evaluation-smoke.js",
     "test:python-runtime": "python -m unittest discover ../theta_agent_bridge/tests -p \"test_*.py\"",
-    "smoke:cli": "node dist/cli-smoke.js"
+    "smoke:cli": "node dist/cli-smoke.js",
+    "release:verify": "node scripts/run-release-gates.mjs",
+    "release:clean-install": "node scripts/clean-install-smoke.mjs"
   },
   "dependencies": {
     "@hypha/adapters-local": "file:../Hypha/packages/adapters-local",
@@ -58,6 +64,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "fast-json-stable-stringify": "^2.1.0",
     "yaml": "^2.9.0",
     "zod": "^3.22.0"
   },

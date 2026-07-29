@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { FrameworkEvent } from "@hypha/core";
 import {
   createDryRunReceipt,
@@ -27,10 +28,12 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
     Record<string, unknown>
   >();
   private sequence = 0;
+  private invocationTotal = 0;
 
   async invoke(
     request: ThetaWorkflowToolRequest,
   ): Promise<Record<string, unknown>> {
+    this.invocationTotal += 1;
     this.record(request, "tool.policy.checked", {
       toolId: request.toolId,
       ruleId: "fake-governed-tool-allow",
@@ -357,6 +360,10 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
     return this.events.filter((event) => event.runId === runId);
   }
 
+  invocationCount(): number {
+    return this.invocationTotal;
+  }
+
   private record(
     request: ThetaWorkflowToolRequest,
     type: FrameworkEvent["type"],
@@ -387,6 +394,34 @@ const root = await mkdtemp(path.join(os.tmpdir(), "theta-workflow-smoke-"));
 const runtimeDb = path.join(root, "workflow.sqlite");
 const tools = new FakeThetaTools();
 const service = new ThetaWorkflowService({ toolPort: tools });
+const packageRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const replayFixture = JSON.parse(
+  await readFile(
+    path.join(
+      packageRoot,
+      "fixtures",
+      "replay",
+      "completed-workflow.json",
+    ),
+    "utf8",
+  ),
+) as {
+  schemaVersion: string;
+  runId: string;
+  digestAlgorithm: string;
+  canonicalEventCount: number;
+  policyDecisionCount: number;
+  statePath: string[];
+  requiredToolCalls: string[];
+  expectedOutput: {
+    status: string;
+    modelId: string;
+    artifactCount: number;
+  };
+};
 const input = {
   filePath: path.join(root, "research.csv"),
   datasetId: "research-smoke",
@@ -488,9 +523,42 @@ try {
     );
   }
   const replay = await service.replay(completed.runId, runtimeDb);
-  const replayAgain = await service.replay(completed.runId, runtimeDb);
+  const invocationsBeforeReplay = tools.invocationCount();
+  const reopenedService = new ThetaWorkflowService({ toolPort: tools });
+  const replayAgain = await reopenedService.replay(completed.runId, runtimeDb);
   if (replay.digest !== replayAgain.digest) {
     throw new Error("Replay fixture digest is not deterministic.");
+  }
+  if (tools.invocationCount() !== invocationsBeforeReplay) {
+    throw new Error("Replay executed a governed tool instead of reading events.");
+  }
+  if (
+    replayFixture.schemaVersion !== "1.0.0" ||
+    replayFixture.runId !== replay.runId ||
+    replayFixture.digestAlgorithm !== "sha256-canonical-replay-v1" ||
+    replayFixture.canonicalEventCount !== replay.eventTypes.length ||
+    replayFixture.policyDecisionCount !== replay.policyDecisions.length ||
+    JSON.stringify(replayFixture.statePath) !== JSON.stringify(replay.statePath)
+  ) {
+    throw new Error(
+      `Replay no longer matches the versioned fixture: ${JSON.stringify(replay)}`,
+    );
+  }
+  for (const toolId of replayFixture.requiredToolCalls) {
+    if (!replay.toolCalls.includes(toolId)) {
+      throw new Error(`Replay fixture is missing governed tool call ${toolId}.`);
+    }
+  }
+  const replayOutput = replay.output as
+    | { status?: string; modelId?: string; artifacts?: unknown[] }
+    | undefined;
+  if (
+    replayOutput?.status !== replayFixture.expectedOutput.status ||
+    replayOutput.modelId !== replayFixture.expectedOutput.modelId ||
+    replayOutput.artifacts?.length !==
+      replayFixture.expectedOutput.artifactCount
+  ) {
+    throw new Error("Replay terminal output no longer matches the fixture.");
   }
 
   const recoveryRunId = "theta-workflow-recovery";
