@@ -17,6 +17,7 @@ export const THETA_TOOL_IDS = {
   ragStatus: "theta.rag.status",
   ragSearch: "theta.rag.search",
   languageGenerate: "theta.language.generate",
+  conversationLanguage: "theta.conversation.language",
   eventsExport: "theta.events.export",
   eventsReplay: "theta.events.replay"
 } as const;

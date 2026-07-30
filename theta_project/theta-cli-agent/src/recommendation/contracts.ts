@@ -47,6 +47,27 @@ export const resourceEstimateSchema = z
   })
   .strict();
 
+export const modelCapabilityAssessmentSchema = z
+  .object({
+    temporalTopics: z.boolean(),
+    metadataEffects: z.boolean(),
+    shortTextOptimized: z.boolean(),
+    offlineExecution: z.boolean(),
+    cpuExecution: z.boolean(),
+    nativeOutputs: z.array(z.string().min(1)),
+    unmetResearchRequirements: z.array(z.string().min(1)),
+  })
+  .strict()
+  .default({
+    temporalTopics: false,
+    metadataEffects: false,
+    shortTextOptimized: false,
+    offlineExecution: true,
+    cpuExecution: true,
+    nativeOutputs: ['static_topics'],
+    unmetResearchRequirements: [],
+  });
+
 export const modelRecommendationSchema = z
   .object({
     rank: z.number().int().positive(),
@@ -61,6 +82,7 @@ export const modelRecommendationSchema = z
     parameters: z.array(parameterRecommendationSchema),
     resourceEstimate: resourceEstimateSchema,
     evidenceRefs: z.array(evidenceRefSchema),
+    capabilityAssessment: modelCapabilityAssessmentSchema,
     recommendedPlanPatch: z
       .object({
         modelId: z.string().min(1),
@@ -107,6 +129,26 @@ export const recommendationResultSchema = z
         maxTopics: z.number().int().nullable(),
       })
       .strict(),
+    researchRequirements: z
+      .object({
+        required: z.array(z.string().min(1)),
+        preferred: z.array(z.string().min(1)),
+        reasons: z.record(z.string().min(1)),
+      })
+      .strict()
+      .default({ required: [], preferred: [], reasons: {} }),
+    degradation: z
+      .object({
+        required: z.boolean(),
+        unmetRequirements: z.array(z.string().min(1)),
+        message: z.string().min(1).nullable(),
+      })
+      .strict()
+      .default({
+        required: false,
+        unmetRequirements: [],
+        message: null,
+      }),
     noEvidence: z.boolean(),
   })
   .strict();

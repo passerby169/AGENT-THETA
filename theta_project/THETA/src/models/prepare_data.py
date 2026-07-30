@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import argparse
+import re
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -1213,25 +1214,24 @@ def prepare_baseline_data(args):
     bow_matrix, vocab = generate_bow(texts, args.vocab_size, result_dir)
     
     if args.bow_only:
-        print("\n[Done] Only generated BOW")
-        return True
-    
-    # 2. Generate SBERT embedding (CTM specific) - skip if --skip-sbert
-    if not args.skip_sbert:
-        try:
-            generate_sbert_embeddings(texts, result_dir, args.batch_size)
-        except Exception as e:
-            print(f"  [Warning] SBERT generation failed: {e}")
-            print(f"  CTM model may not work, but LDA and ETM can run normally")
+        print("\n[Embedding] BOW-only mode: skipping SBERT and Word2Vec")
     else:
-        print("\n[Skip] SBERT embedding generation (--skip-sbert)")
-    
-    # 3. Generate Word2Vec embedding (ETM specific)
-    try:
-        generate_word2vec_embeddings(texts, vocab, result_dir, embedding_dim=300)
-    except Exception as e:
-        print(f"  [Warning] Word2Vec generation failed: {e}")
-        print(f"  ETM will use random initialization for word embeddings")
+        # 2. Generate SBERT embedding (CTM specific) - skip if --skip-sbert
+        if not args.skip_sbert:
+            try:
+                generate_sbert_embeddings(texts, result_dir, args.batch_size)
+            except Exception as e:
+                print(f"  [Warning] SBERT generation failed: {e}")
+                print(f"  CTM model may not work, but LDA and ETM can run normally")
+        else:
+            print("\n[Skip] SBERT embedding generation (--skip-sbert)")
+
+        # 3. Generate Word2Vec embedding (ETM specific)
+        try:
+            generate_word2vec_embeddings(texts, vocab, result_dir, embedding_dim=300)
+        except Exception as e:
+            print(f"  [Warning] Word2Vec generation failed: {e}")
+            print(f"  ETM will use random initialization for word embeddings")
     
     # 4. Extract covariates for STM (if specified)
     if args.covariate_columns:
@@ -1242,14 +1242,18 @@ def prepare_baseline_data(args):
                 # Extract covariates and encode categorical variables
                 from sklearn.preprocessing import LabelEncoder
                 covariates_list = []
+                covariate_levels = {}
                 for col in available_cols:
                     le = LabelEncoder()
                     encoded = le.fit_transform(df[col].fillna('unknown').astype(str))
                     covariates_list.append(encoded)
+                    covariate_levels[col] = [str(value) for value in le.classes_.tolist()]
                 covariates = np.column_stack(covariates_list)
                 np.save(result_dir / 'covariates.npy', covariates)
                 with open(result_dir / 'covariate_names.json', 'w', encoding='utf-8') as f:
                     json.dump(available_cols, f, ensure_ascii=False, indent=2)
+                with open(result_dir / 'covariate_levels.json', 'w', encoding='utf-8') as f:
+                    json.dump(covariate_levels, f, ensure_ascii=False, indent=2)
                 print(f"\n[Covariates] Extracted {len(available_cols)} columns: {available_cols}")
                 print(f"  Shape: {covariates.shape}")
             else:
@@ -1258,13 +1262,13 @@ def prepare_baseline_data(args):
         except Exception as e:
             print(f"\n[Warning] Covariate extraction failed: {e}")
     
-    # 5. Extract time information for DTM (if --with-time or time_column specified)
+    # 5. Extract time information for temporal/group visualizations.
     if args.with_time or args.time_column != 'year':
         try:
             df = pd.read_csv(data_path, encoding='utf-8')
             time_col = args.time_column
             if time_col in df.columns:
-                time_values = pd.to_numeric(df[time_col], errors='coerce').fillna(2020).astype(int).values
+                time_values, time_diagnostics = parse_time_column(df[time_col], time_col)
                 unique_times = sorted(set(time_values))
                 time_to_idx = {t: i for i, t in enumerate(unique_times)}
                 time_indices = np.array([time_to_idx[t] for t in time_values])
@@ -1275,15 +1279,22 @@ def prepare_baseline_data(args):
                     'unique_times': [int(t) for t in unique_times],
                     'num_time_slices': len(unique_times),
                     'time_to_idx': {str(k): v for k, v in time_to_idx.items()},
+                    'granularity': 'year',
+                    'valid_count': time_diagnostics['valid_count'],
+                    'invalid_count': time_diagnostics['invalid_count'],
                 }
                 with open(result_dir / 'time_slices.json', 'w', encoding='utf-8') as f:
                     json.dump(time_info, f, ensure_ascii=False, indent=2)
                 print(f"\n[Time] Extracted time information from '{time_col}'")
                 print(f"  Time slices: {len(unique_times)} periods ({min(unique_times)}-{max(unique_times)})")
             else:
-                print(f"\n[Warning] Time column '{time_col}' not found")
+                raise ValueError(
+                    f"Time column '{time_col}' was not found. "
+                    f"Available columns: {df.columns.tolist()}"
+                )
         except Exception as e:
-            print(f"\n[Warning] Time extraction failed: {e}")
+            print(f"\n[Error] Time extraction failed: {e}")
+            return False
     
     print(f"\n{'='*70}")
     print(f"[Done] Baseline data preparation completed")
@@ -1291,6 +1302,78 @@ def prepare_baseline_data(args):
     print(f"{'='*70}")
     
     return True
+
+
+def _parse_time_value_to_year(value):
+    """Parse a supported timestamp value into a calendar year."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, np.datetime64)):
+        parsed = pd.Timestamp(value)
+        return int(parsed.year) if not pd.isna(parsed) else None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+    chinese_date = re.match(
+        r'^(\d{4})年(?:\d{1,2}月)?(?:\d{1,2}日)?',
+        raw,
+    )
+    if chinese_date:
+        return int(chinese_date.group(1))
+
+    # Treat numeric values deliberately before general datetime parsing:
+    # 4-digit year, Excel serial date, Unix seconds, then Unix milliseconds.
+    try:
+        number = float(raw)
+        if number.is_integer():
+            integer = int(number)
+            if 1000 <= integer <= 3000:
+                return integer
+            if 20000 <= integer <= 80000:
+                parsed = pd.Timestamp('1899-12-30') + pd.to_timedelta(integer, unit='D')
+                return int(parsed.year)
+            if 1_000_000_000 <= integer < 100_000_000_000:
+                return int(pd.to_datetime(integer, unit='s', utc=True).year)
+            if 1_000_000_000_000 <= integer < 100_000_000_000_000:
+                return int(pd.to_datetime(integer, unit='ms', utc=True).year)
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    # pandas handles ISO, slash-delimited and Chinese year/month/day strings.
+    parsed = pd.to_datetime(raw, errors='coerce')
+    if not pd.isna(parsed):
+        return int(parsed.year)
+    return None
+
+
+def parse_time_column(series, column_name):
+    """Return strict, row-aligned yearly timestamps and diagnostics.
+
+    Invalid values are rejected instead of silently assigning an invented year,
+    because doing so changes temporal research results.
+    """
+    parsed = series.apply(_parse_time_value_to_year)
+    invalid_mask = parsed.isna()
+    invalid_count = int(invalid_mask.sum())
+    if invalid_count:
+        examples = [
+            str(value)
+            for value in series[invalid_mask].head(5).tolist()
+        ]
+        raise ValueError(
+            f"Time column '{column_name}' contains {invalid_count}/{len(series)} "
+            f"unparseable values. Examples: {examples}. "
+            "Fix the values or confirm that temporal analysis is not required."
+        )
+    values = parsed.astype(int).to_numpy()
+    return values, {
+        'time_column': column_name,
+        'granularity': 'year',
+        'valid_count': int(len(values)),
+        'invalid_count': 0,
+        'invalid_examples': [],
+    }
 
 
 def prepare_dtm_data(args):
@@ -1346,110 +1429,18 @@ def prepare_dtm_data(args):
         print(f"  DTM requires time information, please ensure CSV contains time column")
         return False
     
-    # Extract time information
-    time_values = df[time_column].values
-    
-    # Convert to year (if date format)
     try:
-        if df[time_column].dtype == 'object' or df[time_column].dtype == 'string' or pd.api.types.is_string_dtype(df[time_column]):
-            import re
-            def parse_chinese_date(date_str):
-                match = re.match(r'(\d{4})年(\d{1,2})月(\d{1,2})日', str(date_str))
-                if match:
-                    return int(match.group(1))
-                # Try Excel serial number
-                if str(date_str).isdigit() and len(str(date_str)) == 5:
-                    try:
-                        from datetime import datetime, timedelta
-                        excel_date = int(date_str)
-                        base_date = datetime(1899, 12, 30)
-                        actual_date = base_date + timedelta(days=excel_date)
-                        return actual_date.year
-                    except:
-                        pass
-                return None
-            
-            # Try Chinese date parsing
-            chinese_years = df[time_column].apply(parse_chinese_date)
-            
-            # Check for backup time column (meta_modified_time) for missing values
-            backup_time_col = 'meta_modified_time' if 'meta_modified_time' in df.columns else None
-            if backup_time_col:
-                backup_years = df[backup_time_col].apply(parse_chinese_date)
-                # Fill missing from backup
-                chinese_years = chinese_years.fillna(backup_years)
-                print(f"  [Info] Using '{backup_time_col}' as backup for missing timestamps")
-            
-            # Mark valid rows (has parseable timestamp)
-            valid_mask = chinese_years.notna()
-            valid_count = valid_mask.sum()
-            
-            if valid_count > 0:
-                # Filter to only valid rows - remove documents without valid timestamp
-                invalid_count = len(df) - valid_count
-                if invalid_count > 0:
-                    print(f"  [Warning] Removing {invalid_count} documents without valid timestamp")
-                    # Update dataframe to only include valid rows
-                    df = df[valid_mask].reset_index(drop=True)
-                    texts = df[text_col].fillna('').astype(str).tolist()
-                    chinese_years = chinese_years[valid_mask].reset_index(drop=True)
-                
-                time_values = chinese_years.astype(int).values
-                print(f"  [Info] Parsed {valid_count} documents with valid timestamps")
-            else:
-                # Try standard datetime parsing
-                parsed_dates = pd.to_datetime(df[time_column], errors='coerce')
-                valid_mask = parsed_dates.notna()
-                valid_count = valid_mask.sum()
-                
-                if valid_count > 0:
-                    invalid_count = len(df) - valid_count
-                    if invalid_count > 0:
-                        print(f"  [Warning] Removing {invalid_count} documents without valid timestamp")
-                        df = df[valid_mask].reset_index(drop=True)
-                        texts = df[text_col].fillna('').astype(str).tolist()
-                        parsed_dates = parsed_dates[valid_mask].reset_index(drop=True)
-                    
-                    time_values = parsed_dates.dt.year.astype(int).values
-                    print(f"  [Info] Parsed datetime format, {valid_count} documents")
-                else:
-                    # May already be year (numeric)
-                    numeric_vals = pd.to_numeric(df[time_column], errors='coerce')
-                    valid_mask = numeric_vals.notna()
-                    valid_count = valid_mask.sum()
-                    
-                    if valid_count > 0:
-                        invalid_count = len(df) - valid_count
-                        if invalid_count > 0:
-                            print(f"  [Warning] Removing {invalid_count} documents without valid timestamp")
-                            df = df[valid_mask].reset_index(drop=True)
-                            texts = df[text_col].fillna('').astype(str).tolist()
-                            numeric_vals = numeric_vals[valid_mask].reset_index(drop=True)
-                        
-                        time_values = numeric_vals.astype(int).values
-                    else:
-                        print(f"  [Error] No valid timestamps found in column '{time_column}'")
-                        return False
-        else:
-            # Numeric column - filter invalid rows
-            valid_mask = df[time_column].notna()
-            valid_count = valid_mask.sum()
-            if valid_count > 0:
-                invalid_count = len(df) - valid_count
-                if invalid_count > 0:
-                    print(f"  [Warning] Removing {invalid_count} documents without valid timestamp")
-                    df = df[valid_mask].reset_index(drop=True)
-                    texts = df[text_col].fillna('').astype(str).tolist()
-                
-                time_values = df[time_column].astype(int).values
-            else:
-                print(f"  [Error] No valid timestamps found")
-                return False
+        time_values, time_diagnostics = parse_time_column(
+            df[time_column],
+            time_column,
+        )
+        print(
+            f"  [Info] Parsed {time_diagnostics['valid_count']} timestamps "
+            f"at {time_diagnostics['granularity']} granularity"
+        )
     except Exception as e:
-        import traceback
-        print(f"  [Warning] Time parsing failed: {e}")
-        print(f"  Traceback: {traceback.format_exc()}")
-        time_values = np.zeros(len(df), dtype=int)
+        print(f"  [Error] Time parsing failed: {e}")
+        return False
     
     # Calculate time slices
     unique_times = sorted(set(time_values))

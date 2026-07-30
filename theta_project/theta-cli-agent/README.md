@@ -1,5 +1,43 @@
 # THETA CLI Agent
 
+## UX 2.0
+
+The default CLI is now researcher-facing: it renders concise Chinese
+explanations, progress, warnings, and an explicit next action instead of
+printing Runtime JSON. Use `--json` for automation and `/details` in the REPL
+for the previous raw response.
+
+On Windows, build once and use the local launcher:
+
+```cmd
+pnpm run build
+theta doctor
+theta repl
+```
+
+The conversational flow includes a two-layer research interview, natural
+column confirmation, a readable recommendation card, natural parameter
+adjustment, separately named plan/training approvals, automatic training
+follow, and a result center:
+
+```text
+/next
+/brief
+/done
+/plan
+/adjust 把主题数改成 8
+/approve-plan
+/start-training
+/follow
+/logs
+/results
+/open-results
+/summary
+```
+
+See [`docs/UX_V2.md`](docs/UX_V2.md) for the presentation and interaction
+contracts.
+
 THETA CLI Agent is a local command-line surface over the THETA Python Bridge.
 Every exposed operation is registered in Hypha's `ToolRegistry` and executed
 through `GovernedToolRunner`. Read and write permissions, idempotency, audit
@@ -55,19 +93,20 @@ catalog, GPU visibility, and optional MiniMax configuration. Every failed
 check includes a concrete remediation.
 
 MiniMax is optional and cannot make Runtime decisions. With no key, network
-failure, timeout, invalid JSON, schema failure, illegal intent, or output that
-tries to change a model, parameter, plan, approval, training action, or tool,
-the language layer returns a deterministic template. The only allowed uses are
-read-only intent classification, question wording, and explanation of an
-already deterministic recommendation.
+failure, timeout, invalid JSON, schema failure, illegal intent, an invented
+column, or a tool outside the state allowlist, the language layer falls back
+to deterministic behavior. It may interpret research answers, word the next
+Grilling question, parse column confirmation, propose an allowlisted read-only
+tool, and compose an evidence-grounded response. The FSM, field authority,
+tool policy, plan approval, and training controls remain deterministic.
 
 Configure the optional provider in `../.env`:
 
 ```dotenv
 MINIMAX_API_KEY=
-MINIMAX_API_BASE=https://api.minimax.io/v1
+MINIMAX_API_BASE=https://api.minimaxi.com/v1
 MINIMAX_MODEL=MiniMax-M2.7
-MINIMAX_TIMEOUT_MS=15000
+MINIMAX_TIMEOUT_MS=60000
 ```
 
 The key is ignored by Git. The compiled CLI loads `../.env` at startup, or the
@@ -89,6 +128,14 @@ npm run cli -- evidence show --run-id theta-run-001
 
 These aliases delegate to `ThetaWorkflowService`; they do not read Runtime
 SQLite, call Python, create approvals, or execute tools directly.
+
+Research clarification and column confirmation also have natural-language
+operator aliases:
+
+```powershell
+npm run cli -- answer --run-id theta-run-001 --text "我想研究不同来源的风险主题如何变化"
+npm run cli -- columns --run-id theta-run-001 --text "text 是正文，created_at 是时间，source 是元数据"
+```
 
 Review and approve only the canonical Runtime plan gate:
 
@@ -124,21 +171,34 @@ npm run cli -- language question --text "What is the analysis unit" --field anal
 npm run cli -- language explain --model-id theta --score 84 --confidence high --reason-codes "THETA_NATIVE_MODEL,EVIDENCE_SUPPORTED"
 ```
 
-MiniMax output is explanatory only. It cannot select or execute a Tool, mutate
-an FSM transition, alter recommendation parameters, approve a plan, or start
-training.
+MiniMax output is advisory and schema-bound. A tool proposal is checked
+against a fixed read-only allowlist before local execution. MiniMax cannot
+mutate an FSM transition, alter system-observed dataset fields, approve a
+plan, or start training.
 
-For an interactive deterministic loop:
+For a persistent conversational loop:
 
 ```powershell
 npm run cli -- repl --run-id theta-run-001
 ```
 
-The REPL accepts only `/start`, `/status`, `/why`, `/evidence`, `/plan`,
-`/approve`, `/save`, `/back`, and `/exit`. `/why` is derived from canonical
-state, reason codes, policy guards, and event references. `/save` prints a
-deterministic replay fixture to the terminal so file writes remain outside
-the CLI surface. Free-form model chat is intentionally rejected.
+Normal text is automatically routed to the FSM action currently waiting:
+ResearchClarification becomes a research answer and ColumnConfirmation becomes
+a column answer. Outside a structured wait, normal text is classified and may
+invoke only status, evidence, local RAG search, or model catalog reads.
+
+Use `/llm on` to grant bounded MiniMax consent for the current persisted
+session and `/llm off` to revoke it. `/answer`, `/columns`, `/history`, and
+`/brief` expose the conversational workflow explicitly. Existing `/start`,
+`/status`, `/why`, `/evidence`, `/plan`, `/approve`, `/save`, `/back`, and
+`/exit` commands remain available. Language consent never counts as plan or
+training approval.
+
+Conversation messages, structured interpretations, turn recovery metadata,
+and immutable ResearchBrief revisions share the selected Runtime SQLite file.
+They are restored when the CLI restarts. Canonical workflow Replay still
+derives only from Runtime events and never calls MiniMax or executes a tool.
+See `docs/CONVERSATIONAL_AGENT.md` for the contracts and storage layout.
 
 Run the safe end-to-end demonstration. This stops at the human-review gate and
 does not write plan state:

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -1160,9 +1161,10 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                  plan_review_approval_id, training_review_approval_id, dry_run_hash,
                  idempotency_key, attempt, retry_of_training_run_id, retry_reason,
                  status, progress, command_json, artifact_json, result_json,
-                 cancellation_json, error_message, quarantine_reason,
-                 pid, current_step, log_path, started_at, finished_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cancellation_json, error_message, failure_json, quarantine_reason,
+                 pid, current_step, log_path, python_executable, python_version,
+                 conda_environment, started_at, finished_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 training_run_id,
@@ -1184,9 +1186,13 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 "",
                 "",
                 "",
+                "",
                 None,
                 "queued",
                 str(log_path),
+                str(Path(PYTHON_BIN).resolve()),
+                platform.python_version(),
+                os.environ.get("CONDA_DEFAULT_ENV") or "",
                 "",
                 "",
                 now,
@@ -1198,14 +1204,32 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
             runner_pid = spawn_training_runner(training_run_id)
         except Exception as exc:
             failed_at = utc_now_iso()
+            failure = {
+                "code": "PYTHON_ENVIRONMENT_MISMATCH",
+                "stage": "runner_start",
+                "summary": "无法使用已确认的 Python 环境启动后台训练进程。",
+                "technicalDetail": str(exc),
+                "retryable": True,
+                "suggestedCommands": [
+                    "确认 conda theta 已激活，然后运行 doctor 再重试。"
+                ],
+                "partialArtifactsAvailable": False,
+            }
             conn.execute(
                 """
                 UPDATE training_runs
                 SET status = 'failed', current_step = 'runner_start',
-                    error_message = ?, finished_at = ?, updated_at = ?
+                    error_message = ?, failure_json = ?,
+                    finished_at = ?, updated_at = ?
                 WHERE training_run_id = ?
                 """,
-                (str(exc), failed_at, failed_at, training_run_id),
+                (
+                    str(exc),
+                    stable_json(failure),
+                    failed_at,
+                    failed_at,
+                    training_run_id,
+                ),
             )
             record_event(
                 conn,
@@ -1217,6 +1241,7 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                     "status": "failed",
                     "step": "runner_start",
                     "error": str(exc),
+                    "failure": failure,
                 },
             )
             raise
@@ -1273,7 +1298,24 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
                 "logs": [],
                 "events": [],
             }
+        # Status lookups are retry-aware: callers holding the original failed
+        # receipt automatically follow the newest durable attempt.
+        while True:
+            retry = conn.execute(
+                f"""
+                SELECT {TRAINING_RUN_SELECT_COLUMNS}
+                FROM training_runs
+                WHERE retry_of_training_run_id = ?
+                ORDER BY attempt DESC, created_at DESC
+                LIMIT 1
+                """,
+                (row["training_run_id"],),
+            ).fetchone()
+            if retry is None:
+                break
+            row = retry
         row = reconcile_training_run(conn, row)
+        resolved_training_run_id = str(row["training_run_id"])
         events = conn.execute(
             """
             SELECT event_type, payload_json, created_at
@@ -1281,7 +1323,7 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
             WHERE subject_type = 'training_run' AND subject_id = ?
             ORDER BY id ASC
             """,
-            (training_run_id,),
+            (resolved_training_run_id,),
         ).fetchall()
 
     receipt = training_run_response(
@@ -2608,6 +2650,12 @@ def training_preflight_checks(
     command_root_writable = command_root.is_dir() and os.access(command_root, os.W_OK)
     free_bytes = shutil.disk_usage(PROJECT_ROOT).free
     gpu_requested = resources.get("device") == "gpu"
+    required_python_modules = ("pandas", "numpy", "sklearn", "docx")
+    missing_python_modules = [
+        name
+        for name in required_python_modules
+        if importlib.util.find_spec(name) is None
+    ]
     torch_available = importlib.util.find_spec("torch") is not None
     gpu_available = False
     if gpu_requested and torch_available:
@@ -2632,10 +2680,17 @@ def training_preflight_checks(
         },
         {
             "code": "PYTHON_RUNTIME",
-            "status": "pass" if Path(PYTHON_BIN).exists() else "fail",
-            "detail": "Configured Python runtime is available."
-            if Path(PYTHON_BIN).exists()
-            else "Configured Python runtime does not exist.",
+            "status": "pass"
+            if Path(PYTHON_BIN).exists() and not missing_python_modules
+            else "fail",
+            "detail": (
+                f"Training will use {Path(PYTHON_BIN).resolve()} "
+                f"(Python {platform.python_version()}, conda="
+                f"{os.environ.get('CONDA_DEFAULT_ENV') or 'unknown'})."
+                if not missing_python_modules
+                else "Training Python is missing modules: "
+                + ", ".join(missing_python_modules)
+            ),
         },
         {
             "code": "MODEL_DEPENDENCIES",
@@ -2714,12 +2769,18 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     if raw_input:
         prepare_cmd.extend(["--clean", "--raw-input", str(raw_input)])
 
+    if model_id in {"lda", "hdp", "stm", "btm"}:
+        prepare_cmd.append("--bow-only")
+
+    # Column bindings are analysis inputs, not merely model switches.  Preserve
+    # them for every baseline so post-hoc temporal/group visualizations can use
+    # the same approved document ordering even when the fitted model is static.
     time_column = plan.get("timeColumn")
-    if model_id == "dtm" and time_column:
+    if time_column:
         prepare_cmd.extend(["--with-time", "--time_column", str(time_column)])
 
     covariates = plan.get("metadataColumns") or plan.get("covariateColumns") or []
-    if model_id == "stm" and covariates:
+    if covariates:
         prepare_cmd.extend(["--covariate_columns", *[str(value) for value in covariates]])
 
     train_cmd = [
@@ -2735,8 +2796,6 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
         num_topics,
         "--vocab_size",
         vocab_size,
-        "--epochs",
-        epochs,
         "--batch_size",
         batch_size,
         "--gpu",
@@ -2747,6 +2806,10 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
         model_size,
         "--force",
     ]
+    if model_id == "btm":
+        train_cmd.extend(["--n_iter", epochs])
+    else:
+        train_cmd.extend(["--epochs", epochs])
 
     return [
         {
@@ -2779,12 +2842,12 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
     return [
         {
             "kind": "workspace",
-            "path": f"workspace/{user_id}/{dataset_id}",
-            "description": "Prepared matrices, vocabulary and optional embeddings.",
+            "path": f"THETA/data/workspace/{dataset_id}/{user_id}",
+            "description": "Prepared matrices, vocabulary, approved time slices, metadata dimensions and optional embeddings.",
         },
         {
             "kind": "results",
-            "path": f"result/{user_id}/{dataset_id}/{model_id}",
+            "path": f"THETA/result/{user_id}/{dataset_id}/{model_id}",
             "description": "Model metrics, topic words, visualizations and exports.",
         },
     ]
@@ -2828,8 +2891,9 @@ TRAINING_RUN_SELECT_COLUMNS = """
     plan_review_approval_id, training_review_approval_id, dry_run_hash,
     idempotency_key, attempt, retry_of_training_run_id, retry_reason,
     status, progress, command_json, artifact_json, result_json,
-    cancellation_json, error_message, quarantine_reason,
+    cancellation_json, error_message, failure_json, quarantine_reason,
     pid, runner_pid, active_pid, current_step, log_path,
+    python_executable, python_version, conda_environment,
     started_at, finished_at, created_at, updated_at
 """
 
@@ -2881,6 +2945,7 @@ def training_run_response(
     process_started: bool,
     message: str,
 ) -> dict[str, Any]:
+    commands = json.loads(row["command_json"])
     return {
         "schemaVersion": TRAINING_RUNTIME_SCHEMA_VERSION,
         "trainingRunId": row["training_run_id"],
@@ -2900,10 +2965,15 @@ def training_run_response(
         "activePid": int(row["active_pid"]) if row["active_pid"] else None,
         "currentStep": row["current_step"] or "unknown",
         "logPath": row["log_path"] or None,
-        "commands": json.loads(row["command_json"]),
+        "pythonExecutable": row["python_executable"] or str(Path(PYTHON_BIN).resolve()),
+        "pythonVersion": row["python_version"] or platform.python_version(),
+        "condaEnvironment": row["conda_environment"] or None,
+        "commands": commands,
+        "analysisBindings": analysis_bindings_from_commands(commands),
         "expectedArtifacts": json.loads(row["artifact_json"]),
         "resultArtifacts": json.loads(row["result_json"] or "[]"),
         "errorMessage": row["error_message"] or None,
+        "failure": json.loads(row["failure_json"] or "null"),
         "quarantineReason": row["quarantine_reason"] or None,
         "cancellation": json.loads(row["cancellation_json"] or "null"),
         "startedAt": row["started_at"] or None,
@@ -2911,6 +2981,36 @@ def training_run_response(
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "message": message,
+    }
+
+
+def analysis_bindings_from_commands(commands: list[dict[str, Any]]) -> dict[str, Any]:
+    prepare = next(
+        (
+            command.get("argv", [])
+            for command in commands
+            if command.get("step") == "prepare_data"
+        ),
+        [],
+    )
+
+    def value_after(flag: str) -> str | None:
+        if flag not in prepare:
+            return None
+        index = prepare.index(flag) + 1
+        return str(prepare[index]) if index < len(prepare) else None
+
+    metadata_columns: list[str] = []
+    if "--covariate_columns" in prepare:
+        index = prepare.index("--covariate_columns") + 1
+        while index < len(prepare) and not str(prepare[index]).startswith("--"):
+            metadata_columns.append(str(prepare[index]))
+            index += 1
+    return {
+        "timeColumn": value_after("--time_column"),
+        "metadataColumns": metadata_columns,
+        "temporalArtifactsRequested": "--with-time" in prepare,
+        "groupArtifactsRequested": bool(metadata_columns),
     }
 
 
@@ -3078,12 +3178,16 @@ def init_state_db(conn: sqlite3.Connection) -> None:
             result_json TEXT NOT NULL DEFAULT '[]',
             cancellation_json TEXT NOT NULL DEFAULT '',
             error_message TEXT NOT NULL DEFAULT '',
+            failure_json TEXT NOT NULL DEFAULT '',
             quarantine_reason TEXT NOT NULL DEFAULT '',
             pid INTEGER,
             runner_pid INTEGER,
             active_pid INTEGER,
             current_step TEXT NOT NULL DEFAULT '',
             log_path TEXT NOT NULL DEFAULT '',
+            python_executable TEXT NOT NULL DEFAULT '',
+            python_version TEXT NOT NULL DEFAULT '',
+            conda_environment TEXT NOT NULL DEFAULT '',
             started_at TEXT NOT NULL DEFAULT '',
             finished_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -3167,6 +3271,7 @@ def init_state_db(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "training_runs", "retry_reason", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "result_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "training_runs", "failure_json", "TEXT NOT NULL DEFAULT ''")
     ensure_column(
         conn,
         "training_runs",
@@ -3181,6 +3286,24 @@ def init_state_db(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "training_runs", "current_step", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "log_path", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(
+        conn,
+        "training_runs",
+        "python_executable",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(
+        conn,
+        "training_runs",
+        "python_version",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(
+        conn,
+        "training_runs",
+        "conda_environment",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     ensure_column(conn, "training_runs", "started_at", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "finished_at", "TEXT NOT NULL DEFAULT ''")
     migrate_training_run_bindings(conn)

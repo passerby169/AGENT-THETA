@@ -10,13 +10,13 @@ export const decideResearchGrilling = (
   assessment: ResearchAssessment,
   stateAttempt: number,
 ): GrillingDecision => {
-  if (!assessment.blocking) {
+  if (assessment.gaps.length === 0) {
     return { kind: 'ready', candidateQuestions: [] };
   }
   const candidateQuestions = assessment.questions.map(
     (item) => item.question,
   );
-  if (stateAttempt > 3) {
+  if (stateAttempt > 8 && assessment.blocking) {
     return {
       kind: 'unresolved',
       activeQuestion: candidateQuestions[0],

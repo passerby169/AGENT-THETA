@@ -47,6 +47,7 @@ export const researchBriefSchema = z
     expectedRowCount: z.number().int().nonnegative().optional(),
     candidateTimeColumns: z.array(z.string().trim().min(1)).default([]),
     candidateGroupColumns: z.array(z.string().trim().min(1)).default([]),
+    interviewComplete: z.boolean().optional(),
     unknownFields: z.array(z.string().trim().min(1)).default([]),
   })
   .strict();

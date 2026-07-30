@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   InMemoryEventStore,
   type PolicyEngine,
@@ -60,6 +61,11 @@ import type {
   ThetaLanguageGenerateInput,
   ThetaLanguageGenerateOutput,
 } from "./language-generate-tool.js";
+import type {
+  ThetaConversationLanguageInput,
+  ThetaConversationLanguageOutput,
+} from "./conversation-language-tool.js";
+import { sanitizeNaturalLanguageRequest } from "../language/natural-service.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 
 export interface ThetaHyphaRunnerOptions {
@@ -83,6 +89,7 @@ const thetaTrainingControlToolIds = new Set<string>([
 const thetaApprovedExternalToolIds = new Set<string>([
   ...thetaTrainingControlToolIds,
   THETA_TOOL_IDS.languageGenerate,
+  THETA_TOOL_IDS.conversationLanguage,
 ]);
 
 export const thetaCliPolicyEngine: PolicyEngine = {
@@ -645,4 +652,43 @@ export const runApprovedThetaLanguageGenerate = async (
     invocationId,
     options.userId ?? "local_user",
   ) as Promise<ToolCallResult<ThetaLanguageGenerateOutput>>;
+};
+
+export const runApprovedThetaConversationLanguage = async (
+  input: ThetaConversationLanguageInput,
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaConversationLanguageOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  const sanitizedInput = sanitizeNaturalLanguageRequest(input);
+  const digest = createHash("sha256")
+    .update(JSON.stringify(sanitizedInput))
+    .digest("hex")
+    .slice(0, 20);
+  const invocationId =
+    options.invocationId ?? `theta-conversation-language-${digest}`;
+  const context = createThetaToolCallContext(
+    "theta-conversation-language",
+    sanitizedInput.task,
+    {
+      ...options,
+      invocationId,
+      idempotencyKey:
+        options.idempotencyKey ?? `theta-conversation-language-${digest}`,
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.inferenceUse,
+      ],
+    },
+  );
+  const requested = await runner.run({
+    toolId: THETA_TOOL_IDS.conversationLanguage,
+    input: sanitizedInput,
+    context,
+  });
+  if (requested.status !== "human_review_required") {
+    return requested as ToolCallResult<ThetaConversationLanguageOutput>;
+  }
+  return runner.approveAndResume(
+    invocationId,
+    options.userId ?? "local_user",
+  ) as Promise<ToolCallResult<ThetaConversationLanguageOutput>>;
 };

@@ -12,26 +12,28 @@ const conflict = (
 
 const trendWithoutTime: ConflictRule = (brief) =>
   brief.trendAnalysis &&
+  brief.expectedRowCount !== undefined &&
   !brief.timeRange &&
   brief.candidateTimeColumns.length === 0
     ? conflict(
         'conflict.trend-without-time',
         'blocking',
         ['trendAnalysis', 'timeRange', 'candidateTimeColumns'],
-        'Trend analysis is requested without a time range or time column.',
-        'Provide a time range or identify a time column.',
+        '你希望分析时间趋势，但检查后的数据中还没有可用的时间列或时间范围。',
+        '请提供时间范围，或说明数据中哪一列代表时间。',
       )
     : null;
 
 const comparisonWithoutGroup: ConflictRule = (brief) =>
   brief.comparisonGroups.length > 0 &&
+  brief.expectedRowCount !== undefined &&
   brief.candidateGroupColumns.length === 0
     ? conflict(
         'conflict.comparison-without-group-column',
         'blocking',
         ['comparisonGroups', 'candidateGroupColumns'],
-        'Group comparison is requested without a candidate group column.',
-        'Identify the dataset column that assigns rows to comparison groups.',
+        '你希望比较不同群体，但检查后的数据中还没有可用的分组列。',
+        '请说明数据中哪一列用于把记录分配到不同比较组。',
       )
     : null;
 

@@ -65,15 +65,27 @@ def run_training(training_run_id: str) -> None:
                     write_log(log, f"[runner] cancelled during {step}")
                     return
                 if isinstance(code, int) and code != 0:
+                    log.flush()
                     message = f"Command failed with exit code {code}: {' '.join(command_argv(command))}"
-                    mark_failed(training_run_id, step, message)
+                    failure = classify_training_failure(
+                        step,
+                        message,
+                        read_log_tail(log_path),
+                        exit_code=code,
+                    )
+                    mark_failed(training_run_id, step, message, failure)
                     write_log(log, f"[runner] failed: {message}")
                     return
 
             terminal_status = mark_completed(training_run_id)
             write_log(log, f"[runner] {terminal_status}")
         except Exception as exc:
-            mark_failed(training_run_id, "runner", str(exc))
+            failure = classify_training_failure(
+                "runner",
+                str(exc),
+                read_log_tail(log_path),
+            )
+            mark_failed(training_run_id, "runner", str(exc), failure)
             write_log(log, f"[runner] failed: {exc}")
             raise
 
@@ -104,16 +116,16 @@ def run_command(training_run_id: str, command: dict[str, Any], log) -> int | dic
     reader.start()
 
     while True:
-        drain_output(output_queue, log)
+        drain_output(output_queue, log, training_run_id)
         if is_cancel_requested(training_run_id):
             outcome = terminate_process(process, log)
-            drain_output(output_queue, log)
+            drain_output(output_queue, log, training_run_id)
             return outcome
 
         code = process.poll()
         if code is not None:
             reader.join(timeout=2)
-            drain_output(output_queue, log)
+            drain_output(output_queue, log, training_run_id)
             clear_active_process(training_run_id)
             return int(code)
 
@@ -134,7 +146,11 @@ def read_stdout(process: subprocess.Popen, output_queue: queue.Queue[str | None]
     output_queue.put(None)
 
 
-def drain_output(output_queue: queue.Queue[str | None], log) -> None:
+def drain_output(
+    output_queue: queue.Queue[str | None],
+    log,
+    training_run_id: str,
+) -> None:
     while True:
         try:
             line = output_queue.get_nowait()
@@ -144,6 +160,27 @@ def drain_output(output_queue: queue.Queue[str | None], log) -> None:
             continue
         log.write(line)
         log.flush()
+        progress_update = progress_from_output(line)
+        if progress_update is not None:
+            step, progress = progress_update
+            mark_running(training_run_id, step, progress)
+
+
+def progress_from_output(line: str) -> tuple[str, int] | None:
+    normalized = line.strip().lower()
+    milestones = (
+        ("baseline data preparation completed", ("data_prepared", 45)),
+        ("[done] only generated bow", ("data_prepared", 45)),
+        ("[evaluating ", ("evaluate_model", 70)),
+        ("[visualizing ", ("generate_visualizations", 82)),
+        ("[visualization] starting isolated", ("generate_visualizations", 86)),
+        ("done! total charts generated", ("verify_visualizations", 94)),
+        ("summary", ("bind_results", 97)),
+    )
+    for marker, value in milestones:
+        if marker in normalized:
+            return value
+    return None
 
 
 def terminate_process(process: subprocess.Popen, log) -> dict[str, Any]:
@@ -429,27 +466,138 @@ def mark_cancelled(
         )
 
 
-def mark_failed(training_run_id: str, step: str, message: str) -> None:
+def mark_failed(
+    training_run_id: str,
+    step: str,
+    message: str,
+    failure: dict[str, Any] | None = None,
+) -> None:
     now = utc_now_iso()
     with connect_state_db() as conn:
         init_state_db(conn)
+        row = conn.execute(
+            "SELECT artifact_json FROM training_runs WHERE training_run_id = ?",
+            (training_run_id,),
+        ).fetchone()
+        result_artifacts = (
+            bind_result_artifacts(json.loads(row["artifact_json"]))
+            if row is not None
+            else []
+        )
+        partial_available = any(
+            artifact.get("exists") for artifact in result_artifacts
+        )
+        structured_failure = failure or classify_training_failure(
+            step,
+            message,
+            "",
+        )
+        structured_failure["partialArtifactsAvailable"] = partial_available
         conn.execute(
             """
             UPDATE training_runs
             SET status = 'failed', current_step = ?, error_message = ?,
-                active_pid = NULL,
+                failure_json = ?, result_json = ?, active_pid = NULL,
                 finished_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
-            (step, message, now, now, training_run_id),
+            (
+                step,
+                message,
+                json.dumps(structured_failure, ensure_ascii=False, sort_keys=True),
+                json.dumps(result_artifacts, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+                training_run_id,
+            ),
         )
         record_event(
             conn,
             "training.failed",
             "training_run",
             training_run_id,
-            {"trainingRunId": training_run_id, "step": step, "status": "failed", "error": message},
+            {
+                "trainingRunId": training_run_id,
+                "step": step,
+                "status": "failed",
+                "error": message,
+                "failure": structured_failure,
+                "resultArtifacts": result_artifacts,
+            },
         )
+
+
+def read_log_tail(log_path: Path, max_lines: int = 40) -> str:
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-max_lines:])[-4000:]
+    except OSError:
+        return ""
+
+
+def classify_training_failure(
+    step: str,
+    message: str,
+    log_tail: str,
+    *,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    detail = (log_tail.strip() or message.strip())[-4000:]
+    normalized = f"{message}\n{detail}"
+    missing_module = None
+    if "ModuleNotFoundError" in normalized:
+        marker = "No module named "
+        if marker in normalized:
+            missing_module = (
+                normalized.split(marker, 1)[1].splitlines()[0].strip(" '\"")
+            )
+    if missing_module:
+        return {
+            "code": "PYTHON_DEPENDENCY_MISSING",
+            "stage": step,
+            "summary": f"当前训练环境缺少 Python 模块 {missing_module}。",
+            "technicalDetail": detail,
+            "retryable": True,
+            "suggestedCommands": [
+                f'"{sys.executable}" -m pip install {missing_module}'
+            ],
+            "partialArtifactsAvailable": False,
+        }
+    if "unparseable values" in normalized or "Time extraction failed" in normalized:
+        return {
+            "code": "TIME_PARSE_FAILED",
+            "stage": step,
+            "summary": "时间列中存在无法解析的值，已停止训练以避免产生错误趋势。",
+            "technicalDetail": detail,
+            "retryable": True,
+            "suggestedCommands": [
+                "修正时间列后使用 /retry，或重新确认不进行时间分析。"
+            ],
+            "partialArtifactsAvailable": False,
+        }
+    if exit_code in {3221225725, -1073741571}:
+        return {
+            "code": "VISUALIZATION_PROCESS_CRASHED",
+            "stage": step,
+            "summary": "Windows 可视化进程发生栈溢出；训练产物将尽可能保留。",
+            "technicalDetail": detail,
+            "retryable": True,
+            "suggestedCommands": [
+                "使用 /results 查看已保留产物，再使用 /retry 重试可视化。"
+            ],
+            "partialArtifactsAvailable": False,
+        }
+    return {
+        "code": "MODEL_TRAINING_FAILED" if step == "run_pipeline" else "DATA_PREPARATION_FAILED",
+        "stage": step,
+        "summary": "模型训练未完成。" if step == "run_pipeline" else "数据准备未完成。",
+        "technicalDetail": detail,
+        "retryable": True,
+        "suggestedCommands": [
+            "使用 /logs 查看最近日志，修复问题后执行 /retry。"
+        ],
+        "partialArtifactsAvailable": False,
+    }
 
 
 def write_log(log, message: str) -> None:

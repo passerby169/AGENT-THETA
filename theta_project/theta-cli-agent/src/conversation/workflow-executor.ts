@@ -57,23 +57,56 @@ export class ThetaConversationWorkflowExecutor {
     }
     if (command.kind === 'plan') {
       const runId = resolveRunId(command.runId, context.activeRunId);
-      const status = await this.workflow.status(runId, context.runtimeDb);
       return {
         value: {
           kind: 'plan.review',
-          runId,
-          currentState: status.currentState ?? null,
-          pendingActionRef: status.pendingActionRef ?? null,
-          pendingReason: status.pendingReason ?? null,
-          statePath: status.statePath,
-          approvalReady:
-            status.pendingActionRef === THETA_APPROVAL_KEYS.planReview,
+          ...(await this.workflow.plan(runId, context.runtimeDb)),
         },
         activeRunId: runId,
       };
     }
-    if (command.kind === 'approve') {
+    if (
+      command.kind === 'approve' ||
+      command.kind === 'approvePlan' ||
+      command.kind === 'startTraining'
+    ) {
       const runId = resolveRunId(command.runId, context.activeRunId);
+      const status = await this.workflow.status(runId, context.runtimeDb);
+      if (
+        command.kind === 'approvePlan' &&
+        status.pendingActionRef !== THETA_APPROVAL_KEYS.planReview
+      ) {
+        throw new Error('当前不是训练方案审批阶段。请先使用 /status 查看当前步骤。');
+      }
+      if (
+        command.kind === 'startTraining' &&
+        status.pendingActionRef !== THETA_APPROVAL_KEYS.trainingReview
+      ) {
+        throw new Error('当前不是训练启动审批阶段。请先使用 /status 查看当前步骤。');
+      }
+      if (command.kind === 'approvePlan') {
+        const plan = await this.workflow.plan(runId, context.runtimeDb);
+        const recommendation = record(plan.recommendation);
+        const degradation = record(recommendation.degradation);
+        const priorAdjustment = record(plan.planAdjustment);
+        const requiresDegradation = degradation.required === true;
+        const accepted =
+          command.acceptDegradation || priorAdjustment.acceptDegradation === true;
+        if (requiresDegradation && !accepted) {
+          const unmet = strings(degradation.unmetRequirements).join('、');
+          throw new Error(
+            `当前方案不能满足全部研究目标（${unmet || '能力缺口'}）。请先调整模型，或使用 /approve-plan --accept-degradation 明确接受降级。`,
+          );
+        }
+        if (requiresDegradation && command.acceptDegradation) {
+          await this.workflow.resume({
+            runId,
+            ...(context.runtimeDb ? { runtimeDb: context.runtimeDb } : {}),
+            planAdjustment: { acceptDegradation: true },
+            approvedBy: 'local_user',
+          });
+        }
+      }
       const result = await this.workflow.resume({
         runId,
         ...(context.runtimeDb ? { runtimeDb: context.runtimeDb } : {}),
@@ -92,6 +125,10 @@ export class ThetaConversationWorkflowExecutor {
         },
         activeRunId: runId,
       };
+    }
+    if (command.kind === 'next') {
+      const runId = resolveRunId(undefined, context.activeRunId);
+      return withRun(await this.workflow.status(runId, context.runtimeDb));
     }
     throw new Error(`Command ${command.kind} is handled by the REPL shell.`);
   }
@@ -121,7 +158,10 @@ const explain = (
 ): Record<string, unknown> => {
   const failed = latestEvent(evidence.orchestrationEvents, 'run.failed');
   const policy = latestEvent(evidence.toolEvents, 'tool.policy.checked');
+  const receipt = record(status.trainingReceipt);
+  const trainingFailure = record(receipt.failure);
   const reasonCode =
+    stringField(trainingFailure, 'code') ??
     stringField(failed?.payload, 'reasonCode') ??
     stringField(failed?.payload, 'code') ??
     (status.pendingActionRef
@@ -140,11 +180,22 @@ const explain = (
     currentState: status.currentState ?? null,
     reasonCode,
     reason:
+      stringField(trainingFailure, 'summary') ??
       status.pendingReason ??
       stringField(failed?.payload, 'message') ??
       stringField(failed?.payload, 'reason') ??
       'Derived from canonical Runtime events.',
     pendingActionRef: status.pendingActionRef ?? null,
+    stage:
+      stringField(trainingFailure, 'stage') ??
+      stringField(receipt, 'currentStep') ??
+      null,
+    technicalDetail:
+      stringField(trainingFailure, 'technicalDetail') ?? null,
+    suggestedCommands: strings(trainingFailure.suggestedCommands),
+    partialArtifactsAvailable:
+      trainingFailure.partialArtifactsAvailable === true,
+    logPath: stringField(receipt, 'logPath') ?? null,
     guard: policy?.payload ?? null,
     evidenceRefs: [
       ...evidence.orchestrationEvents.slice(-3).map((event) => event.id),
@@ -166,3 +217,13 @@ const stringField = (value: unknown, key: string): string | undefined => {
   const field = (value as Record<string, unknown>)[key];
   return typeof field === 'string' && field.trim() ? field : undefined;
 };
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];

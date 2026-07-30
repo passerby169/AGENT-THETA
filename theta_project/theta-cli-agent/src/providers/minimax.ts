@@ -7,7 +7,7 @@ import type {
 
 const DEFAULT_BASE_URL = 'https://api.minimax.io/v1';
 const DEFAULT_MODEL = 'MiniMax-M2.7';
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 export interface MiniMaxProviderConfig {
   apiKey: string;

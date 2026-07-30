@@ -12,6 +12,13 @@ import {
   type ResourceEstimate,
   type TopicRecommendation,
 } from "./contracts.js";
+import {
+  capabilitiesForModel,
+  deriveResearchRequirements,
+  unmetResearchCapabilities,
+  type ModelCapabilities,
+  type ResearchRequirements,
+} from './model-capabilities.js';
 
 export interface CatalogModel {
   id: string;
@@ -49,7 +56,9 @@ export const recommendModels = (
   const constraints = normalizedConstraints(input.constraints);
   const evidence = input.evidence ?? [];
   const recommendations: ModelRecommendation[] = [];
+  const degradedRecommendations: ModelRecommendation[] = [];
   const skipped: RecommendationResult["skipped"] = [];
+  const researchRequirements = deriveResearchRequirements(input.researchBrief);
 
   for (const model of [...input.models].sort((a, b) =>
     a.id.localeCompare(b.id),
@@ -66,21 +75,45 @@ export const recommendModels = (
       continue;
     }
 
-    recommendations.push(
-      buildRecommendation(
-        model,
-        summary,
-        input,
-        constraints,
-        evidenceForModel(model, evidence),
-      ),
+    const capabilities = capabilitiesForModel(model);
+    const unmet = unmetResearchCapabilities(
+      capabilities,
+      researchRequirements,
     );
+    const built = buildRecommendation(
+      model,
+      summary,
+      input,
+      constraints,
+      evidenceForModel(model, evidence),
+      capabilities,
+      unmet,
+    );
+    if (unmet.length === 0) {
+      recommendations.push(built);
+    } else {
+      degradedRecommendations.push({
+        ...built,
+        score: Math.max(0, built.score - 12 * unmet.length),
+        warnings: [
+          ...built.warnings,
+          ...unmet.map(
+            (requirement) => `UNMET_RESEARCH_REQUIREMENT:${requirement}`,
+          ),
+        ],
+      });
+    }
   }
 
-  recommendations.sort(
+  const degradationRequired =
+    recommendations.length === 0 && degradedRecommendations.length > 0;
+  const selectable = degradationRequired
+    ? degradedRecommendations
+    : recommendations;
+  selectable.sort(
     (a, b) => b.score - a.score || a.modelId.localeCompare(b.modelId),
   );
-  const ranked = recommendations.slice(0, 5).map((item, index) => ({
+  const ranked = selectable.slice(0, 5).map((item, index) => ({
     ...item,
     rank: index + 1,
   }));
@@ -89,6 +122,7 @@ export const recommendModels = (
   if (evidence.length === 0) warnings.add("NO_EVIDENCE_AVAILABLE");
   if (summary.rowCount < 100) warnings.add("SMALL_CORPUS");
   if (ranked.length === 0) warnings.add("NO_COMPATIBLE_MODEL");
+  if (degradationRequired) warnings.add('EXPLICIT_DEGRADATION_APPROVAL_REQUIRED');
   if (ranked[0] && ranked[0].confidence === "low") {
     warnings.add("LOW_CONFIDENCE_RECOMMENDATION");
   }
@@ -103,6 +137,20 @@ export const recommendModels = (
     skipped,
     warnings: [...warnings],
     constraintsApplied: constraints,
+    researchRequirements,
+    degradation: {
+      required: degradationRequired,
+      unmetRequirements: [
+        ...new Set(
+          ranked.flatMap(
+            (item) => item.capabilityAssessment.unmetResearchRequirements,
+          ),
+        ),
+      ],
+      message: degradationRequired
+        ? '没有模型同时满足全部研究目标与运行约束；继续前必须明确接受列出的能力降级。'
+        : null,
+    },
     noEvidence: evidence.length === 0,
   });
 };
@@ -207,6 +255,8 @@ const buildRecommendation = (
   input: DeterministicRecommendationInput,
   constraints: RecommendationResult["constraintsApplied"],
   evidence: EvidenceRef[],
+  capabilities: ModelCapabilities,
+  unmetRequirements: ResearchRequirements['required'],
 ): ModelRecommendation => {
   const modelId = model.id.toLowerCase();
   const reasonCodes = new Set<string>(["RUNNABLE_CATALOG_MODEL"]);
@@ -286,6 +336,10 @@ const buildRecommendation = (
     }),
     resourceEstimate: estimateResources(model),
     evidenceRefs: evidence,
+    capabilityAssessment: {
+      ...capabilities,
+      unmetResearchRequirements: unmetRequirements,
+    },
     recommendedPlanPatch: {
       modelId,
       mode,

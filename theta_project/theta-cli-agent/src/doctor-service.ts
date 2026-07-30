@@ -10,6 +10,7 @@ import { ThetaWorkflowService } from './theta-workflow-service.js';
 import { createThetaWorkflowRuntime } from './theta-workflow-runtime.js';
 import { runThetaModelCatalog } from './tools/hypha-runner.js';
 import { createMiniMaxProviderFromEnv } from './providers/minimax.js';
+import { probeThetaPythonModules } from './runtime/python-runtime.js';
 
 export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
 
@@ -53,6 +54,7 @@ export class DoctorService {
     checks.push(await this.artifactRootCheck());
     checks.push(await this.dataRootsCheck());
     checks.push(await this.thetaConfigCheck());
+    checks.push(this.pythonRuntimeCheck());
     checks.push(await this.pythonAndModelCheck());
     checks.push(gpuCheck());
     checks.push(minimaxCheck());
@@ -245,6 +247,48 @@ export class DoctorService {
         'python.models',
         `Governed Python/model probe failed: ${message(error)}`,
         'Verify THETA_AGENT_BRIDGE_PYTHON, install requirements.txt, then run npm run smoke:hypha-import.',
+      );
+    }
+  }
+
+  private pythonRuntimeCheck(): DoctorCheck {
+    const requiredModules = [
+      'pandas',
+      'numpy',
+      'sklearn',
+      'docx',
+    ] as const;
+    try {
+      const probe = probeThetaPythonModules(requiredModules);
+      const missing = requiredModules.filter((name) => !probe.modules[name]);
+      if (missing.length > 0) {
+        return fail(
+          'python.runtime',
+          `Python ${probe.executable} 缺少训练依赖：${missing.join(', ')}。`,
+          `请在当前 conda 环境安装缺失模块，然后重新运行 doctor。当前环境：${probe.condaEnvironment ?? '未识别'}。`,
+        );
+      }
+      const optionalModules = ['pyarrow'];
+      const optionalProbe = probeThetaPythonModules(optionalModules);
+      const missingOptional = optionalModules.filter(
+        (name) => !optionalProbe.modules[name],
+      );
+      if (missingOptional.length > 0) {
+        return warn(
+          'python.runtime',
+          `训练将使用 ${probe.executable}（conda=${probe.condaEnvironment ?? '未识别'}）；可选格式依赖未安装：${missingOptional.join(', ')}。CSV 训练不受影响。`,
+          `仅在读取 Parquet/Arrow 数据时安装：${probe.executable} -m pip install ${missingOptional.join(' ')}`,
+        );
+      }
+      return pass(
+        'python.runtime',
+        `训练将使用 ${probe.executable}（Python ${probe.version}，conda=${probe.condaEnvironment ?? '未识别'}）。`,
+      );
+    } catch (error) {
+      return fail(
+        'python.runtime',
+        `无法确认训练 Python：${message(error)}`,
+        '请先 conda activate theta，并确认 python 可以从当前终端启动。',
       );
     }
   }

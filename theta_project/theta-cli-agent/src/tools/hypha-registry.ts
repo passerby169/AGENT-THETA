@@ -1,5 +1,9 @@
 import { ToolRegistry, type ToolSpec } from "@hypha/tools";
 import {
+  thetaConversationLanguageHandler,
+  thetaConversationLanguageToolSpec,
+} from "./conversation-language-tool.js";
+import {
   thetaDatasetDetectColumnsHandler,
   thetaDatasetDetectColumnsToolSpec,
 } from "./dataset-detect-columns-tool.js";
@@ -85,6 +89,7 @@ export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaTrainingStatusToolSpec,
   thetaTrainingCancelToolSpec,
   thetaLanguageGenerateToolSpec,
+  thetaConversationLanguageToolSpec,
 ]);
 
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
@@ -136,5 +141,10 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   registry.register(thetaLanguageGenerateToolSpec, thetaLanguageGenerateHandler, {
     replace: true,
   });
+  registry.register(
+    thetaConversationLanguageToolSpec,
+    thetaConversationLanguageHandler,
+    { replace: true },
+  );
   return registry;
 };

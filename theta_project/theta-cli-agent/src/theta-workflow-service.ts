@@ -25,6 +25,7 @@ import {
   researchBriefSchema,
   type ColumnConfirmationDraft,
   type DatasetProfile,
+  type ResearchBrief,
 } from "./agent/research-contracts.js";
 import {
   ResearchService,
@@ -95,6 +96,7 @@ export interface ThetaWorkflowResumeRequest {
   approvalKeys?: readonly string[];
   researchAnswers?: Record<string, unknown>;
   columnConfirmation?: ColumnConfirmationDraft;
+  planAdjustment?: Record<string, unknown>;
 }
 
 export interface ThetaWorkflowToolRequest {
@@ -122,6 +124,7 @@ export interface ThetaWorkflowRunResult {
   pendingReason?: string;
   statePath: string[];
   output?: RuntimeJsonValue;
+  trainingReceipt?: RuntimeJsonValue;
 }
 
 export interface ThetaWorkflowStatus {
@@ -136,6 +139,7 @@ export interface ThetaWorkflowStatus {
   lastEventType: string;
   lastEventAt: string;
   output?: RuntimeJsonValue;
+  trainingReceipt?: RuntimeJsonValue;
 }
 
 export interface ThetaWorkflowEvidence {
@@ -143,6 +147,13 @@ export interface ThetaWorkflowEvidence {
   runtimeDb: string;
   orchestrationEvents: PersistedFrameworkEvent[];
   toolEvents: FrameworkEvent[];
+}
+
+export interface ThetaWorkflowConversationContext {
+  status: ThetaWorkflowStatus;
+  researchBrief?: ResearchBrief;
+  researchAssessment?: Record<string, unknown>;
+  datasetProfile?: DatasetProfile;
 }
 
 export interface ThetaWorkflowPlan {
@@ -157,6 +168,14 @@ export interface ThetaWorkflowPlan {
   validatedPlan?: RuntimeJsonValue;
   planRecord?: RuntimeJsonValue;
   planReview?: RuntimeJsonValue;
+  recommendation?: RuntimeJsonValue;
+  planAdjustment?: RuntimeJsonValue;
+  datasetProfile?: RuntimeJsonValue;
+  columnConfirmation?: RuntimeJsonValue;
+  dryRun?: RuntimeJsonValue;
+  trainingReview?: RuntimeJsonValue;
+  trainingReceipt?: RuntimeJsonValue;
+  researchBrief?: RuntimeJsonValue;
 }
 
 export interface ThetaWorkflowReplay {
@@ -290,12 +309,17 @@ export class ThetaWorkflowService {
       let result = await this.runDriver(runtime, scope, tools);
       const hasResearchAnswers = request.researchAnswers !== undefined;
       const hasColumnConfirmation = request.columnConfirmation !== undefined;
-      if (hasResearchAnswers && hasColumnConfirmation) {
+      const hasPlanAdjustment = request.planAdjustment !== undefined;
+      if (
+        [hasResearchAnswers, hasColumnConfirmation, hasPlanAdjustment].filter(
+          Boolean,
+        ).length > 1
+      ) {
         throw new Error(
-          "A resume command can submit research answers or a column confirmation, not both.",
+          "A resume command can submit only one structured response.",
         );
       }
-      if (hasResearchAnswers || hasColumnConfirmation) {
+      if (hasResearchAnswers || hasColumnConfirmation || hasPlanAdjustment) {
         await this.recordStructuredResumeInput(
           runtime,
           scope,
@@ -307,6 +331,7 @@ export class ThetaWorkflowService {
         request.approve &&
         !hasResearchAnswers &&
         !hasColumnConfirmation &&
+        !hasPlanAdjustment &&
         requiresStructuredHumanInput(
           result.projection.pendingWait?.pendingActionRef,
         )
@@ -321,7 +346,8 @@ export class ThetaWorkflowService {
         (request.approve ||
           request.reject ||
           hasResearchAnswers ||
-          hasColumnConfirmation)
+          hasColumnConfirmation ||
+          hasPlanAdjustment)
       ) {
         await this.resolveHumanWait(
           runtime,
@@ -340,12 +366,23 @@ export class ThetaWorkflowService {
         new Set(request.approvalKeys ?? []),
         request.approvedBy ?? USER_ID,
       );
-      return toRunResult(
+      const runResult = toRunResult(
         runId,
         runtimeDb,
         result,
         await terminalOutput(runtime, scope),
       );
+      const variables = await hydrateVariables(runtime.events, scope);
+      return {
+        ...runResult,
+        ...(variables.trainingReceipt === undefined
+          ? {}
+          : {
+              trainingReceipt: sanitizeRuntimeValue(
+                variables.trainingReceipt,
+              ),
+            }),
+      };
     } finally {
       runtime.close();
     }
@@ -374,7 +411,7 @@ export class ThetaWorkflowService {
           streamScope(scope),
         )
       ).state;
-      return toStatusResult(
+      const status = toStatusResult(
         resolvedRunId,
         resolvedDb,
         projection,
@@ -383,6 +420,17 @@ export class ThetaWorkflowService {
         last.timestamp,
         await terminalOutput(runtime, scope),
       );
+      const variables = await hydrateVariables(runtime.events, scope);
+      return {
+        ...status,
+        ...(variables.trainingReceipt === undefined
+          ? {}
+          : {
+              trainingReceipt: sanitizeRuntimeValue(
+                variables.trainingReceipt,
+              ),
+            }),
+      };
     } finally {
       runtime.close();
     }
@@ -406,6 +454,63 @@ export class ThetaWorkflowService {
         toolEvents: await this.toolPort(resolvedDb, resolvedRunId).listTrace(
           resolvedRunId,
         ),
+      };
+    } finally {
+      runtime.close();
+    }
+  }
+
+  async conversationContext(
+    runId: string,
+    runtimeDb = defaultThetaWorkflowDb(),
+  ): Promise<ThetaWorkflowConversationContext> {
+    const resolvedRunId = required(runId, "runId");
+    const resolvedDb = path.resolve(runtimeDb);
+    const scope = runtimeScope(resolvedRunId);
+    const runtime = await createThetaWorkflowRuntime({ filename: resolvedDb });
+    try {
+      const events = await runtime.events.read({
+        scope: streamScope(scope),
+      });
+      const last = events.at(-1);
+      if (!last) throw new Error(`Run not found: ${resolvedRunId}`);
+      const projection = (
+        await runtime.projections.update(
+          createRuntimeOrchestrationProjectionDefinition(resolvedRunId),
+          runtime.projectionStore,
+          streamScope(scope),
+        )
+      ).state;
+      const variables = await hydrateVariables(runtime.events, scope);
+      return {
+        status: toStatusResult(
+          resolvedRunId,
+          resolvedDb,
+          projection,
+          events.length,
+          last.type,
+          last.timestamp,
+          await terminalOutput(runtime, scope),
+        ),
+        ...(isRecord(variables.researchBrief)
+          ? {
+              researchBrief: researchBriefSchema.parse(
+                variables.researchBrief,
+              ),
+            }
+          : {}),
+        ...(isRecord(variables.researchAssessment)
+          ? {
+              researchAssessment: variables.researchAssessment,
+            }
+          : {}),
+        ...(isRecord(variables.datasetProfile)
+          ? {
+              datasetProfile: datasetProfileSchema.parse(
+                variables.datasetProfile,
+              ),
+            }
+          : {}),
       };
     } finally {
       runtime.close();
@@ -457,6 +562,16 @@ export class ThetaWorkflowService {
         ...runtimeVariable(variables, 'validatedPlan'),
         ...runtimeVariable(variables, 'planRecord'),
         ...runtimeVariable(variables, 'planReview'),
+        ...runtimeVariable(variables, 'recommendation'),
+        ...runtimeVariable(variables, 'planAdjustment'),
+        ...runtimeVariable(variables, 'datasetProfile'),
+        ...runtimeVariable(variables, 'columnConfirmation'),
+        ...runtimeVariable(variables, 'dryRun'),
+        ...runtimeVariable(variables, 'trainingReview'),
+        ...runtimeVariable(variables, 'trainingReceipt'),
+        ...(isRecord(variables.researchBrief)
+          ? { researchBrief: variables.researchBrief as RuntimeJsonValue }
+          : {}),
       };
     } finally {
       runtime.close();
@@ -640,6 +755,14 @@ export class ThetaWorkflowService {
         datasetSha256: profile.datasetSha256,
       };
     }
+    if (request.planAdjustment !== undefined) {
+      if (pending.pendingActionRef !== THETA_APPROVAL_KEYS.planReview) {
+        throw new Error(
+          `Plan adjustment cannot resolve ${pending.pendingActionRef}.`,
+        );
+      }
+      payload.planAdjustment = sanitizePlanAdjustment(request.planAdjustment);
+    }
     const head = await runtime.events.getStreamHead(streamScope(scope));
     const submissionId = createHash("sha256")
       .update(canonicalJson(payload))
@@ -724,7 +847,7 @@ const executeThetaState = async (
           { currentState: execution.state.id },
         );
         return transition(
-          assessment.blocking
+          assessment.gaps.length > 0
             ? THETA_WORKFLOW_STATES.awaitResearchClarification
             : THETA_WORKFLOW_STATES.inspectDataset,
           {
@@ -734,11 +857,15 @@ const executeThetaState = async (
         );
       }
       case THETA_WORKFLOW_STATES.awaitResearchClarification: {
-        const resume = isRecord(execution.projection.lastResume?.payload)
-          ? execution.projection.lastResume.payload
-          : undefined;
+        const lastResume = execution.projection.lastResume;
+        const resumePayload = lastResume?.payload;
+        const resume = isRecord(resumePayload) ? resumePayload : undefined;
         if (
-          resume?.pendingActionRef !== THETA_APPROVAL_KEYS.researchClarification
+          resume?.pendingActionRef !==
+            THETA_APPROVAL_KEYS.researchClarification ||
+          !lastResume?.commandId ||
+          stringValue(variables.processedResearchResumeCommandId) ===
+            lastResume.commandId
         ) {
           const assessment = researchService.assess(
             researchBriefSchema.parse(variables.researchBrief),
@@ -769,21 +896,23 @@ const executeThetaState = async (
           execution.projection.stateAttempt,
         );
         if (grilling.kind === "unresolved") {
-          return failed(
-            "RUNTIME_INVARIANT_FAILED",
-            `Blocking research information remains unresolved: ${assessment.gaps
-              .filter((item) => item.severity === "blocking")
-              .map((item) => item.field)
-              .join(", ")}.`,
-            execution.state.id,
-          );
+          return transition(THETA_WORKFLOW_STATES.awaitResearchClarification, {
+            researchBrief: runtimeRecord({ ...assessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(assessment),
+            processedResearchResumeCommandId: lastResume.commandId,
+          });
         }
         if (grilling.kind === "ask") {
-          return researchClarificationWait(assessment);
+          return transition(THETA_WORKFLOW_STATES.awaitResearchClarification, {
+            researchBrief: runtimeRecord({ ...assessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(assessment),
+            processedResearchResumeCommandId: lastResume.commandId,
+          });
         }
         return transition(THETA_WORKFLOW_STATES.inspectDataset, {
           researchBrief: runtimeRecord({ ...assessment.brief }),
           researchAssessment: sanitizeResearchAssessment(assessment),
+          processedResearchResumeCommandId: lastResume.commandId,
         });
       }
       case THETA_WORKFLOW_STATES.inspectDataset: {
@@ -986,6 +1115,28 @@ const executeThetaState = async (
         });
       }
       case THETA_WORKFLOW_STATES.awaitPlanCreationApproval:
+        if (isRecord(variables.planAdjustment)) {
+          const adjustmentHash = createHash("sha256")
+            .update(canonicalJson(variables.planAdjustment))
+            .digest("hex");
+          if (
+            stringValue(variables.processedPlanAdjustmentHash) !==
+            adjustmentHash
+          ) {
+            return transition(THETA_WORKFLOW_STATES.validatePlan, {
+              candidatePlan: {
+                ...requireRecord(variables.candidatePlan, "candidate plan"),
+                ...planFieldsFromAdjustment(
+                  sanitizePlanAdjustment(variables.planAdjustment),
+                ),
+              },
+              validatedPlan: null,
+              processedPlanAdjustmentHash: adjustmentHash,
+              planAdjustmentResumeAt:
+                execution.projection.lastResume?.resumedAt ?? null,
+            });
+          }
+        }
         return approvalDecision(
           execution,
           variables,
@@ -999,6 +1150,7 @@ const executeThetaState = async (
               variables.columnConfirmation as RuntimeJsonValue,
             recommendation: variables.recommendation as RuntimeJsonValue,
           },
+          stringValue(variables.planAdjustmentResumeAt),
         );
       case THETA_WORKFLOW_STATES.createPlan: {
         const approvedBy = approvalActor(
@@ -1279,11 +1431,14 @@ const approvalDecision = (
   pendingActionRef: string,
   approvedTarget: string,
   metadata: Record<string, RuntimeJsonValue> = {},
+  ignoredResumeAt?: string,
 ): BoundedStateExecutionDecision => {
   const payload = isRecord(execution.projection.lastResume?.payload)
     ? execution.projection.lastResume.payload
     : undefined;
-  if (payload?.pendingActionRef === pendingActionRef) {
+  const isFreshResume =
+    execution.projection.lastResume?.resumedAt !== ignoredResumeAt;
+  if (isFreshResume && payload?.pendingActionRef === pendingActionRef) {
     if (payload.decision === "rejected") {
       return failed(
         "RUNTIME_CANCELLED",
@@ -1354,8 +1509,9 @@ const requiresStructuredHumanInput = (
 
 const researchClarificationWait = (
   assessment: ResearchAssessment,
+  stateAttempt = 1,
 ): BoundedStateExecutionDecision => {
-  const grilling = decideResearchGrilling(assessment, 1);
+  const grilling = decideResearchGrilling(assessment, stateAttempt);
   return {
     result: {
       kind: "waiting",
@@ -1363,7 +1519,9 @@ const researchClarificationWait = (
         type: "human",
         pendingActionRef: THETA_APPROVAL_KEYS.researchClarification,
         reason:
-          grilling.activeQuestion ??
+          (grilling.kind === "unresolved"
+            ? `${grilling.activeQuestion ?? "仍有研究信息未明确"} 你可以回答“不知道”或“不适用”，或使用 /brief 查看当前记录。`
+            : grilling.activeQuestion) ??
           "Structured research clarification is required.",
         metadata: sanitizeResearchAssessment(assessment),
       },
@@ -1523,6 +1681,10 @@ const hydrateVariables = async (
       if (columnConfirmation) {
         variables.columnConfirmation = columnConfirmation;
       }
+      const planAdjustment = recordProperty(event.payload, "planAdjustment");
+      if (planAdjustment) {
+        variables.planAdjustment = planAdjustment;
+      }
     }
   }
   return variables;
@@ -1530,11 +1692,71 @@ const hydrateVariables = async (
 
 const runtimeVariable = (
   variables: Record<string, unknown>,
-  key: 'candidatePlan' | 'validatedPlan' | 'planRecord' | 'planReview',
+  key:
+    | 'candidatePlan'
+    | 'validatedPlan'
+    | 'planRecord'
+    | 'planReview'
+    | 'recommendation'
+    | 'planAdjustment'
+    | 'datasetProfile'
+    | 'columnConfirmation'
+    | 'dryRun'
+    | 'trainingReview'
+    | 'trainingReceipt',
 ): Partial<ThetaWorkflowPlan> => {
   const value = variables[key];
   return value === undefined ? {} : { [key]: value as RuntimeJsonValue };
 };
+
+const sanitizePlanAdjustment = (
+  value: Record<string, unknown>,
+): Record<string, RuntimeJsonValue> => {
+  const output: Record<string, RuntimeJsonValue> = {};
+  const modelId = stringValue(value.modelId);
+  const mode = stringValue(value.mode);
+  const numTopics = numberValue(value.numTopics);
+  const batchSize = numberValue(value.batchSize);
+  const epochs = numberValue(value.epochs);
+  const acceptDegradation = value.acceptDegradation === true;
+  if (modelId) output.modelId = modelId.toLowerCase();
+  if (
+    mode &&
+    ["zero_shot", "finetune", "supervised", "unsupervised"].includes(mode)
+  ) {
+    output.mode = mode;
+  }
+  if (numTopics !== undefined) {
+    if (!Number.isInteger(numTopics) || numTopics < 2 || numTopics > 200) {
+      throw new Error("主题数必须是 2 到 200 之间的整数。");
+    }
+    output.numTopics = numTopics;
+  }
+  if (batchSize !== undefined) {
+    if (!Number.isInteger(batchSize) || batchSize < 1) {
+      throw new Error("批大小必须是正整数。");
+    }
+    output.batchSize = batchSize;
+  }
+  if (epochs !== undefined) {
+    if (!Number.isInteger(epochs) || epochs < 1) {
+      throw new Error("迭代次数必须是正整数。");
+    }
+    output.epochs = epochs;
+  }
+  if (acceptDegradation) output.acceptDegradation = true;
+  if (Object.keys(output).length === 0) {
+    throw new Error("没有识别出可调整的模型或参数。");
+  }
+  return output;
+};
+
+const planFieldsFromAdjustment = (
+  value: Record<string, RuntimeJsonValue>,
+): Record<string, RuntimeJsonValue> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== 'acceptDegradation'),
+  );
 
 const sanitizeDatasetProfile = (
   inspection: Record<string, unknown>,
@@ -1653,6 +1875,20 @@ const sanitizeRecommendation = (
   constraintsApplied: (isRecord(value.constraintsApplied)
     ? value.constraintsApplied
     : {}) as Record<string, RuntimeJsonValue>,
+  researchRequirements: (isRecord(value.researchRequirements)
+    ? value.researchRequirements
+    : {
+        required: [],
+        preferred: [],
+        reasons: {},
+      }) as Record<string, RuntimeJsonValue>,
+  degradation: (isRecord(value.degradation)
+    ? value.degradation
+    : {
+        required: false,
+        unmetRequirements: [],
+        message: null,
+      }) as Record<string, RuntimeJsonValue>,
   noEvidence: value.noEvidence === true,
 });
 
@@ -1684,6 +1920,13 @@ const candidatePlan = (
     ...(stringArray(columnConfirmation.textColumns)[0]
       ? { textColumn: stringArray(columnConfirmation.textColumns)[0] }
       : {}),
+    ...(stringValue(columnConfirmation.timeColumn)
+      ? { timeColumn: stringValue(columnConfirmation.timeColumn) as string }
+      : {}),
+    ...(stringValue(columnConfirmation.idColumn)
+      ? { idColumn: stringValue(columnConfirmation.idColumn) as string }
+      : {}),
+    metadataColumns: stringArray(columnConfirmation.metadataColumns),
   };
 };
 
@@ -1737,8 +1980,21 @@ const sanitizeTrainingReceipt = (
   status: stringValue(receipt.status) ?? "unknown",
   progress: numberValue(receipt.progress) ?? 0,
   currentStep: stringValue(receipt.currentStep) ?? "unknown",
+  logPath: stringValue(receipt.logPath) ?? null,
+  pythonExecutable: stringValue(receipt.pythonExecutable) ?? "unknown",
+  pythonVersion: stringValue(receipt.pythonVersion) ?? "unknown",
+  condaEnvironment: stringValue(receipt.condaEnvironment) ?? null,
+  analysisBindings: (isRecord(receipt.analysisBindings)
+    ? receipt.analysisBindings
+    : {
+        timeColumn: null,
+        metadataColumns: [],
+        temporalArtifactsRequested: false,
+        groupArtifactsRequested: false,
+      }) as Record<string, RuntimeJsonValue>,
   resultArtifacts: arrayValue(receipt.resultArtifacts).map(sanitizeArtifact),
   errorMessage: stringValue(receipt.errorMessage) ?? null,
+  failure: sanitizeRuntimeValue(receipt.failure),
   quarantineReason: stringValue(receipt.quarantineReason) ?? null,
   cancellation: sanitizeRuntimeValue(receipt.cancellation),
 });

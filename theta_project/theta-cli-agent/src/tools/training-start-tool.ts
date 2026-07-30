@@ -70,10 +70,15 @@ const trainingStartOutputSchema: JsonSchema = {
     "activePid",
     "currentStep",
     "logPath",
+    "pythonExecutable",
+    "pythonVersion",
+    "condaEnvironment",
     "commands",
+    "analysisBindings",
     "expectedArtifacts",
     "resultArtifacts",
     "errorMessage",
+    "failure",
     "quarantineReason",
     "cancellation",
     "startedAt",
@@ -103,9 +108,18 @@ const trainingStartOutputSchema: JsonSchema = {
     activePid: { anyOf: [{ type: "integer" }, { type: "null" }] },
     currentStep: { type: "string" },
     logPath: { anyOf: [{ type: "string" }, { type: "null" }] },
+    pythonExecutable: { type: "string" },
+    pythonVersion: { type: "string" },
+    condaEnvironment: {
+      anyOf: [{ type: "string" }, { type: "null" }],
+    },
     commands: {
       type: "array",
       items: { type: "object", additionalProperties: true },
+    },
+    analysisBindings: {
+      type: "object",
+      additionalProperties: true,
     },
     expectedArtifacts: {
       type: "array",
@@ -116,6 +130,12 @@ const trainingStartOutputSchema: JsonSchema = {
       items: { type: "object", additionalProperties: true },
     },
     errorMessage: { anyOf: [{ type: "string" }, { type: "null" }] },
+    failure: {
+      anyOf: [
+        { type: "object", additionalProperties: true },
+        { type: "null" },
+      ],
+    },
     quarantineReason: {
       anyOf: [{ type: "string" }, { type: "null" }],
     },

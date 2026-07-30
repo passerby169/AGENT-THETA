@@ -101,6 +101,20 @@ const trainingControlPolicy = {
   ],
 };
 
+const languageInferencePolicy = {
+  id: "policy.theta.language-inference",
+  version: "1.0.0",
+  defaultEffect: "deny" as const,
+  rules: [
+    {
+      id: "policy.theta.language-inference.allow",
+      version: "1.0.0",
+      effect: "allow" as const,
+      sideEffectLevels: ["external_effect"] as const,
+    },
+  ],
+};
+
 const workflowStates: WorkflowStateSpec[] = [
   state(
     THETA_WORKFLOW_STATES.intake,
@@ -108,7 +122,14 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.awaitResearchClarification,
-    "Wait for structured answers to blocking research questions.",
+    "Interpret natural answers and wait for blocking research clarification.",
+    {
+      allowedTools: [THETA_TOOL_IDS.conversationLanguage],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.conversationLanguage)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.inferenceUse],
+      humanApprovalPolicyRef: toolRef(languageInferencePolicy.id),
+      policyRefs: [languageInferencePolicy.id],
+    },
   ),
   state(
     THETA_WORKFLOW_STATES.inspectDataset,
@@ -130,10 +151,20 @@ const workflowStates: WorkflowStateSpec[] = [
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
     "Require explicit confirmation of dataset column roles.",
     {
-      allowedTools: [THETA_TOOL_IDS.datasetInspect],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetInspect)],
-      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
-      policyRefs: [readonlyPolicy.id],
+      allowedTools: [
+        THETA_TOOL_IDS.datasetInspect,
+        THETA_TOOL_IDS.conversationLanguage,
+      ],
+      allowedToolRefs: [
+        toolRef(THETA_TOOL_IDS.datasetInspect),
+        toolRef(THETA_TOOL_IDS.conversationLanguage),
+      ],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.datasetRead,
+        THETA_PERMISSION_SCOPES.inferenceUse,
+      ],
+      humanApprovalPolicyRef: toolRef(languageInferencePolicy.id),
+      policyRefs: [readonlyPolicy.id, languageInferencePolicy.id],
     },
   ),
   state(
@@ -266,6 +297,10 @@ const forwardTransitions = [
     THETA_WORKFLOW_STATES.inspectDataset,
   ],
   [
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+  ],
+  [
     THETA_WORKFLOW_STATES.inspectDataset,
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
   ],
@@ -285,6 +320,10 @@ const forwardTransitions = [
   [
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
     THETA_WORKFLOW_STATES.createPlan,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
+    THETA_WORKFLOW_STATES.validatePlan,
   ],
   [THETA_WORKFLOW_STATES.createPlan, THETA_WORKFLOW_STATES.dryRun],
   [
@@ -400,6 +439,7 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
                 enum: ["local", "remote", "none", "unknown"],
               },
               timeLimitHours: { type: "number", exclusiveMinimum: 0 },
+              interviewComplete: { type: "boolean" },
               expectedRowCount: { type: "integer", minimum: 0 },
               candidateTimeColumns: {
                 type: "array",
@@ -457,6 +497,7 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
         readonlyPolicy.id,
         stateWritePolicy.id,
         trainingControlPolicy.id,
+        languageInferencePolicy.id,
       ],
     },
   ],
@@ -480,7 +521,12 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
   ],
   defaultWorkflow: THETA_WORKFLOW_ID,
   tools: [...thetaHyphaToolSpecs],
-  policies: [readonlyPolicy, stateWritePolicy, trainingControlPolicy],
+  policies: [
+    readonlyPolicy,
+    stateWritePolicy,
+    trainingControlPolicy,
+    languageInferencePolicy,
+  ],
   evaluationProfiles: [
     {
       id: "eval.theta.output-contract",

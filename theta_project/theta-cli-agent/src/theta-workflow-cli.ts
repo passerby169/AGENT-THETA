@@ -5,6 +5,10 @@ import {
   ThetaWorkflowService,
   type ThetaWorkflowInput,
 } from "./theta-workflow-service.js";
+import {
+  renderUserError,
+  renderValue,
+} from "./presentation/terminal-renderer.js";
 
 interface WorkflowCliOutput {
   write(message: string): void;
@@ -136,9 +140,7 @@ export const runThetaWorkflowCliCommand = async (
 
     throw new Error(`Unknown workflow command: ${parsed.command}`);
   } catch (error) {
-    output.writeError(
-      `Error: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    output.writeError(renderUserError(error));
     return 1;
   }
 };
@@ -205,32 +207,7 @@ const write = (
     output.write(JSON.stringify(value));
     return;
   }
-  const record =
-    value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
-  if (
-    record &&
-    (Array.isArray(record.orchestrationEvents) ||
-      Array.isArray(record.eventTypes))
-  ) {
-    output.write(JSON.stringify(record, null, 2));
-    return;
-  }
-  if (record?.runId) {
-    output.write(
-      [
-        `Run: ${String(record.runId)}`,
-        `Status: ${String(record.status ?? record.disposition ?? "unknown")}`,
-        `State: ${String(record.currentState ?? "n/a")}`,
-        `Pending approval: ${String(record.pendingActionRef ?? "none")}`,
-        `Next action: ${String(record.pendingReason ?? "none")}`,
-        `Runtime DB: ${String(record.runtimeDb ?? "default")}`,
-      ].join("\n"),
-    );
-    return;
-  }
-  output.write(JSON.stringify(value, null, 2));
+  output.write(renderValue(value));
 };
 
 const flag = (parsed: ParsedWorkflowArguments, name: string): boolean =>

@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  resolveThetaPythonRuntime,
+  thetaPythonChildEnv,
+} from "../runtime/python-runtime.js";
 export interface BridgeCallContext {
   runId: string;
   stepId: string;
@@ -29,7 +33,20 @@ export const callThetaBridge = async (
   context: BridgeCallContext
 ): Promise<BridgeResponse> => {
   const cwd = bridgeRoot();
-  const python = process.env.THETA_AGENT_BRIDGE_PYTHON || "python";
+  let runtime;
+  try {
+    runtime = resolveThetaPythonRuntime();
+  } catch (error) {
+    return {
+      status: "error",
+      command,
+      error: {
+        type: "PythonRuntimeUnavailable",
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+  const python = runtime.executable;
   const payload = JSON.stringify({
     command,
     input,
@@ -44,8 +61,7 @@ export const callThetaBridge = async (
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
+        ...thetaPythonChildEnv(runtime),
         PYTHONPATH: [cwd, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
       }
     });
@@ -105,4 +121,16 @@ export const callThetaBridge = async (
 
     child.stdin.end(payload, "utf8");
   });
+};
+
+export const openLocalFolder = (folderPath: string): void => {
+  if (process.platform !== "win32") {
+    throw new Error("当前版本只支持在 Windows 中打开本地结果目录。");
+  }
+  const child = spawn("explorer.exe", [folderPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
 };

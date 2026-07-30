@@ -55,6 +55,7 @@ import os
 import sys
 import json
 import argparse
+import subprocess
 import numpy as np
 import scipy.sparse as sp
 from datetime import datetime
@@ -811,7 +812,8 @@ def run_baseline(model_name: str, args) -> Dict[str, Any]:
             evaluator = UnifiedEvaluator(
                 beta=beta, theta=theta, bow_matrix=bow_matrix, vocab=vocab,
                 training_history=training_history,
-                dataset=args.dataset, output_dir=str(model_dir), num_topics=actual_num_topics
+                dataset=args.dataset, output_dir=str(model_dir),
+                num_topics=actual_num_topics, model_name=model_name
             )
             metrics = evaluator.compute_all_metrics()
             # Save metrics JSON to model_dir
@@ -871,21 +873,75 @@ def run_baseline(model_name: str, args) -> Dict[str, Any]:
                 else:
                     langs_to_generate = [lang_map.get(args.lang, args.lang)]
             
-            # Use run_baseline_visualization for complete visualization
+            # Run visualization in an isolated child process. Native plotting
+            # libraries can terminate the interpreter on Windows (for example
+            # 0xC00000FD stack overflow); training and evaluation artifacts must
+            # remain valid even when one visualization process crashes.
+            visualization_statuses = []
+            visualization_script = (
+                Path(__file__).parent / 'visualization' / 'run_visualization.py'
+            )
             for lang in langs_to_generate:
                 lang_output_dir = model_dir / lang
                 lang_output_dir.mkdir(parents=True, exist_ok=True)
-                
-                viz_dir = run_baseline_visualization(
-                    result_dir=str(model_dir),
-                    dataset=args.dataset,
-                    model=model_name,
-                    num_topics=viz_num_topics,
-                    output_dir=str(lang_output_dir),
-                    language=lang,
-                    dpi=300
+
+                viz_command = [
+                    sys.executable,
+                    '-X',
+                    'faulthandler',
+                    str(visualization_script),
+                    '--baseline',
+                    '--result_dir',
+                    str(model_dir),
+                    '--dataset',
+                    args.dataset,
+                    '--model',
+                    model_name,
+                    '--num_topics',
+                    str(viz_num_topics),
+                    '--output_dir',
+                    str(lang_output_dir),
+                    '--language',
+                    lang,
+                    '--dpi',
+                    '300',
+                ]
+                print(f"  [Visualization] Starting isolated {lang} renderer")
+                completed = subprocess.run(viz_command, check=False)
+                visualization_statuses.append({
+                    'language': lang,
+                    'status': 'completed' if completed.returncode == 0 else 'failed',
+                    'exit_code': int(completed.returncode),
+                    'output_dir': str(lang_output_dir),
+                })
+                if completed.returncode != 0:
+                    print(
+                        f"  [Warning] {lang} visualization exited with "
+                        f"code {completed.returncode}; preserved training/evaluation artifacts."
+                    )
+
+            status_path = model_dir / 'visualization_status.json'
+            with open(status_path, 'w', encoding='utf-8') as status_file:
+                json.dump(
+                    {
+                        'schema_version': '1.0.0',
+                        'model': model_name,
+                        'dataset': args.dataset,
+                        'renderers': visualization_statuses,
+                    },
+                    status_file,
+                    ensure_ascii=False,
+                    indent=2,
                 )
-            result['viz_status'] = 'completed'
+            failed_renderers = [
+                item for item in visualization_statuses
+                if item['status'] != 'completed'
+            ]
+            result['viz_status'] = (
+                'completed_with_warnings' if failed_renderers else 'completed'
+            )
+            if failed_renderers:
+                result['visualization_warnings'] = failed_renderers
             result['viz_dir'] = str(model_dir)
         except Exception as e:
             print(f"  [Error] {e}")

@@ -44,6 +44,18 @@ export const cancellationReceiptSchema = z
   })
   .strict();
 
+export const trainingFailureSchema = z
+  .object({
+    code: z.string().min(1),
+    stage: z.string().min(1),
+    summary: z.string().min(1),
+    technicalDetail: z.string().min(1),
+    retryable: z.boolean(),
+    suggestedCommands: z.array(z.string().min(1)),
+    partialArtifactsAvailable: z.boolean(),
+  })
+  .strict();
+
 export const trainingReceiptSchema = z
   .object({
     schemaVersion: z.literal(TRAINING_RUNTIME_SCHEMA_VERSION),
@@ -67,10 +79,28 @@ export const trainingReceiptSchema = z
     activePid: z.number().int().positive().nullable(),
     currentStep: z.string().min(1),
     logPath: z.string().min(1).nullable(),
+    pythonExecutable: z.string().min(1),
+    pythonVersion: z.string().min(1),
+    condaEnvironment: z.string().min(1).nullable(),
     commands: z.array(trainingCommandSchema).min(1),
+    analysisBindings: z
+      .object({
+        timeColumn: z.string().min(1).nullable(),
+        metadataColumns: z.array(z.string().min(1)),
+        temporalArtifactsRequested: z.boolean(),
+        groupArtifactsRequested: z.boolean(),
+      })
+      .strict()
+      .default({
+        timeColumn: null,
+        metadataColumns: [],
+        temporalArtifactsRequested: false,
+        groupArtifactsRequested: false,
+      }),
     expectedArtifacts: z.array(expectedArtifactSchema),
     resultArtifacts: z.array(boundResultArtifactSchema),
     errorMessage: z.string().min(1).nullable(),
+    failure: trainingFailureSchema.nullable(),
     quarantineReason: z.string().min(1).nullable(),
     cancellation: cancellationReceiptSchema.nullable(),
     startedAt: z.string().datetime().nullable(),
@@ -130,5 +160,6 @@ export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
 export type TrainingRunStatus = z.infer<typeof trainingRunStatusSchema>;
 export type BoundResultArtifact = z.infer<typeof boundResultArtifactSchema>;
 export type CancellationReceipt = z.infer<typeof cancellationReceiptSchema>;
+export type TrainingFailure = z.infer<typeof trainingFailureSchema>;
 export type TrainingReceipt = z.infer<typeof trainingReceiptSchema>;
 export type TrainingStatusOutput = z.infer<typeof trainingStatusOutputSchema>;

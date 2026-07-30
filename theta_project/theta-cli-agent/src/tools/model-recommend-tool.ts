@@ -66,6 +66,8 @@ const modelRecommendOutputSchema: JsonSchema = {
     "skipped",
     "warnings",
     "constraintsApplied",
+    "researchRequirements",
+    "degradation",
     "noEvidence",
   ],
   properties: {
@@ -115,6 +117,14 @@ const modelRecommendOutputSchema: JsonSchema = {
     },
     warnings: { type: "array", items: { type: "string" } },
     constraintsApplied: {
+      type: "object",
+      additionalProperties: true,
+    },
+    researchRequirements: {
+      type: "object",
+      additionalProperties: true,
+    },
+    degradation: {
       type: "object",
       additionalProperties: true,
     },

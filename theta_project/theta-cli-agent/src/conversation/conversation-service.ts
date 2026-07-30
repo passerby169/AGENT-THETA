@@ -250,6 +250,22 @@ export class ConversationService {
         json: options.booleans.has('json'),
       });
     }
+    if (command === 'answer' || command === 'columns') {
+      const options = parseOptions(
+        rest,
+        new Set(['text', 'run-id', 'runtime-db', 'session-id']),
+        new Set(['json']),
+      );
+      return agentInvocationSchema.parse({
+        kind: 'conversationTurn',
+        action: command,
+        text: requiredOption(options.values, 'text'),
+        runId: requiredOption(options.values, 'run-id'),
+        runtimeDb: options.values.get('runtime-db'),
+        sessionId: options.values.get('session-id'),
+        json: options.booleans.has('json'),
+      });
+    }
     if (command === 'repl') {
       const options = parseOptions(
         rest,
@@ -279,6 +295,60 @@ export class ConversationService {
       requireNoArgument(name, argument);
       return conversationCommandSchema.parse({ kind: 'help' });
     }
+    if (name === 'answer' || name === 'columns') {
+      if (!argument) throw new Error(`/${name} requires natural-language text.`);
+      return conversationCommandSchema.parse({ kind: name, text: argument });
+    }
+    if (name === 'llm') {
+      if (argument !== 'on' && argument !== 'off') {
+        throw new Error('/llm requires "on" or "off".');
+      }
+      return conversationCommandSchema.parse({
+        kind: 'llm',
+        enabled: argument === 'on',
+      });
+    }
+    if (name === 'history' || name === 'brief') {
+      requireNoArgument(name, argument);
+      return conversationCommandSchema.parse({ kind: name });
+    }
+    if (
+      name === 'next' ||
+      name === 'details' ||
+      name === 'done' ||
+      name === 'follow' ||
+      name === 'logs' ||
+      name === 'results' ||
+      name === 'summary' ||
+      name === 'runs' ||
+      name === 'retry'
+    ) {
+      requireNoArgument(name, argument);
+      return conversationCommandSchema.parse({ kind: name });
+    }
+    if (name === 'open-results') {
+      requireNoArgument(name, argument);
+      return conversationCommandSchema.parse({ kind: 'openResults' });
+    }
+    if (name === 'adjust') {
+      if (!argument) {
+        throw new Error('/adjust requires a natural-language change.');
+      }
+      return conversationCommandSchema.parse({ kind: 'adjust', text: argument });
+    }
+    if (name === 'cancel') {
+      if (!argument) {
+        throw new Error(
+          '/cancel requires a reason, for example /cancel 参数设置错误',
+        );
+      }
+      const confirm = /(?:^|\s)--confirm(?:\s|$)/u.test(argument);
+      return conversationCommandSchema.parse({
+        kind: 'cancel',
+        text: argument.replace(/(?:^|\s)--confirm(?:\s|$)/gu, ' ').trim(),
+        confirm,
+      });
+    }
     if (name === 'start') {
       if (!argument) throw new Error('/start requires a dataset path.');
       return conversationCommandSchema.parse({
@@ -299,13 +369,30 @@ export class ConversationService {
         runId: argument,
       });
     }
+    if (name === 'approve-plan' || name === 'start-training') {
+      const acceptDegradation =
+        name === 'approve-plan' &&
+        /(?:^|\s)--accept-degradation(?:\s|$)/u.test(argument ?? '');
+      const runId = argument
+        ?.replace(/(?:^|\s)--accept-degradation(?:\s|$)/gu, ' ')
+        .trim();
+      return conversationCommandSchema.parse({
+        kind: name === 'approve-plan' ? 'approvePlan' : 'startTraining',
+        ...(runId ? { runId } : {}),
+        ...(name === 'approve-plan' ? { acceptDegradation } : {}),
+      });
+    }
     if (name === 'back' || name === 'exit') {
       requireNoArgument(name, argument);
       return conversationCommandSchema.parse({ kind: name });
     }
-    throw new Error(
-      `Unsupported REPL command "${name}". Use /help for deterministic commands.`,
-    );
+    if (!trimmed.startsWith('/')) {
+      return conversationCommandSchema.parse({
+        kind: 'natural',
+        text: trimmed,
+      });
+    }
+    throw new Error(`Unsupported REPL command "${name}". Use /help.`);
   }
 }
 

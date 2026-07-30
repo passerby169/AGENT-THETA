@@ -585,7 +585,8 @@ def generate_summary_report(data, output_dir):
     output_dir = Path(output_dir)
     
     report = []
-    report.append("# ETM Visualization Summary Report")
+    model_label = str(data.get('model_type') or 'Topic Model').upper()
+    report.append(f"# {model_label} Visualization Summary Report")
     report.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report.append("")
     
@@ -690,8 +691,16 @@ def load_baseline_data(result_dir, dataset, model, num_topics=20):
     # Helper function to find data_exp_dir from config
     def find_data_exp_dir(config_path, base_dir):
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
+            # CLI-managed baseline runs persist the authoritative prepared-data
+            # directory as ``workspace``.  Prefer it over legacy ``data_exp``
+            # discovery so vocab.json and bow_matrix.npy stay aligned with beta.
+            workspace = config.get('workspace')
+            if workspace:
+                workspace_dir = Path(workspace)
+                if workspace_dir.exists():
+                    return workspace_dir
             data_exp = config.get('data_exp')
             if data_exp:
                 # Try multiple possible paths for data experiment
@@ -787,6 +796,38 @@ def load_baseline_data(result_dir, dataset, model, num_topics=20):
     else:
         data['vocab'] = [f"word_{i}" for i in range(data['beta'].shape[1])]
         print(f"[WARN] Generated placeholder vocab: {len(data['vocab'])} words")
+
+    # A legacy topic_words file can contain word_XX placeholders even when the
+    # real vocabulary is available. Rebuild the labels from the beta indices so
+    # every downstream table and chart uses the actual token.
+    if data.get('topic_words') and data.get('vocab'):
+        has_placeholder = any(
+            str(word).startswith('word_')
+            for _, words in data['topic_words']
+            for word, _ in words
+        )
+        real_vocab_available = not all(
+            str(word).startswith('word_') for word in data['vocab']
+        )
+        if has_placeholder and real_vocab_available:
+            rebuilt_topic_words = []
+            for topic_id in range(data['beta'].shape[0]):
+                top_indices = np.argsort(data['beta'][topic_id])[-20:][::-1]
+                rebuilt_topic_words.append(
+                    (
+                        topic_id,
+                        [
+                            (
+                                data['vocab'][idx],
+                                float(data['beta'][topic_id, idx]),
+                            )
+                            for idx in top_indices
+                            if idx < len(data['vocab'])
+                        ],
+                    )
+                )
+            data['topic_words'] = rebuilt_topic_words
+            print("[OK] Rebuilt topic_words with the real vocabulary")
     
     # Load topic_words from topicwords/ subdirectory
     topic_words_path = model_dir / 'topicwords' / f'topic_words_k{num_topics}.json'
@@ -872,8 +913,9 @@ def load_baseline_data(result_dir, dataset, model, num_topics=20):
     data['timestamps'] = None
     
     # Try to load timestamp data (required for DTM)
-    time_slices_path = dataset_dir / 'time_slices.json'
-    time_indices_path = dataset_dir / 'time_indices.npy'
+    temporal_data_dir = data_exp_dir if data_exp_dir is not None else dataset_dir
+    time_slices_path = temporal_data_dir / 'time_slices.json'
+    time_indices_path = temporal_data_dir / 'time_indices.npy'
     
     if time_slices_path.exists() and time_indices_path.exists():
         with open(time_slices_path, 'r', encoding='utf-8') as f:
@@ -899,6 +941,35 @@ def load_baseline_data(result_dir, dataset, model, num_topics=20):
     if training_history_path.exists():
         data['training_history'] = load_json_compatible(training_history_path)
         print(f"[OK] Loaded training_history")
+
+    # Load approved metadata dimensions for every baseline.  STM additionally
+    # loads fitted covariate effects below, while static models can still create
+    # honest post-hoc group comparisons from document-topic proportions.
+    data['dimension_values'] = None
+    if data_exp_dir is not None:
+        ws_cov_path = data_exp_dir / 'covariates.npy'
+        ws_names_path = data_exp_dir / 'covariate_names.json'
+        ws_levels_path = data_exp_dir / 'covariate_levels.json'
+        if ws_cov_path.exists():
+            workspace_covariates = np.load(ws_cov_path)
+            if workspace_covariates.ndim == 2 and workspace_covariates.shape[1] > 0:
+                first_dimension = workspace_covariates[:, 0].astype(int)
+                dimension_name = None
+                if ws_names_path.exists():
+                    with open(ws_names_path, 'r', encoding='utf-8') as f:
+                        names = json.load(f)
+                    dimension_name = names[0] if names else None
+                    data['covariate_names'] = names
+                if ws_levels_path.exists() and dimension_name:
+                    with open(ws_levels_path, 'r', encoding='utf-8') as f:
+                        levels = json.load(f).get(dimension_name, [])
+                    data['dimension_values'] = np.array([
+                        levels[value] if 0 <= value < len(levels) else str(value)
+                        for value in first_dimension
+                    ])
+                else:
+                    data['dimension_values'] = first_dimension
+                print(f"[OK] Loaded dimension values: {len(data['dimension_values'])}")
 
     # Load STM covariate data
     if model == 'stm':
@@ -1180,6 +1251,7 @@ def _run_dtm_specific_visualizations(data, output_dir, language='en', dpi=300):
             topic_words=data['topic_words'],
             topic_embeddings=data.get('topic_embeddings'),
             timestamps=data.get('timestamps'),
+            dimension_values=data.get('dimension_values'),
             bow_matrix=data.get('bow_matrix'),
             training_history=data.get('training_history'),
             metrics=data.get('metrics'),
@@ -1596,6 +1668,26 @@ Examples:
                 language=args.language,
                 dpi=args.dpi
             )
+            status_path = Path(args.result_dir) / 'visualization_status.json'
+            with open(status_path, 'w', encoding='utf-8') as status_file:
+                json.dump(
+                    {
+                        'schema_version': '1.0.0',
+                        'model': args.model,
+                        'dataset': args.dataset,
+                        'renderers': [
+                            {
+                                'language': args.language,
+                                'status': 'completed',
+                                'exit_code': 0,
+                                'output_dir': args.output_dir,
+                            }
+                        ],
+                    },
+                    status_file,
+                    ensure_ascii=False,
+                    indent=2,
+                )
         else:
             parser.error("Baseline mode requires --all or both --dataset and --model")
     else:

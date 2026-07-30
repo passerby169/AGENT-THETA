@@ -911,14 +911,19 @@ class TopicVisualizer:
         n_topics = beta.shape[0]
         topic_proportions = theta.mean(axis=0)
         
-        # PCA/t-SNE for topic positions
-        if n_topics > 3:
+        # PCA is substantially more stable for small or degenerate topic sets.
+        # On Windows, sklearn TSNE can overflow the native stack when only a
+        # handful of topics have identical/nearly-identical beta rows.
+        unique_topic_rows = np.unique(np.asarray(beta), axis=0).shape[0]
+        if n_topics >= 8 and unique_topic_rows >= 4:
             tsne = TSNE(n_components=2, random_state=42, perplexity=min(5, n_topics-1),
                         max_iter=1000, learning_rate='auto', init='pca')
             topic_coords = tsne.fit_transform(beta)
-        else:
+        elif n_topics >= 2:
             pca = PCA(n_components=2)
             topic_coords = pca.fit_transform(beta)
+        else:
+            topic_coords = np.zeros((n_topics, 2), dtype=float)
         
         topic_coords = topic_coords * 2.0
         

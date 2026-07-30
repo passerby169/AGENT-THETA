@@ -36,6 +36,7 @@ import {
   runThetaAgentCliCommand,
 } from "./agent-cli.js";
 import { loadThetaProjectEnvironment } from "./environment.js";
+import { renderUserError } from "./presentation/terminal-renderer.js";
 
 interface ParsedArguments {
   positionals: string[];
@@ -56,6 +57,7 @@ const helpText = `THETA CLI Agent
 
 Usage:
   theta <command> [options]
+  theta.cmd <command> [options]   (Windows local checkout)
   npm run cli -- <command> [options]
 
 Commands:
@@ -67,6 +69,12 @@ Commands:
 
   resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
       Resume a durable Run without reconstructing state in the CLI.
+
+  answer --run-id <id> --text <natural-language-answer> [--runtime-db <path>]
+      Interpret a research answer, persist a Brief revision, and resume.
+
+  columns --run-id <id> --text <natural-language-confirmation> [--runtime-db <path>]
+      Confirm text, time, ID, and metadata columns in natural language.
 
   status --run-id <id> [--runtime-db <path>]
       Read the current Run projection from canonical events.
@@ -106,7 +114,7 @@ Commands:
       Explain an existing deterministic recommendation without changing it.
 
   repl [--run-id <id>] [--runtime-db <path>]
-      Open the deterministic command REPL. Free-form model chat is disabled.
+      Open the persistent conversational REPL with bounded MiniMax assistance.
 
   dataset inspect --file <path> [--sample-size <number>]
       Inspect an allowed local dataset through Hypha governance.
@@ -801,14 +809,15 @@ export const runCli = async (
   output: CliOutput = consoleOutput,
 ): Promise<number> => {
   try {
-    const parsed = parseArguments(args);
+    const normalizedArgs = args[0] === "--" ? args.slice(1) : args;
+    const parsed = parseArguments(normalizedArgs);
     if (hasFlag(parsed, "help") || parsed.positionals.length === 0) {
       output.write(helpText);
       return 0;
     }
 
-    if (isThetaAgentCommand(args)) {
-      return runThetaAgentCliCommand(args, output);
+    if (isThetaAgentCommand(normalizedArgs)) {
+      return runThetaAgentCliCommand(normalizedArgs, output);
     }
 
     const [command, subcommand, ...extraPositionals] = parsed.positionals;
@@ -861,7 +870,7 @@ export const runCli = async (
       return 0;
     }
     if (command === "workflow" && subcommand !== undefined) {
-      return runThetaWorkflowCliCommand(args.slice(1), output);
+      return runThetaWorkflowCliCommand(normalizedArgs.slice(1), output);
     }
     if (command === "demo" && subcommand === undefined) {
       await demoCommand(parsed, output);
@@ -870,9 +879,7 @@ export const runCli = async (
 
     throw new Error(`Unknown command: ${parsed.positionals.join(" ")}`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    output.writeError(`Error: ${message}`);
-    output.writeError('Run "theta --help" for usage.');
+    output.writeError(renderUserError(error));
     return 1;
   }
 };

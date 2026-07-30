@@ -73,6 +73,17 @@ export const agentInvocationSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('conversationTurn'),
+      action: z.enum(['answer', 'columns']),
+      text: z.string().trim().min(1).max(4000),
+      runId: z.string().min(1),
+      runtimeDb: z.string().min(1).optional(),
+      sessionId: z.string().min(1).optional(),
+      json: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('repl'),
       runId: z.string().min(1).optional(),
       runtimeDb: z.string().min(1).optional(),
@@ -130,8 +141,56 @@ export const conversationCommandSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('approvePlan'),
+      ...runReference,
+      acceptDegradation: z.boolean().default(false),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('startTraining'),
+      ...runReference,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('save'),
       ...runReference,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.enum(['answer', 'columns', 'natural']),
+      text: z.string().trim().min(1).max(4000),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('llm'),
+      enabled: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.enum(['history', 'brief']),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.enum(['next', 'details', 'done', 'follow', 'logs', 'results', 'openResults', 'summary', 'runs', 'retry']),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('adjust'),
+      text: z.string().trim().min(1).max(4000),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('cancel'),
+      text: z.string().trim().min(1).max(1000),
+      confirm: z.boolean(),
     })
     .strict(),
   z

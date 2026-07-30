@@ -1,6 +1,6 @@
 {
   "name": "theta-cli-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Local THETA CLI Agent built on Hypha tool governance contracts.",
@@ -14,7 +14,8 @@
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "rag:build": "node dist/cli.js rag build --json",
-    "cli": "node dist/cli.js",
+    "cli": "node --disable-warning=ExperimentalWarning dist/cli.js",
+    "theta": "node --disable-warning=ExperimentalWarning dist/cli.js",
     "demo": "node dist/cli.js demo",
     "hypha:check": "node ../scripts/check-hypha-version.mjs",
     "hypha:build": "npm --prefix ../Hypha run build:packages",
@@ -44,7 +45,7 @@
     "test:replay": "node dist/theta-workflow-smoke.js",
     "test:rag-eval": "node dist/rag-evaluation-smoke.js",
     "test:python-runtime": "python -m unittest discover ../theta_agent_bridge/tests -p \"test_*.py\"",
-    "smoke:cli": "node dist/cli-smoke.js",
+    "smoke:cli": "node --disable-warning=ExperimentalWarning dist/cli-smoke.js",
     "release:verify": "node scripts/run-release-gates.mjs",
     "release:clean-install": "node scripts/clean-install-smoke.mjs"
   },
