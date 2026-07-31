@@ -4,7 +4,10 @@ import {
   compileThetaTrainingDomain,
   resolveThetaStateToolScope,
 } from "./theta-domain.js";
-import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
+import {
+  THETA_PERMISSION_SCOPES,
+  THETA_TOOL_IDS,
+} from "./tools/tool-ids.js";
 
 const first = compileThetaTrainingDomain();
 const second = compileThetaTrainingDomain();
@@ -39,6 +42,15 @@ const recommendationScope = resolveThetaStateToolScope(
   first,
   THETA_WORKFLOW_STATES.recommendModel,
 );
+const workflowDefinition = first.domainPack.workflows.find(
+  (workflow) => workflow.id === first.workflowRef.id,
+);
+const columnStateDefinition = workflowDefinition?.states.find(
+  (state) => state.id === THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+);
+const researchStateDefinition = workflowDefinition?.states.find(
+  (state) => state.id === THETA_WORKFLOW_STATES.awaitResearchClarification,
+);
 
 if (!inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.datasetInspect)) {
   throw new Error("InspectDataset does not allow theta.dataset.inspect.");
@@ -47,13 +59,41 @@ if (inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.trainingStart)) {
   throw new Error("InspectDataset improperly allows theta.training.start.");
 }
 if (
-  columnScope.allowedToolIds?.length !== 1 ||
-  columnScope.allowedToolIds[0] !== THETA_TOOL_IDS.datasetInspect
+  columnScope.allowedToolIds?.length !== 2 ||
+  !columnScope.allowedToolIds.includes(THETA_TOOL_IDS.datasetInspect) ||
+  !columnScope.allowedToolIds.includes(THETA_TOOL_IDS.conversationLanguage) ||
+  columnScope.allowedToolIds.includes(THETA_TOOL_IDS.trainingStart)
 ) {
-  throw new Error("ColumnConfirmation may only re-read dataset identity.");
+  throw new Error(
+    "ColumnConfirmation tool scope exceeds dataset inspection and bounded language interpretation.",
+  );
 }
-if ((researchScope.allowedToolIds?.length ?? 0) !== 0) {
-  throw new Error("ResearchClarification must not execute tools.");
+if (
+  columnStateDefinition?.permissionScopes?.length !== 2 ||
+  !columnStateDefinition.permissionScopes.includes(
+    THETA_PERMISSION_SCOPES.datasetRead,
+  ) ||
+  !columnStateDefinition.permissionScopes.includes(
+    THETA_PERMISSION_SCOPES.inferenceUse,
+  ) ||
+  columnScope.policyRefs?.length !== 2 ||
+  !columnScope.policyRefs.includes("policy.theta.readonly") ||
+  !columnScope.policyRefs.includes("policy.theta.language-inference")
+) {
+  throw new Error("ColumnConfirmation is missing its least-privilege policy boundary.");
+}
+if (
+  researchScope.allowedToolIds?.length !== 1 ||
+  researchScope.allowedToolIds[0] !== THETA_TOOL_IDS.conversationLanguage ||
+  researchStateDefinition?.permissionScopes?.length !== 1 ||
+  researchStateDefinition.permissionScopes[0] !==
+    THETA_PERMISSION_SCOPES.inferenceUse ||
+  researchScope.policyRefs?.length !== 1 ||
+  researchScope.policyRefs[0] !== "policy.theta.language-inference"
+) {
+  throw new Error(
+    "ResearchClarification may only use policy-bounded language interpretation.",
+  );
 }
 if (
   !recommendationScope.allowedToolIds?.includes(THETA_TOOL_IDS.ragSearch) ||

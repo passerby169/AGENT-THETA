@@ -432,6 +432,7 @@ const input = {
     sensitiveData: { status: "no" as const, categories: [] },
     successCriteria: ["Produce stable, interpretable topics."],
     hardwareLimit: { device: "cpu" as const, memoryGb: 16 },
+    interviewComplete: true,
   },
   constraints: { maxTopics: 8 },
 };

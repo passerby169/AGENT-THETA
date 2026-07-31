@@ -264,7 +264,8 @@ const repl = spawnSync(process.execPath, [cliPath, "repl"], {
 });
 if (
   repl.status !== 0 ||
-  !repl.stdout.includes("THETA deterministic REPL")
+  !repl.stdout.includes("THETA 研究训练助手") ||
+  !repl.stdout.includes("直接用自然语言回答问题")
 ) {
   throw new Error(`Deterministic REPL failed: ${repl.stderr || repl.stdout}`);
 }

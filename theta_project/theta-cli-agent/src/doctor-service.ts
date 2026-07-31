@@ -10,7 +10,7 @@ import { ThetaWorkflowService } from './theta-workflow-service.js';
 import { createThetaWorkflowRuntime } from './theta-workflow-runtime.js';
 import { runThetaModelCatalog } from './tools/hypha-runner.js';
 import { createMiniMaxProviderFromEnv } from './providers/minimax.js';
-import { probeThetaPythonModules } from './runtime/python-runtime.js';
+import { probeThetaPythonModules } from './tools/bridge.js';
 
 export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
 

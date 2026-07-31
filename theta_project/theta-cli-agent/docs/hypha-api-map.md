@@ -1,23 +1,32 @@
 # Hypha API Map
 
 Hypha checkout: `CodeSoul-co/Hypha`, branch `dev-domain-merge`,
-commit `dfb787ceed7d3c525fb39909142af7d1b5106c41`.
+commit `1da723167d2b6dda3fa553cac524969884507785`.
 
 This map records the current APIs that THETA CLI Agent must use. Do not assume names from planning
 documents when they differ from this checkout.
 
-## Packages Required By The First Slice
+## Packages Used By The CLI Agent
 
 Runtime imports currently require:
 
+- `@hypha/adapters-local`
 - `@hypha/core`
+- `@hypha/domain`
+- `@hypha/fsm`
+- `@hypha/harness`
+- `@hypha/inference`
+- `@hypha/kernel`
+- `@hypha/mcp`
+- `@hypha/memory`
+- `@hypha/skills`
+- `@hypha/storage`
 - `@hypha/tools`
 - runtime dependencies: `zod`, `ajv`, `ajv-formats`
 
-The CLI package imports Hypha packages through file dependencies:
-
-- `@hypha/core`: `file:../Hypha/packages/core`
-- `@hypha/tools`: `file:../Hypha/packages/tools`
+The CLI package imports each Hypha package through a sibling
+`file:../Hypha/packages/<package>` dependency. `../hypha.lock.json` is the
+authority for the expected branch and commit.
 
 ## Core
 
@@ -36,7 +45,7 @@ Important exports:
 - `InMemoryEventStore`: implements both `EventStore` and `TraceRecorder`.
 - `createFrameworkEvent(input)`: canonical Framework event constructor.
 
-Initial THETA usage:
+THETA usage:
 
 - Use `InMemoryEventStore` only for isolated tool smoke tests.
 - Use the SQLite-backed EventRuntime for canonical workflows. TrainingPlan,
@@ -50,7 +59,7 @@ Source: `Hypha/packages/tools/src/index.ts`.
 
 ### ToolSpec
 
-Required first-slice fields:
+Required fields:
 
 - `id`
 - `version`
@@ -107,8 +116,8 @@ Built-in local adapter:
 
 - `LocalFunctionToolAdapter(id, handler)`
 
-First THETA Bridge integration should implement `ToolAdapter` instead of calling the Python Bridge
-from CLI or WorkflowExecutor.
+THETA Bridge integration is reachable only from registered Tool handlers.
+CLI and WorkflowExecutor code must not call the Bridge directly.
 
 ### GovernedToolRunner
 
@@ -210,18 +219,22 @@ Workflow state bindings expose:
 - `requiredSkills`
 - optional tool profile refs and policy refs through compilation.
 
-First THETA DomainPack should be minimal:
+The current `domain.theta.training@3.0.0` workflow includes:
 
-- `SessionInitialized`
-- `DatasetInspection`
-- `Completed`
-- `Failed`
+- deterministic intake and research clarification;
+- dataset inspection and explicit column confirmation;
+- evidence-backed model recommendation and plan validation;
+- separate plan-creation and training-start approvals;
+- deterministic dry-run and pre-start dataset verification;
+- training start, durable monitoring, completion, cancellation, failure, and
+  quarantine outcomes.
 
-## Current Migration Guardrails
+## Current Architecture Guardrails
 
 - CLI must not call `callThetaBridge` directly after the governed adapter exists.
 - WorkflowExecutor must not spawn Python.
 - Python Bridge must not decide FSM state, policy, approval, or recommendation authority.
 - Formal contracts should import `JsonSchema` from `@hypha/core`.
-- First tool migration should be `theta.model.catalog`; it is read-only and can validate registry,
-  schema, permission, policy, event, and Bridge protocol without training side effects.
+- Python interpreter discovery, module probing, Bridge calls, and local process
+  execution remain inside `tools/bridge.ts`; diagnostic callers receive
+  structured results rather than owning process execution.

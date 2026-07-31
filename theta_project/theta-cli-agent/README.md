@@ -364,7 +364,7 @@ npm run cli -- plan create --file fixtures/training-plan.json --approve
 ```
 
 `plan approve` remains available only as a legacy compatibility command. It is
-not used by the DomainPack 2.0 workflow and is not an authority for training.
+not used by the DomainPack 3.0 workflow and is not an authority for training.
 
 ```powershell
 npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
