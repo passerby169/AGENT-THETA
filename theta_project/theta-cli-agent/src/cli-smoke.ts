@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path, { resolve } from "node:path";
+import { parsePlanAdjustment } from "./conversation/turn-orchestrator.js";
 
 interface CommandCase {
   args: string[];
@@ -12,6 +13,28 @@ const cliPath = resolve(process.cwd(), "dist", "cli.js");
 const root = await mkdtemp(path.join(os.tmpdir(), "theta-agent-cli-smoke-"));
 const runtimeDb = path.join(root, "workflow.sqlite");
 const agentRunId = "theta-agent-cli-run";
+
+const adjustableModels = [
+  "bertopic",
+  "btm",
+  "ctm",
+  "dtm",
+  "etm",
+  "gsm",
+  "hdp",
+  "lda",
+  "nvdm",
+  "prodlda",
+  "stm",
+  "theta",
+] as const;
+
+for (const modelId of adjustableModels) {
+  const adjustment = parsePlanAdjustment(`将模型改为 ${modelId}`);
+  if (adjustment.modelId !== modelId) {
+    throw new Error(`Plan adjustment did not recognize model ${modelId}.`);
+  }
+}
 
 const runJsonCommand = (commandCase: CommandCase): void => {
   const result = spawnSync(

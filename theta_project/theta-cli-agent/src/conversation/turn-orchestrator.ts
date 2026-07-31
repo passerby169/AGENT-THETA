@@ -951,7 +951,7 @@ const requiredRun = (runId: string | undefined): string => {
   return runId;
 };
 
-const parsePlanAdjustment = (input: string): Record<string, unknown> => {
+export const parsePlanAdjustment = (input: string): Record<string, unknown> => {
   const text = input.trim();
   const patch: Record<string, unknown> = {};
   const topicMatch = text.match(
@@ -964,7 +964,7 @@ const parsePlanAdjustment = (input: string): Record<string, unknown> => {
     /(?:批大小|batch(?:\s*size)?)[^\d]{0,12}(\d{1,6})/iu,
   );
   const modelMatch = text.match(
-    /\b(BTM|LDA|HDP|STM|CTM|BERTopic|Top2Vec|TopicBERT)\b/iu,
+    /\b(BERTopic|BTM|CTM|DTM|ETM|GSM|HDP|LDA|NVDM|ProdLDA|STM|THETA)\b/iu,
   );
   if (topicMatch) patch.numTopics = Number(topicMatch[1]);
   if (epochMatch) patch.epochs = Number(epochMatch[1]);
