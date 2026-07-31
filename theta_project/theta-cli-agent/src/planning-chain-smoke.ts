@@ -50,6 +50,64 @@ if (changed.planHash === first.planHash) {
   throw new Error("Execution material did not change the canonical plan hash.");
 }
 
+const alternateInput = createPlanningFixture();
+const primaryRecommendation = (
+  alternateInput.recommendation as {
+    recommendations: Array<Record<string, unknown>>;
+  }
+).recommendations[0];
+if (!primaryRecommendation) {
+  throw new Error("Planning fixture is missing its primary recommendation.");
+}
+alternateInput.validatedPlan = {
+  ...alternateInput.validatedPlan,
+  modelId: "dtm",
+  numTopics: 5,
+};
+alternateInput.recommendation = {
+  ...(alternateInput.recommendation as Record<string, unknown>),
+  recommendations: [
+    primaryRecommendation,
+    {
+      ...primaryRecommendation,
+      rank: 2,
+      modelId: "dtm",
+      modelName: "Dynamic Topic Model",
+      recommendedPlanPatch: {
+        modelId: "dtm",
+        mode: "unsupervised",
+        numTopics: 5,
+        batchSize: 64,
+        epochs: 20,
+      },
+    },
+  ],
+};
+const alternate = createTrainingPlanRecord({
+  ...alternateInput,
+  createdAt: "2026-07-28T00:00:00.000Z",
+});
+if (alternate.canonicalPlan.model.modelId !== "dtm") {
+  throw new Error("A compatible alternate recommendation was not selectable.");
+}
+
+let unlistedModelRejected = false;
+try {
+  createTrainingPlanRecord({
+    ...alternateInput,
+    validatedPlan: {
+      ...alternateInput.validatedPlan,
+      modelId: "unlisted-model",
+    },
+    createdAt: "2026-07-28T00:00:00.000Z",
+  });
+} catch {
+  unlistedModelRejected = true;
+}
+if (!unlistedModelRejected) {
+  throw new Error("An unlisted model bypassed recommendation governance.");
+}
+
 const planReview = createApprovalReceipt({
   approvalType: "human_plan_review",
   plan: first,
@@ -110,6 +168,8 @@ console.log(
     planId: first.planId,
     planHash: first.planHash,
     changedPlanHash: changed.planHash,
+    alternateModelId: alternate.canonicalPlan.model.modelId,
+    unlistedModelRejected,
     planReviewApprovalId: planReview.approvalId,
     trainingReviewApprovalId: trainingReview.approvalId,
     dryRunHash: dryRun.dryRunHash,

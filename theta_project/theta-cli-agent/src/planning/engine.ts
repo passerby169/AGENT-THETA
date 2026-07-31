@@ -62,8 +62,7 @@ export const createTrainingPlanRecord = (
   const profile = datasetProfileSchema.parse(input.datasetProfile);
   const confirmation = columnConfirmationSchema.parse(input.columnConfirmation);
   const recommendation = recommendationResultSchema.parse(input.recommendation);
-  const top = recommendation.recommendations[0];
-  if (!top)
+  if (recommendation.recommendations.length === 0)
     throw new Error("TrainingPlan requires one compatible recommendation.");
   if (confirmation.datasetSha256 !== profile.datasetSha256) {
     throw new Error(
@@ -73,9 +72,12 @@ export const createTrainingPlanRecord = (
 
   const raw = input.validatedPlan;
   const modelId = requiredString(raw.modelId, "validatedPlan.modelId");
-  if (modelId !== top.modelId) {
+  const selectedRecommendation = recommendation.recommendations.find(
+    (candidate) => candidate.modelId === modelId,
+  );
+  if (!selectedRecommendation) {
     throw new Error(
-      "Validated plan model does not match the selected recommendation.",
+      "Validated plan model does not match a compatible recommendation.",
     );
   }
   const parameters = scalarParameters(raw, [
@@ -136,10 +138,13 @@ export const createTrainingPlanRecord = (
       datasetFileName: profile.fileName,
       datasetRowCount: profile.rowCount,
       warnings: [
-        ...new Set([...recommendation.warnings, ...top.warnings]),
+        ...new Set([
+          ...recommendation.warnings,
+          ...selectedRecommendation.warnings,
+        ]),
       ].sort(),
-      reasonCodes: [...top.reasonCodes].sort(),
-      evidence: top.evidenceRefs,
+      reasonCodes: [...selectedRecommendation.reasonCodes].sort(),
+      evidence: selectedRecommendation.evidenceRefs,
     },
     createdAt: input.createdAt,
   });
