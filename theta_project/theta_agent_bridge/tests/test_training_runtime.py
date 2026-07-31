@@ -106,6 +106,35 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
         self.assertEqual(retry["attempt"], 2)
         self.assertEqual(retry["retryOfTrainingRunId"], source["trainingRunId"])
 
+    def test_expected_artifacts_follow_dtm_preparation_layout(self) -> None:
+        dtm_artifacts = bridge.expected_training_artifacts(
+            {
+                "datasetId": "dataset",
+                "modelId": "dtm",
+                "userId": "local_user",
+            }
+        )
+        self.assertEqual(
+            dtm_artifacts[0]["path"],
+            "THETA/result/baseline/dataset/data",
+        )
+        self.assertEqual(
+            dtm_artifacts[1]["path"],
+            "THETA/result/local_user/dataset/dtm",
+        )
+
+        baseline_artifacts = bridge.expected_training_artifacts(
+            {
+                "datasetId": "dataset",
+                "modelId": "btm",
+                "userId": "local_user",
+            }
+        )
+        self.assertEqual(
+            baseline_artifacts[0]["path"],
+            "THETA/data/workspace/dataset/local_user",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

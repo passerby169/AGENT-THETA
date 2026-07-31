@@ -2839,10 +2839,15 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
     dataset_id = str(plan.get("datasetId"))
     model_id = str(plan.get("modelId")).lower()
     user_id = str(plan.get("userId") or "local_user")
+    workspace_path = (
+        f"THETA/result/baseline/{dataset_id}/data"
+        if model_id == "dtm"
+        else f"THETA/data/workspace/{dataset_id}/{user_id}"
+    )
     return [
         {
             "kind": "workspace",
-            "path": f"THETA/data/workspace/{dataset_id}/{user_id}",
+            "path": workspace_path,
             "description": "Prepared matrices, vocabulary, approved time slices, metadata dimensions and optional embeddings.",
         },
         {
