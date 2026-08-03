@@ -3,7 +3,7 @@
   "runId": "theta-workflow-completed",
   "digestAlgorithm": "sha256-canonical-replay-v1",
   "canonicalEventCount": 59,
-  "policyDecisionCount": 12,
+  "policyDecisionCount": 21,
   "statePath": [
     "Intake",
     "InspectDataset",
@@ -28,6 +28,7 @@
     "theta.model.catalog",
     "theta.rag.search",
     "theta.model.recommend",
+    "theta.plan.propose",
     "theta.plan.validate",
     "theta.plan.create",
     "theta.training.dry_run",

@@ -36,8 +36,6 @@ changedInput.recommendation = {
         modelId: "lda",
         mode: "unsupervised",
         numTopics: 9,
-        batchSize: 64,
-        epochs: 20,
       },
     },
   ],

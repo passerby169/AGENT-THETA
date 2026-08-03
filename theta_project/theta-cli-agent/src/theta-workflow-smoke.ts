@@ -7,6 +7,7 @@ import {
   createDryRunReceipt,
   createTrainingPlanRecord,
 } from "./planning/engine.js";
+import { ThetaPlannerService } from "./planner/service.js";
 import { THETA_APPROVAL_KEYS, THETA_WORKFLOW_STATES } from "./theta-domain.js";
 import {
   ThetaWorkflowService,
@@ -204,6 +205,12 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
           },
           noEvidence: true,
         };
+      case THETA_TOOL_IDS.planPropose:
+        return new ThetaPlannerService({ enabled: false }).propose(
+          request.input as unknown as Parameters<
+            ThetaPlannerService["propose"]
+          >[0],
+        );
       case THETA_TOOL_IDS.planValidate:
         return {
           valid: true,
@@ -393,7 +400,11 @@ class FakeThetaTools implements ThetaWorkflowToolPort {
 const root = await mkdtemp(path.join(os.tmpdir(), "theta-workflow-smoke-"));
 const runtimeDb = path.join(root, "workflow.sqlite");
 const tools = new FakeThetaTools();
-const service = new ThetaWorkflowService({ toolPort: tools });
+let nowMs = Date.now();
+const service = new ThetaWorkflowService({
+  toolPort: tools,
+  now: () => new Date(nowMs).toISOString(),
+});
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -468,8 +479,19 @@ try {
     completed.disposition !== "completed" ||
     completed.status !== "completed"
   ) {
+    const failedEvidence = await service.evidence(completed.runId, runtimeDb);
     throw new Error(
-      `Expected completed workflow, received ${completed.disposition}.`,
+      `Expected completed workflow, received ${completed.disposition}: ${JSON.stringify(
+        {
+          status: completed.status,
+          currentState: completed.currentState,
+          output: completed.output,
+          trainingReceipt: completed.trainingReceipt,
+          events: failedEvidence.orchestrationEvents
+            .slice(-8)
+            .map((event) => ({ type: event.type, payload: event.payload })),
+        },
+      )}.`,
     );
   }
   const expectedPath = [
@@ -752,7 +774,7 @@ try {
   ) {
     throw new Error("Running training did not create a durable timer wait.");
   }
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  nowMs += 3_100;
   const timerCompleted = await service.resume({ runId: timerRunId, runtimeDb });
   if (timerCompleted.disposition !== "completed") {
     throw new Error("Durable timer did not resume training monitoring.");

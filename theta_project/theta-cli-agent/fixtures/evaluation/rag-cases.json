@@ -14,14 +14,16 @@
       "id": "bertopic-runtime",
       "query": "bertopic sentence transformer gpu",
       "expectedSourceIds": [
-        "theta-model-catalog"
+        "theta-model-catalog",
+        "theta-capability-registry"
       ]
     },
     {
       "id": "hardware-requirements",
       "query": "hardware memory gpu requirements",
       "expectedSourceIds": [
-        "theta-hardware-guide"
+        "theta-hardware-guide",
+        "theta-capability-registry"
       ]
     }
   ],

@@ -15,6 +15,8 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="theta-runtime-test-")
         root = Path(self.temp.name)
+        self.dataset_path = root / "dataset.csv"
+        self.dataset_path.write_text("text\nA governed runtime fixture.\n", encoding="utf-8")
         self.state_dir_patch = patch.object(bridge, "STATE_DIR", root)
         self.state_db_patch = patch.object(
             bridge, "STATE_DB_PATH", root / "state.sqlite"
@@ -37,12 +39,70 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
 
     def training_payload(self, idempotency_key: str) -> dict:
         plan_id = "plan_" + "1" * 16
-        plan_hash = "2" * 64
         plan_review_id = "approval_" + "3" * 20
         training_review_id = "approval_" + "4" * 20
-        dry_run_hash = "5" * 64
+        canonical_plan = {
+            "schemaVersion": "2.0.0",
+            "datasetId": "runtime-test",
+            "model": {
+                "modelId": "lda",
+                "mode": "unsupervised",
+                "topicCountMode": "fixed",
+                "numTopics": 5,
+                "maxTopics": None,
+                "parameters": {},
+            },
+            "columns": {
+                "textColumns": ["text"],
+                "timeColumn": None,
+                "idColumn": None,
+                "covariateColumns": [],
+                "metadataColumns": [],
+                "groupingColumns": [],
+                "evaluationLabelColumns": [],
+            },
+            "resources": {"device": "cpu"},
+            "experimentProtocol": {
+                "mode": "quick",
+                "primarySeeds": [42],
+                "baselineModelId": None,
+                "baselineSeeds": [],
+                "rationale": "Runtime test quick run.",
+                "evidenceRefs": [],
+                "confidence": "low",
+            },
+        }
+        plan_hash = bridge.sha256_json(canonical_plan)
+        plan_record = {
+            "planId": plan_id,
+            "planHash": plan_hash,
+            "canonicalPlan": canonical_plan,
+        }
+        resolved_plan = bridge.legacy_plan_from_record(
+            plan_record,
+            self.dataset_path,
+        )
+        commands = bridge.build_training_commands(resolved_plan)
+        expected_artifacts = bridge.expected_training_artifacts(resolved_plan)
+        dry_run_material = {
+            "planId": plan_id,
+            "planHash": plan_hash,
+            "planReviewApprovalId": plan_review_id,
+            "passed": True,
+            "checks": [
+                {
+                    "code": "RUNTIME_TEST_PREFLIGHT",
+                    "status": "pass",
+                    "detail": "Canonical runtime fixture.",
+                }
+            ],
+            "commands": commands,
+            "expectedArtifacts": expected_artifacts,
+            "notes": [],
+        }
+        dry_run_hash = bridge.sha256_json(dry_run_material)
         return {
-            "plan": {"planId": plan_id, "planHash": plan_hash},
+            "plan": plan_record,
             "planReview": {
                 "approvalId": plan_review_id,
                 "approvalType": "human_plan_review",
@@ -50,20 +110,8 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
                 "planHash": plan_hash,
             },
             "dryRun": {
+                **dry_run_material,
                 "dryRunHash": dry_run_hash,
-                "planId": plan_id,
-                "planHash": plan_hash,
-                "planReviewApprovalId": plan_review_id,
-                "passed": True,
-                "commands": [
-                    {
-                        "step": "simulate",
-                        "cwd": self.temp.name,
-                        "argv": ["python", "-c", "print('ok')"],
-                        "sideEffect": "external_effect",
-                    }
-                ],
-                "expectedArtifacts": [],
             },
             "trainingReview": {
                 "approvalId": training_review_id,
@@ -120,7 +168,7 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
         )
         self.assertEqual(
             dtm_artifacts[1]["path"],
-            "THETA/result/local_user/dataset/dtm",
+            "THETA/result/local_user/dataset/dtm/approved_plan__primary_dtm_s42",
         )
 
         baseline_artifacts = bridge.expected_training_artifacts(
@@ -133,6 +181,10 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
         self.assertEqual(
             baseline_artifacts[0]["path"],
             "THETA/data/workspace/dataset/local_user",
+        )
+        self.assertEqual(
+            baseline_artifacts[1]["path"],
+            "THETA/result/local_user/dataset/btm/approved_plan__primary_btm_s42",
         )
 
 

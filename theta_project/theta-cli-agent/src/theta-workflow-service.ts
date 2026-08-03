@@ -837,7 +837,7 @@ export class ThetaWorkflowService {
   ): Promise<BoundedFSMDriverResult> {
     const compilation = compileThetaTrainingDomain();
     const driver = runtime.createDriver((input) =>
-      executeThetaState(input, runtime.events, tools),
+      executeThetaState(input, runtime.events, tools, this.now),
     );
     return driver.run({
       scope,
@@ -854,6 +854,7 @@ const executeThetaState = async (
   execution: BoundedStateExecutorInput,
   events: Awaited<ReturnType<typeof createThetaWorkflowRuntime>>["events"],
   tools: ThetaWorkflowToolPort,
+  now: () => string,
 ): Promise<BoundedStateExecutionDecision> => {
   const variables = await hydrateVariables(events, execution.scope);
   const researchService = new ResearchService();
@@ -1520,7 +1521,7 @@ const executeThetaState = async (
             kind: "waiting",
             wait: {
               type: "timer",
-              expiresAt: new Date(Date.now() + 3_000).toISOString(),
+              expiresAt: new Date(Date.parse(now()) + 3_000).toISOString(),
               reason:
                 "Training is still running; poll again after the durable timer fires.",
               metadata: sanitizeTrainingReceipt(receipt) as Record<

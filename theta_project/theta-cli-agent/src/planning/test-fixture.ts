@@ -10,8 +10,6 @@ export const createPlanningFixture = (
     modelId: "lda",
     mode: "unsupervised",
     numTopics: 8,
-    batchSize: 64,
-    epochs: 20,
     textColumn: "content",
   },
   researchBrief: {
@@ -109,8 +107,6 @@ export const createPlanningFixture = (
           modelId: "lda",
           mode: "unsupervised",
           numTopics: 8,
-          batchSize: 64,
-          epochs: 20,
         },
       },
     ],

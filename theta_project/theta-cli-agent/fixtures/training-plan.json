@@ -4,8 +4,6 @@
     "modelId": "lda",
     "mode": "unsupervised",
     "numTopics": 8,
-    "batchSize": 64,
-    "epochs": 20,
     "textColumn": "content"
   },
   "researchBrief": {
@@ -97,9 +95,7 @@
       "recommendedPlanPatch": {
         "modelId": "lda",
         "mode": "unsupervised",
-        "numTopics": 8,
-        "batchSize": 64,
-        "epochs": 20
+        "numTopics": 8
       }
     }],
     "skipped": [],

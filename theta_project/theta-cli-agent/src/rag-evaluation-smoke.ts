@@ -58,6 +58,12 @@ const manifest = await loadKnowledgeManifest(
 const sourceCommits = new Map(
   manifest.sources.map((source) => [source.sourceId, source.sourceCommit]),
 );
+const structuredSourceIds = new Set(
+  manifest.structuredSources.map((source) => source.sourceId),
+);
+const objectSetCommits = new Set(
+  manifest.objectSets.map((objectSet) => objectSet.sourceCommit),
+);
 const root = await mkdtemp(path.join(os.tmpdir(), "theta-rag-evaluation-"));
 const index = await FtsEvidenceIndex.open(
   path.join(root, "knowledge.sqlite"),
@@ -69,6 +75,11 @@ try {
   assert.equal(build.indexedSources, manifest.sources.length);
 
   let passed = 0;
+  const misses: Array<{
+    id: string;
+    expectedSourceIds: string[];
+    actualSourceIds: string[];
+  }> = [];
   for (const testCase of evaluation.cases) {
     const first = index.search(testCase.query, 5);
     const second = index.search(testCase.query, 5);
@@ -77,16 +88,33 @@ try {
     for (const evidence of first) {
       evidenceRefSchema.parse(evidence);
       assert.equal(path.isAbsolute(evidence.relativePath), false);
-      assert.equal(
-        evidence.sourceCommit,
-        sourceCommits.get(evidence.sourceId),
-      );
+      if (evidence.objectId) {
+        assert.ok(
+          structuredSourceIds.has(evidence.sourceId),
+          `${evidence.evidenceId} references an undeclared structured source.`,
+        );
+        assert.ok(
+          objectSetCommits.has(evidence.sourceCommit),
+          `${evidence.evidenceId} references an undeclared object-set commit.`,
+        );
+      } else {
+        assert.equal(
+          evidence.sourceCommit,
+          sourceCommits.get(evidence.sourceId),
+        );
+      }
     }
     const sourceIds = new Set(first.map((item) => item.sourceId));
     if (
       testCase.expectedSourceIds.some((sourceId) => sourceIds.has(sourceId))
     ) {
       passed += 1;
+    } else {
+      misses.push({
+        id: testCase.id,
+        expectedSourceIds: testCase.expectedSourceIds,
+        actualSourceIds: [...sourceIds],
+      });
     }
   }
 
@@ -101,7 +129,7 @@ try {
   const recallAt5 = passed / evaluation.cases.length;
   assert.ok(
     recallAt5 >= evaluation.minimumRecallAt5,
-    `RAG recall@5 ${recallAt5} is below ${evaluation.minimumRecallAt5}.`,
+    `RAG recall@5 ${recallAt5} is below ${evaluation.minimumRecallAt5}: ${JSON.stringify(misses)}.`,
   );
 
   console.log(
