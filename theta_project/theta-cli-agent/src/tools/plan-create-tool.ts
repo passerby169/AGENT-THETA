@@ -76,7 +76,7 @@ const planCreateOutputSchema: JsonSchema = {
     "createdAt",
   ],
   properties: {
-    schemaVersion: { const: "1.0.0" },
+    schemaVersion: { enum: ["1.0.0", "2.0.0"] },
     planId: { type: "string" },
     planHash: { type: "string" },
     planVersion: { type: "integer", minimum: 1 },

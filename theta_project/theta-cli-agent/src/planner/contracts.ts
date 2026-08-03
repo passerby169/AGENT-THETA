@@ -7,6 +7,27 @@ const refs = z.array(z.string().trim().min(1).max(180)).max(8);
 export const plannerConfidenceSchema = z.enum(["low", "medium", "high"]);
 export const plannerRoleSchema = z.enum(["primary", "baseline", "alternative"]);
 
+export const plannerStageSchema = z.enum([
+  "analyze_brief",
+  "build_retrieval_queries",
+  "retrieve_evidence",
+  "draft_proposal",
+  "select_evidence",
+  "resolve_plan",
+  "validate_plan",
+  "bounded_retry",
+  "final_review",
+]);
+
+export const plannerProgressEventSchema = z.object({
+  stage: plannerStageSchema,
+  status: z.enum(["started", "completed", "failed"]),
+  attempt: z.number().int().positive(),
+  occurredAt: z.string().datetime(),
+  elapsedMs: z.number().int().nonnegative(),
+  detail: z.string().trim().min(1).max(240).optional(),
+}).strict();
+
 export const evidenceSelectionIssueSchema = z.object({
   targetId: z.string().min(1),
   evidenceId: z.string().min(1).nullable(),
@@ -23,6 +44,9 @@ export const evidenceSelectionReceiptSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   outcome: z.enum(["accepted", "rejected"]),
+  availableEvidenceIds: z.array(z.string().min(1)).optional(),
+  acceptedEvidenceIds: z.array(z.string().min(1)).optional(),
+  rejectedEvidence: z.array(evidenceSelectionIssueSchema).optional(),
   bindings: z.array(z.object({
     targetId: z.string().min(1),
     evidenceIds: z.array(z.string().min(1)),
@@ -209,6 +233,7 @@ export const planProposalResultSchema = z
     fallbackDetail: z.string().trim().min(1).max(500).optional(),
     boundaryAdjustments: z.array(bounded).max(12).optional(),
     factsHash: z.string().regex(/^[a-f0-9]{64}$/),
+    plannerProgress: z.array(plannerProgressEventSchema).optional(),
     evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema).default([]),
     draft: planProposalDraftSchema,
   })
@@ -224,3 +249,4 @@ export type PlanProposalResult = z.infer<typeof planProposalResultSchema>;
 export type PlannerFallbackReason = NonNullable<PlanProposalResult["fallbackReason"]>;
 export type EvidenceSelectionIssue = z.infer<typeof evidenceSelectionIssueSchema>;
 export type EvidenceSelectionReceipt = z.infer<typeof evidenceSelectionReceiptSchema>;
+export type PlannerProgressEvent = z.infer<typeof plannerProgressEventSchema>;

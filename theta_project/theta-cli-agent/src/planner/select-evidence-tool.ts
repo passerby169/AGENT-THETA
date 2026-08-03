@@ -17,6 +17,21 @@ export interface SelectedEvidence {
 }
 
 export class EvidenceSelectionError extends Error {
+  constructor(
+    message: string,
+    readonly receiptCode:
+      | "EVIDENCE_ID_NOT_IN_RETRIEVAL_SET"
+      | "EVIDENCE_ID_NOT_FOUND"
+      | "EVIDENCE_TARGET_MISMATCH"
+      | "EVIDENCE_MODEL_MISMATCH"
+      | "EVIDENCE_DUPLICATE"
+      | "EVIDENCE_INSUFFICIENT_SUPPORT" = "EVIDENCE_INSUFFICIENT_SUPPORT",
+    readonly targetId: string | null = null,
+    readonly evidenceId: string | null = null,
+  ) {
+    super(message);
+  }
+
   readonly code = "evidence_violation";
 }
 
@@ -100,10 +115,18 @@ export const executeSelectEvidence = (
     const selection = record(rawSelection);
     const targetId = requiredString(selection.targetId, "selection.targetId");
     if (!allowedTargets.has(targetId)) {
-      throw new EvidenceSelectionError(`Unknown evidence target '${targetId}'.`);
+      throw new EvidenceSelectionError(
+        `Unknown evidence target '${targetId}'.`,
+        "EVIDENCE_TARGET_MISMATCH",
+        targetId,
+      );
     }
     if (seenTargets.has(targetId)) {
-      throw new EvidenceSelectionError(`Duplicate evidence target '${targetId}'.`);
+      throw new EvidenceSelectionError(
+        `Duplicate evidence target '${targetId}'.`,
+        "EVIDENCE_DUPLICATE",
+        targetId,
+      );
     }
     seenTargets.add(targetId);
     if (!Array.isArray(selection.aliases) || selection.aliases.length > 5) {
@@ -115,13 +138,20 @@ export const executeSelectEvidence = (
       requiredString(value, `${targetId}.aliases`),
     );
     if (new Set(selectedAliases).size !== selectedAliases.length) {
-      throw new EvidenceSelectionError(`Duplicate evidence alias for '${targetId}'.`);
+      throw new EvidenceSelectionError(
+        `Duplicate evidence alias for '${targetId}'.`,
+        "EVIDENCE_DUPLICATE",
+        targetId,
+      );
     }
     const evidenceIds = selectedAliases.map((alias) => {
       const evidenceId = aliases.get(alias);
       if (!evidenceId) {
         throw new EvidenceSelectionError(
           `Evidence alias '${alias}' is outside the current Evidence Bundle.`,
+          "EVIDENCE_ID_NOT_IN_RETRIEVAL_SET",
+          targetId,
+          alias,
         );
       }
       return evidenceId;

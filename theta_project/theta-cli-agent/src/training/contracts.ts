@@ -16,6 +16,23 @@ export const trainingRunStatusSchema = z.enum([
   "quarantined",
 ]);
 
+export const trainingPhaseSchema = z.enum([
+  "preparing",
+  "preprocessing",
+  "training",
+  "evaluating",
+  "visualizing",
+  "packaging",
+  "completed",
+]);
+
+export const trainingPhaseContextSchema = z.object({
+  modelId: z.string().min(1).nullable(),
+  seed: z.number().int().nullable(),
+  runIndex: z.number().int().positive().nullable(),
+  totalRuns: z.number().int().positive().nullable(),
+}).strict();
+
 export const boundResultArtifactSchema = z
   .object({
     kind: z.string().min(1),
@@ -75,6 +92,21 @@ export const trainingQualitySchema = z
   })
   .strict();
 
+export const qualityReassessmentReceiptSchema = z.object({
+  receiptId: z.string().regex(/^quality_reassessment_[a-f0-9]{20}$/),
+  trainingRunId: z.string().regex(/^run_[a-f0-9]{12}$/),
+  artifactSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+  artifactHashes: z.array(z.object({
+    path: z.string().min(1),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  }).strict()),
+  modelId: z.string().min(1),
+  profileVersion: z.string().min(1),
+  qualityStatus: z.enum(["passed", "warning", "failed"]),
+  checks: trainingQualitySchema.shape.checks,
+  assessedAt: z.string().datetime(),
+}).strict();
+
 export const trainingReceiptSchema = z
   .object({
     schemaVersion: z.literal(TRAINING_RUNTIME_SCHEMA_VERSION),
@@ -99,6 +131,9 @@ export const trainingReceiptSchema = z
     runnerPid: z.number().int().positive().nullable(),
     activePid: z.number().int().positive().nullable(),
     currentStep: z.string().min(1),
+    currentPhase: trainingPhaseSchema,
+    phaseContext: trainingPhaseContextSchema,
+    phaseUpdatedAt: z.string().datetime(),
     logPath: z.string().min(1).nullable(),
     pythonExecutable: z.string().min(1),
     pythonVersion: z.string().min(1),
@@ -167,6 +202,7 @@ export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
       logs: z.array(z.string()),
       events: z.array(trainingLifecycleEventSchema),
       reassessed: z.boolean().optional(),
+      reassessmentReceipt: qualityReassessmentReceiptSchema.optional(),
     })
     .strict(),
   z
@@ -178,6 +214,7 @@ export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
       logs: z.array(z.string()),
       events: z.array(trainingLifecycleEventSchema),
       reassessed: z.boolean().optional(),
+      reassessmentReceipt: qualityReassessmentReceiptSchema.optional(),
     })
     .strict(),
 ]);

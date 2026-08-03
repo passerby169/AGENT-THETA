@@ -30,6 +30,41 @@ export class EvidenceCompatibilityError extends EvidenceSelectionError {
   }
 }
 
+export const createRejectedEvidenceSelectionReceipt = (
+  input: Omit<ValidateEvidenceSelectionInput, "selections">,
+  error: EvidenceSelectionError,
+): EvidenceSelectionReceipt => {
+  const issues: EvidenceSelectionIssue[] = [{
+    targetId: error.targetId ?? "selection",
+    evidenceId: error.evidenceId,
+    code: error.receiptCode,
+    message: error.message,
+  }];
+  const receiptMaterial = {
+    schemaVersion: "1.0.0" as const,
+    evidenceBundleHash: input.bundle.bundleHash,
+    factsHash: input.factsHash,
+    attempt: input.attempt,
+    provider: input.provider,
+    model: input.model,
+    outcome: "rejected" as const,
+    availableEvidenceIds: input.bundle.evidence.map((item) => item.evidenceId),
+    acceptedEvidenceIds: [],
+    rejectedEvidence: issues,
+    bindings: input.targets.map((target) => ({
+      targetId: target.targetId,
+      evidenceIds: [],
+      compatible: false,
+    })),
+    issues,
+  };
+  return {
+    ...receiptMaterial,
+    receiptId: `evidence_selection_${sha256(receiptMaterial).slice(0, 20)}`,
+    createdAt: new Date().toISOString(),
+  };
+};
+
 export const validateEvidenceSelections = (
   input: ValidateEvidenceSelectionInput,
 ): EvidenceSelectionReceipt => {
@@ -44,7 +79,7 @@ export const validateEvidenceSelections = (
       issues.push({
         targetId: selection.targetId,
         evidenceId: null,
-        code: "UNKNOWN_TARGET",
+        code: "EVIDENCE_TARGET_MISMATCH",
         message: "Evidence target is outside the current Planner draft.",
       });
       return { ...selection, compatible: false };
@@ -55,7 +90,7 @@ export const validateEvidenceSelections = (
       const issue = evidence
         ? evidenceCompatibilityIssue(target, evidence)
         : {
-            code: "OUTSIDE_BUNDLE",
+            code: "EVIDENCE_ID_NOT_IN_RETRIEVAL_SET",
             message: "Evidence is outside the current bounded bundle.",
           };
       if (issue) {
@@ -79,6 +114,11 @@ export const validateEvidenceSelections = (
     provider: input.provider,
     model: input.model,
     outcome,
+    availableEvidenceIds: input.bundle.evidence.map((item) => item.evidenceId),
+    acceptedEvidenceIds: bindings
+      .filter((binding) => binding.compatible)
+      .flatMap((binding) => binding.evidenceIds),
+    rejectedEvidence: issues,
     bindings,
     issues,
   } as const;
@@ -105,26 +145,26 @@ export const evidenceCompatibilityIssue = (
 ): { code: string; message: string } | null => {
   if (evidence.thetaSupportStatus === "unsupported") {
     return {
-      code: "THETA_SUPPORT_UNSUPPORTED",
+      code: "EVIDENCE_INSUFFICIENT_SUPPORT",
       message: "Evidence explicitly marks the THETA capability as unsupported.",
     };
   }
   if (target.kind === "parameter") {
     if (!matchesModel(target.modelId, evidence)) {
       return {
-        code: "MODEL_SCOPE_MISMATCH",
+        code: "EVIDENCE_MODEL_MISMATCH",
         message: `Parameter evidence does not apply to model '${target.modelId ?? "unknown"}'.`,
       };
     }
     if (!matchesParameter(target.parameterId, evidence)) {
       return {
-        code: "PARAMETER_SCOPE_MISMATCH",
+        code: "EVIDENCE_TARGET_MISMATCH",
         message: `Evidence does not cover parameter '${target.parameterId ?? "unknown"}'.`,
       };
     }
     if (evidence.authority === "L3" || evidence.authority === "L4") {
       return {
-        code: "IMPLEMENTATION_AUTHORITY_TOO_LOW",
+        code: "EVIDENCE_INSUFFICIENT_SUPPORT",
         message: "Paper/heuristic evidence cannot authorize an executable parameter value.",
       };
     }
@@ -133,7 +173,7 @@ export const evidenceCompatibilityIssue = (
   if (target.kind === "model") {
     if (!matchesModel(target.modelId, evidence)) {
       return {
-        code: "MODEL_SCOPE_MISMATCH",
+        code: "EVIDENCE_MODEL_MISMATCH",
         message: `Evidence does not support model '${target.modelId ?? "unknown"}'.`,
       };
     }
@@ -150,7 +190,7 @@ export const evidenceCompatibilityIssue = (
       ].includes(evidence.objectType)
     ) {
       return {
-        code: "PURPOSE_SCOPE_MISMATCH",
+        code: "EVIDENCE_TARGET_MISMATCH",
         message: "Parameter, metric, or failure evidence cannot by itself justify model selection.",
       };
     }
@@ -164,7 +204,7 @@ export const evidenceCompatibilityIssue = (
       hasTag(evidence, /evaluation|coherence|diversity|stability|human_review|perplexity/iu)
       ? null
       : {
-          code: "PURPOSE_SCOPE_MISMATCH",
+          code: "EVIDENCE_TARGET_MISMATCH",
           message: "Evidence is not an evaluation or quality-assessment object.",
         };
   }
@@ -176,14 +216,14 @@ export const evidenceCompatibilityIssue = (
       hasTag(evidence, /experiment|protocol|baseline|stability|random_seed|comparison|evaluation/iu)
       ? null
       : {
-          code: "PURPOSE_SCOPE_MISMATCH",
+          code: "EVIDENCE_TARGET_MISMATCH",
           message: "Evidence does not cover experiment scheduling, comparison, or stability.",
         };
   }
   if (target.kind === "preprocessing") {
     if (evidence.modelIds?.length && !matchesModel(target.modelId, evidence)) {
       return {
-        code: "MODEL_SCOPE_MISMATCH",
+        code: "EVIDENCE_MODEL_MISMATCH",
         message: "Model-specific preprocessing evidence applies to a different model.",
       };
     }
@@ -194,12 +234,12 @@ export const evidenceCompatibilityIssue = (
       hasTag(evidence, /preprocess|token|vocab|empty|duplicate|language|embedding/iu)
       ? null
       : {
-          code: "PURPOSE_SCOPE_MISMATCH",
+          code: "EVIDENCE_TARGET_MISMATCH",
           message: "Evidence is not applicable to preprocessing.",
         };
   }
   return {
-    code: "UNKNOWN_TARGET_KIND",
+    code: "EVIDENCE_TARGET_MISMATCH",
     message: `Unsupported evidence target kind '${target.kind}'.`,
   };
 };

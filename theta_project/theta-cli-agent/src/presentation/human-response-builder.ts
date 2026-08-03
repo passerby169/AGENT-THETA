@@ -1179,7 +1179,7 @@ const runCatalog = (
         lines: runs.length
           ? runs.map(
               (run, index) =>
-                `${index + 1}. ${human(run?.runId)} · ${human(run?.updatedAt)} · ${human(run?.eventCount)} 个事件`,
+                `${index + 1}. ${human(run?.runId)} · ${human(run?.updatedAt)} · ${human(run?.eventCount)} 个事件${run?.recoveryOfRunId ? ` · 恢复自 ${human(run.recoveryOfRunId)}` : ''}${run?.successorRunId ? ` · 后继 ${human(run.successorRunId)}` : ''}`,
             )
           : ['还没有本地任务。使用 /start <数据文件> 创建第一个任务。'],
       },

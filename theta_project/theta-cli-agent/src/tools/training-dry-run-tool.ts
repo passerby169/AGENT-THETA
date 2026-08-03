@@ -57,7 +57,7 @@ const trainingDryRunOutputSchema: JsonSchema = {
     "checkedAt",
   ],
   properties: {
-    schemaVersion: { const: "1.0.0" },
+    schemaVersion: { enum: ["1.0.0", "2.0.0"] },
     dryRunId: { type: "string" },
     dryRunHash: { type: "string" },
     planId: { type: "string" },

@@ -2,7 +2,8 @@ import { z } from "zod";
 import { evidenceRefSchema } from "../rag/contracts.js";
 import { evidenceSelectionReceiptSchema } from "../planner/contracts.js";
 
-export const TRAINING_PLAN_SCHEMA_VERSION = "1.0.0";
+export const TRAINING_PLAN_SCHEMA_VERSION = "2.0.0";
+export const trainingPlanSchemaVersionSchema = z.enum(["1.0.0", "2.0.0"]);
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const scalarSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
@@ -82,18 +83,16 @@ export const canonicalExperimentProtocolSchema = z
 
 export const canonicalTrainingPlanSchema = z
   .object({
-    schemaVersion: z.literal(TRAINING_PLAN_SCHEMA_VERSION),
+    schemaVersion: trainingPlanSchemaVersionSchema,
     datasetId: z.string().min(1),
     datasetSha256: sha256Schema,
     model: z
       .object({
         modelId: z.string().min(1),
         mode: z.enum(["zero_shot", "supervised", "unsupervised"]),
-        topicCountMode: z
-          .enum(["fixed", "auto", "target_reduction"])
-          .default("fixed"),
+        topicCountMode: z.enum(["fixed", "auto", "target_reduction"]),
         numTopics: z.number().int().min(2).max(200).nullable(),
-        maxTopics: z.number().int().min(2).max(1000).nullable().default(null),
+        maxTopics: z.number().int().min(2).max(1000).nullable(),
         parameters: z.record(scalarSchema),
       })
       .strict()
@@ -132,10 +131,10 @@ export const canonicalTrainingPlanSchema = z
         textColumns: z.array(z.string().min(1)).min(1),
         timeColumn: z.string().min(1).nullable(),
         idColumn: z.string().min(1).nullable(),
-        covariateColumns: z.array(z.string().min(1)).default([]),
+        covariateColumns: z.array(z.string().min(1)),
         metadataColumns: z.array(z.string().min(1)),
-        groupingColumns: z.array(z.string().min(1)).default([]),
-        evaluationLabelColumns: z.array(z.string().min(1)).default([]),
+        groupingColumns: z.array(z.string().min(1)),
+        evaluationLabelColumns: z.array(z.string().min(1)),
       })
       .strict(),
     preprocessing: z
@@ -152,15 +151,7 @@ export const canonicalTrainingPlanSchema = z
         networkAllowed: z.boolean(),
       })
       .strict(),
-    experimentProtocol: canonicalExperimentProtocolSchema.default({
-      mode: "quick",
-      primarySeeds: [42],
-      baselineModelId: null,
-      baselineSeeds: [],
-      rationale: "兼容旧计划的一次主模型快速运行。",
-      evidenceRefs: [],
-      confidence: "low",
-    }),
+    experimentProtocol: canonicalExperimentProtocolSchema,
     bindings: z
       .object({
         researchBriefHash: sha256Schema,
@@ -190,7 +181,7 @@ export const planReviewSnapshotSchema = z
     evidenceBundleHash: sha256Schema,
     planProposalSource: z.enum(["minimax", "deterministic", "explicit_user_plan"]),
     plannerAcceptedEvidenceRefs: z.array(z.string().min(1)),
-    evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema).default([]),
+    evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema),
     parameterDecisions: parameterDecisionMapSchema.optional(),
     validatorVersion: z.string().min(1),
   })
@@ -198,11 +189,13 @@ export const planReviewSnapshotSchema = z
 
 export const trainingPlanRecordSchema = z
   .object({
-    schemaVersion: z.literal(TRAINING_PLAN_SCHEMA_VERSION),
+    schemaVersion: trainingPlanSchemaVersionSchema,
     planId: z.string().regex(/^plan_[a-f0-9]{16}$/),
     planHash: sha256Schema,
     planVersion: z.number().int().positive(),
     status: z.enum(["draft", "superseded"]),
+    revisionOfPlanId: z.string().regex(/^plan_[a-f0-9]{16}$/).optional(),
+    revisionOfPlanHash: sha256Schema.optional(),
     canonicalPlan: canonicalTrainingPlanSchema,
     review: planReviewSnapshotSchema,
     createdAt: z.string().datetime(),
@@ -216,7 +209,7 @@ export const approvalTypeSchema = z.enum([
 
 export const approvalReceiptSchema = z
   .object({
-    schemaVersion: z.literal(TRAINING_PLAN_SCHEMA_VERSION),
+    schemaVersion: trainingPlanSchemaVersionSchema,
     approvalId: z.string().regex(/^approval_[a-f0-9]{20}$/),
     approvalType: approvalTypeSchema,
     planId: z.string().regex(/^plan_[a-f0-9]{16}$/),
@@ -276,7 +269,7 @@ export const expectedArtifactSchema = z
 
 export const dryRunReceiptSchema = z
   .object({
-    schemaVersion: z.literal(TRAINING_PLAN_SCHEMA_VERSION),
+    schemaVersion: trainingPlanSchemaVersionSchema,
     dryRunId: z.string().regex(/^dryrun_[a-f0-9]{16}$/),
     dryRunHash: sha256Schema,
     planId: z.string().regex(/^plan_[a-f0-9]{16}$/),

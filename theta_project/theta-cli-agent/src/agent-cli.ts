@@ -458,7 +458,7 @@ const followTraining = async (
         const receipt = asRecord(record?.trainingReceipt);
         const signature = [
           record?.currentState,
-          receipt?.progress,
+          receipt?.currentPhase,
           receipt?.currentStep,
           record?.status,
         ].join('|');
@@ -470,15 +470,17 @@ const followTraining = async (
       onHeartbeat: (elapsedMs, _polls, value) => {
         const record = asRecord(value);
         const receipt = asRecord(record?.trainingReceipt);
-        const stage = receipt?.currentStep
-          ? humanTrainingStage(String(receipt.currentStep))
+        const stage = receipt?.currentPhase
+          ? humanTrainingPhase(String(receipt.currentPhase), asRecord(receipt.phaseContext))
+          : receipt?.currentStep
+            ? humanTrainingStage(String(receipt.currentStep))
           : '';
-        const progress =
-          typeof receipt?.progress === 'number'
-            ? ` · ${String(receipt.progress)}%`
-            : '';
+        const updatedAt = typeof receipt?.phaseUpdatedAt === 'string'
+          ? Date.parse(receipt.phaseUpdatedAt)
+          : Number.NaN;
+        const stale = Number.isFinite(updatedAt) && Date.now() - updatedAt > 60_000;
         output.write(
-          `训练仍在进行（已等待 ${formatElapsed(elapsedMs)}）${stage ? ` · ${stage}${progress}` : progress}。按 Ctrl+C 只停止前台跟踪，不会取消训练。`,
+          `训练仍在进行（已等待 ${formatElapsed(elapsedMs)}）${stage ? ` · ${stage}` : ''}${stale ? ' · 状态超过 1 分钟未更新，请使用 /logs 检查后台日志' : ''}。按 Ctrl+C 只停止前台跟踪，不会取消训练。`,
         );
       },
     });
@@ -486,6 +488,28 @@ const followTraining = async (
   } finally {
     process.removeListener('SIGINT', onSigint);
   }
+};
+
+const humanTrainingPhase = (
+  phase: string,
+  context: Record<string, unknown> | undefined,
+): string => {
+  if (phase === 'training' && context?.modelId) {
+    const seed = typeof context.seed === 'number' ? `，种子 ${context.seed}` : '';
+    const index = typeof context.runIndex === 'number' && typeof context.totalRuns === 'number'
+      ? `，运行 ${context.runIndex}/${context.totalRuns}`
+      : '';
+    return `训练 ${String(context.modelId).toUpperCase()}${seed}${index}`;
+  }
+  return ({
+    preparing: '准备后台运行',
+    preprocessing: '预处理数据',
+    training: '训练模型',
+    evaluating: '评估结果',
+    visualizing: '生成并验证图表',
+    packaging: '绑定并封装结果',
+    completed: '训练完成',
+  })[phase] ?? phase;
 };
 
 const humanTrainingStage = (stage: string): string => {
@@ -559,7 +583,7 @@ const withActivityHeartbeat = async <T>(
     output.write(
       `● ${stages[stageIndex]}（已等待 ${formatElapsed(Date.now() - startedAt)}）……`,
     );
-  }, 8_000);
+  }, 15_000);
   timer.unref();
   try {
     const result = await operation();

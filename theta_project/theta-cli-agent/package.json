@@ -39,6 +39,7 @@
     "smoke:agent-cli": "node dist/agent-cli-smoke.js",
     "smoke:operator-commands": "node dist/operator-command-smoke.js",
     "smoke:conversation-ux": "node dist/conversation-ux-smoke.js",
+    "smoke:ux-recovery": "node dist/ux-recovery-acceptance-smoke.js",
     "smoke:rag-governance": "node dist/rag-governance-smoke.js",
     "smoke:language-governance": "node dist/language-governance-smoke.js",
     "test:contracts": "node dist/contract-suite-smoke.js",

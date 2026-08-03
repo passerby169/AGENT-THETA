@@ -393,8 +393,11 @@ export class ResultService {
       );
     }
     const qualityFailed = string(asRecord(current?.quality)?.status) === 'failed';
-    if (string(current?.status) !== 'failed' && !qualityFailed) {
-      throw new Error('只有执行失败或质量门失败的训练记录可以使用 /retry。');
+    if (qualityFailed) {
+      throw new Error('质量门失败不能原样重跑。请先使用 /adjust 修改模型或参数，再创建新的训练 Run。');
+    }
+    if (!['failed', 'quarantined'].includes(string(current?.status) ?? '')) {
+      throw new Error('只有执行失败或隔离状态的训练记录可以使用 /retry。');
     }
     const plan = trainingPlanRecordSchema.parse(planContext.planRecord);
     const planReview = approvalReceiptSchema.parse(planContext.planReview);

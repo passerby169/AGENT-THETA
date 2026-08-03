@@ -34,6 +34,7 @@ const trainingStatusOutputSchema: JsonSchema = {
     found: { type: "boolean" },
     status: { type: "string" },
     reassessed: { type: "boolean" },
+    reassessmentReceipt: { type: "object", additionalProperties: true },
     logs: { type: "array", items: { type: "string" } },
     receipt: { type: "object", additionalProperties: true },
     events: {

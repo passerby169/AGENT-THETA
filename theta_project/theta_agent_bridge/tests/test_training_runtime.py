@@ -187,6 +187,52 @@ class TrainingRuntimeRecoveryTest(unittest.TestCase):
             "THETA/result/local_user/dataset/btm/approved_plan__primary_btm_s42",
         )
 
+    def test_training_phase_context_identifies_model_seed_and_run(self) -> None:
+        phase = bridge.training_phase_from_step(
+            "run_pipeline_primary_dtm_s42",
+            [
+                {"step": "run_pipeline_primary_dtm_s42"},
+                {"step": "run_pipeline_primary_dtm_s73"},
+            ],
+        )
+        self.assertEqual(phase["currentPhase"], "training")
+        self.assertEqual(phase["phaseContext"]["modelId"], "dtm")
+        self.assertEqual(phase["phaseContext"]["seed"], 42)
+        self.assertEqual(phase["phaseContext"]["runIndex"], 1)
+        self.assertEqual(phase["phaseContext"]["totalRuns"], 2)
+
+    def test_quality_reassessment_receipts_are_append_only(self) -> None:
+        artifacts = [{"path": "result/topics.csv", "sha256": "a" * 64}]
+        first = bridge.persist_quality_reassessment(
+            "run_" + "b" * 12,
+            artifacts,
+            {
+                "modelId": "lda",
+                "profileVersion": "quality.v1",
+                "status": "warning",
+                "checks": [{"code": "TOPIC_DIVERSITY", "status": "warn", "detail": "Review."}],
+                "assessedAt": "2026-08-04T00:00:00.000Z",
+            },
+        )
+        second = bridge.persist_quality_reassessment(
+            "run_" + "b" * 12,
+            artifacts,
+            {
+                "modelId": "lda",
+                "profileVersion": "quality.v2",
+                "status": "passed",
+                "checks": [{"code": "TOPIC_DIVERSITY", "status": "pass", "detail": "Passed."}],
+                "assessedAt": "2026-08-04T00:01:00.000Z",
+            },
+        )
+        self.assertNotEqual(first["receiptId"], second["receiptId"])
+        with bridge.connect_state_db() as conn:
+            bridge.init_state_db(conn)
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM quality_reassessments"
+            ).fetchone()["count"]
+        self.assertEqual(count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

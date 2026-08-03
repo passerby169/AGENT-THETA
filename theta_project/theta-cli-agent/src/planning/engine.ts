@@ -64,6 +64,31 @@ export const canonicalJson = (value: unknown): string => {
 export const sha256Canonical = (value: unknown): string =>
   createHash("sha256").update(canonicalJson(value)).digest("hex");
 
+export const upgradeTrainingPlanRecord = (
+  value: unknown,
+  createdAt: string,
+): TrainingPlanRecord => {
+  const prior = trainingPlanRecordSchema.parse(value);
+  if (prior.schemaVersion === TRAINING_PLAN_SCHEMA_VERSION) return prior;
+  const canonicalPlan = canonicalTrainingPlanSchema.parse({
+    ...prior.canonicalPlan,
+    schemaVersion: TRAINING_PLAN_SCHEMA_VERSION,
+  });
+  const planHash = sha256Canonical(canonicalPlan);
+  return trainingPlanRecordSchema.parse({
+    ...prior,
+    schemaVersion: TRAINING_PLAN_SCHEMA_VERSION,
+    planId: `plan_${planHash.slice(0, 16)}`,
+    planHash,
+    planVersion: prior.planVersion + 1,
+    status: "draft",
+    revisionOfPlanId: prior.planId,
+    revisionOfPlanHash: prior.planHash,
+    canonicalPlan,
+    createdAt: new Date(createdAt).toISOString(),
+  });
+};
+
 export const createTrainingPlanRecord = (
   input: CreateTrainingPlanRecordInput,
 ): TrainingPlanRecord => {
@@ -131,7 +156,7 @@ export const createTrainingPlanRecord = (
     model: {
       modelId,
       mode: raw.mode,
-      topicCountMode: raw.topicCountMode,
+      topicCountMode: raw.topicCountMode ?? "fixed",
       numTopics: raw.numTopics ?? null,
       maxTopics: raw.maxTopics ?? null,
       parameters,
@@ -142,8 +167,8 @@ export const createTrainingPlanRecord = (
       idColumn: confirmation.idColumn,
       covariateColumns: confirmation.covariateColumns ?? [],
       metadataColumns: confirmation.metadataColumns,
-      groupingColumns: confirmation.groupingColumns,
-      evaluationLabelColumns: confirmation.evaluationLabelColumns,
+      groupingColumns: confirmation.groupingColumns ?? [],
+      evaluationLabelColumns: confirmation.evaluationLabelColumns ?? [],
     },
     preprocessing: {
       trimWhitespace: true,

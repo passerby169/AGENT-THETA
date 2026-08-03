@@ -22,6 +22,7 @@ const checks = [
   "smoke:training-runtime",
   "smoke:operator-commands",
   "smoke:conversation-ux",
+  "smoke:ux-recovery",
   "smoke:rag-governance",
   "smoke:language-governance",
   "smoke:cli",

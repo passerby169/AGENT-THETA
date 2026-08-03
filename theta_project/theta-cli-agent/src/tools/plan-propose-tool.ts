@@ -33,7 +33,7 @@ const inputSchema: JsonSchema = {
 
 const outputSchema: JsonSchema = {
   type: "object",
-  required: ["schemaVersion", "source", "factsHash", "draft"],
+  required: ["schemaVersion", "source", "factsHash", "plannerProgress", "draft"],
   properties: {
     schemaVersion: { const: "1.0.0" },
     source: { enum: ["minimax", "deterministic"] },
@@ -41,6 +41,7 @@ const outputSchema: JsonSchema = {
     fallbackDetail: { type: "string", maxLength: 500 },
     boundaryAdjustments: { type: "array", items: { type: "string" }, maxItems: 12 },
     factsHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    plannerProgress: { type: "array", items: { type: "object", additionalProperties: true } },
     evidenceSelectionReceipts: {
       type: "array",
       items: {
@@ -54,6 +55,9 @@ const outputSchema: JsonSchema = {
           "provider",
           "model",
           "outcome",
+          "availableEvidenceIds",
+          "acceptedEvidenceIds",
+          "rejectedEvidence",
           "bindings",
           "issues",
           "createdAt",
@@ -67,6 +71,9 @@ const outputSchema: JsonSchema = {
           provider: { type: "string", minLength: 1 },
           model: { type: "string", minLength: 1 },
           outcome: { enum: ["accepted", "rejected"] },
+          availableEvidenceIds: { type: "array", items: { type: "string" } },
+          acceptedEvidenceIds: { type: "array", items: { type: "string" } },
+          rejectedEvidence: { type: "array", items: { type: "object", additionalProperties: true } },
           bindings: {
             type: "array",
             items: {
@@ -117,7 +124,7 @@ export const thetaPlanProposeToolSpec: ToolSpec = {
   outputSchema,
   sideEffectLevel: "read",
   permissionScope: [THETA_PERMISSION_SCOPES.planRead, THETA_PERMISSION_SCOPES.ragRead, THETA_PERMISSION_SCOPES.inferenceUse],
-  timeoutPolicy: { timeoutMs: 135_000, onTimeout: "fail" },
+  timeoutPolicy: { timeoutMs: 180_000, onTimeout: "fail" },
   retryPolicy: { maxAttempts: 1 },
   auditPolicy: { enabled: true, includeInput: false, includeOutput: true },
   source: "local",
@@ -144,7 +151,7 @@ export const thetaPlanProposeHandler: ToolHandler<unknown, ThetaPlanProposeOutpu
 
 const plannerTimeoutMs = (): number => {
   const configured = Number(process.env.MINIMAX_PLANNER_TIMEOUT_MS);
-  return Number.isInteger(configured) && configured >= 1 && configured <= 120_000
+  return Number.isInteger(configured) && configured >= 1 && configured <= 180_000
     ? configured
-    : 120_000;
+    : 150_000;
 };

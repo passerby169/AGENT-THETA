@@ -1181,13 +1181,14 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             prior_status = str(prior["status"])
             prior_quality = json.loads(prior["quality_json"] or "{}")
-            quality_failed = (
-                prior_status == "completed"
-                and str(prior_quality.get("status") or "") == "failed"
-            )
-            if prior_status != "failed" and not quality_failed:
+            quality_failed = prior_status == "completed" and str(prior_quality.get("status") or "") == "failed"
+            if quality_failed:
                 raise ValueError(
-                    "Only execution-failed or completed quality-failed training runs may be retried"
+                    "Quality-gate failures require a revised plan; unchanged training retries are not allowed"
+                )
+            if prior_status not in {"failed", "quarantined"}:
+                raise ValueError(
+                    "Only execution-failed or quarantined training runs may be retried"
                 )
             if prior["plan_id"] != plan_id or prior["plan_hash"] != plan_hash:
                 raise ValueError("Retry run does not bind the same canonical plan")
@@ -1387,6 +1388,7 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
         message="Current persisted training receipt.",
     )
     reassessed = bool(payload.get("reassessQuality"))
+    reassessment_receipt = None
     if reassessed:
         rebound_artifacts = bind_result_artifacts(
             json.loads(row["result_json"] or "[]")
@@ -1395,6 +1397,11 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
         model_id = str(prior_quality.get("modelId") or "unknown")
         receipt["resultArtifacts"] = rebound_artifacts
         receipt["quality"] = assess_result_quality(rebound_artifacts, model_id)
+        reassessment_receipt = persist_quality_reassessment(
+            resolved_training_run_id,
+            rebound_artifacts,
+            receipt["quality"],
+        )
         receipt["message"] = "Quality was reassessed from current run-bound artifacts without retraining."
     requested_log_limit = max(0, safe_int(payload.get("logLimit"), 80))
     return {
@@ -1403,6 +1410,7 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
         "receipt": receipt,
         "status": row["status"],
         "reassessed": reassessed,
+        **({"reassessmentReceipt": reassessment_receipt} if reassessment_receipt else {}),
         "logs": tail_log_lines(row["log_path"], limit=requested_log_limit),
         "events": [
             {
@@ -3703,6 +3711,7 @@ def training_run_response(
     message: str,
 ) -> dict[str, Any]:
     commands = json.loads(row["command_json"])
+    phase = training_phase_from_step(str(row["current_step"] or "queued"), commands)
     return {
         "schemaVersion": TRAINING_RUNTIME_SCHEMA_VERSION,
         "trainingRunId": row["training_run_id"],
@@ -3721,6 +3730,9 @@ def training_run_response(
         "runnerPid": int(row["runner_pid"]) if row["runner_pid"] else None,
         "activePid": int(row["active_pid"]) if row["active_pid"] else None,
         "currentStep": row["current_step"] or "unknown",
+        "currentPhase": phase["currentPhase"],
+        "phaseContext": phase["phaseContext"],
+        "phaseUpdatedAt": row["updated_at"],
         "logPath": row["log_path"] or None,
         "pythonExecutable": row["python_executable"] or str(Path(PYTHON_BIN).resolve()),
         "pythonVersion": row["python_version"] or platform.python_version(),
@@ -3740,6 +3752,98 @@ def training_run_response(
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "message": message,
+    }
+
+
+def persist_quality_reassessment(
+    training_run_id: str,
+    artifacts: list[dict[str, Any]],
+    quality: dict[str, Any],
+) -> dict[str, Any]:
+    assessed_at = str(quality.get("assessedAt") or utc_now_iso())
+    artifact_hashes = [
+        {"path": str(item.get("path") or "unknown"), "sha256": item.get("sha256")}
+        for item in artifacts
+    ]
+    artifact_set_hash = sha256_json(artifact_hashes)
+    material = {
+        "trainingRunId": training_run_id,
+        "artifactSetHash": artifact_set_hash,
+        "artifactHashes": artifact_hashes,
+        "modelId": str(quality.get("modelId") or "unknown"),
+        "profileVersion": str(quality.get("profileVersion") or "unknown"),
+        "qualityStatus": str(quality.get("status") or "warning"),
+        "checks": quality.get("checks") or [],
+        "assessedAt": assessed_at,
+    }
+    receipt = {
+        "receiptId": "quality_reassessment_" + sha256_json(material)[:20],
+        **material,
+    }
+    with connect_state_db() as conn:
+        init_state_db(conn)
+        conn.execute(
+            """
+            INSERT INTO quality_reassessments
+                (receipt_id, training_run_id, artifact_set_hash, receipt_json, assessed_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                receipt["receiptId"],
+                training_run_id,
+                artifact_set_hash,
+                stable_json(receipt),
+                assessed_at,
+            ),
+        )
+        record_event(
+            conn,
+            "training.quality_reassessed",
+            "training_run",
+            training_run_id,
+            receipt,
+        )
+    return receipt
+
+
+def training_phase_from_step(step: str, commands: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized = step.removesuffix("_completed")
+    phase = "preparing"
+    if normalized in {"prepare_data", "data_prepared"}:
+        phase = "preprocessing"
+    elif normalized.startswith("run_pipeline"):
+        phase = "training"
+    elif normalized.startswith("evaluate"):
+        phase = "evaluating"
+    elif normalized.startswith("generate_visualizations") or normalized.startswith("verify_visualizations"):
+        phase = "visualizing"
+    elif normalized in {"bind_results", "result_binding"}:
+        phase = "packaging"
+    elif normalized == "completed":
+        phase = "completed"
+
+    training_steps = [
+        str(command.get("step") or "")
+        for command in commands
+        if str(command.get("step") or "").startswith("run_pipeline")
+    ]
+    model_id = None
+    seed = None
+    run_index = None
+    match = re.match(r"^run_pipeline_(?:primary|baseline)_([a-z0-9_-]+)_s(\d+)$", normalized)
+    if match:
+        model_id = match.group(1)
+        seed = int(match.group(2))
+        if normalized in training_steps:
+            run_index = training_steps.index(normalized) + 1
+    return {
+        "currentPhase": phase,
+        "phaseContext": {
+            "modelId": model_id,
+            "seed": seed,
+            "runIndex": run_index,
+            "totalRuns": len(training_steps) or None,
+        },
     }
 
 
@@ -3965,6 +4069,17 @@ def init_state_db(conn: sqlite3.Connection) -> None:
             subject_id TEXT NOT NULL,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_reassessments (
+            receipt_id TEXT PRIMARY KEY,
+            training_run_id TEXT NOT NULL,
+            artifact_set_hash TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            assessed_at TEXT NOT NULL
         )
         """
     )

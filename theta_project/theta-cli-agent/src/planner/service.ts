@@ -19,9 +19,11 @@ import {
   type PlannerFallbackReason,
   type ModelDecision,
   type EvidenceSelectionReceipt,
+  type PlannerProgressEvent,
 } from "./contracts.js";
 import {
   EvidenceCompatibilityError,
+  createRejectedEvidenceSelectionReceipt,
   evidenceCompatibilityIssue,
   validateEvidenceSelections,
 } from "./evidence-compatibility.js";
@@ -45,31 +47,55 @@ export interface PlannerServiceOptions {
   provider?: InferenceProvider;
   enabled?: boolean;
   modelAlias?: string;
+  onProgress?: (event: PlannerProgressEvent) => void | Promise<void>;
 }
 
 export class ThetaPlannerService {
   constructor(private readonly options: PlannerServiceOptions = {}) {}
 
   async propose(input: PlannerInput): Promise<PlanProposalResult> {
+    const progress = new PlannerProgressRecorder(this.options.onProgress);
+    await progress.record("analyze_brief", "started", 1);
     const safeInput = sanitizePlannerInput(input);
     const factsHash = hash(safeInput);
+    await progress.record("analyze_brief", "completed", 1);
+    await progress.record("build_retrieval_queries", "started", 1);
+    await progress.record("build_retrieval_queries", "completed", 1);
+    await progress.record("retrieve_evidence", "started", 1);
+    await progress.record(
+      "retrieve_evidence",
+      "completed",
+      1,
+      `${safeInput.evidenceBundle.evidence.length} evidence items`,
+    );
     const evidenceSelectionReceipts: EvidenceSelectionReceipt[] = [];
-    if (!this.options.enabled) return fallback(safeInput, factsHash, "planner_not_enabled", undefined, evidenceSelectionReceipts);
-    if (!this.options.provider) return fallback(safeInput, factsHash, "provider_not_configured", undefined, evidenceSelectionReceipts);
+    if (!this.options.enabled) return fallback(safeInput, factsHash, "planner_not_enabled", undefined, evidenceSelectionReceipts, progress.events);
+    if (!this.options.provider) return fallback(safeInput, factsHash, "provider_not_configured", undefined, evidenceSelectionReceipts, progress.events);
     try {
       let skeleton: PlannerSkeleton;
       try {
+        await progress.record("draft_proposal", "started", 1);
         skeleton = await this.inferSkeleton(safeInput, factsHash, false);
+        await progress.record("draft_proposal", "completed", 1);
       } catch (firstError) {
         if (!retryableDraftError(firstError)) throw firstError;
+        await progress.record("draft_proposal", "failed", 1, errorSummary(firstError));
+        await progress.record("bounded_retry", "started", 2);
         skeleton = await this.inferSkeleton(safeInput, factsHash, true, errorSummary(firstError));
+        await progress.record("bounded_retry", "completed", 2);
       }
+      await progress.record("resolve_plan", "started", 1);
       const draft = expandPlannerSkeleton(skeleton, safeInput);
       enforceCatalogBoundaries(draft, safeInput);
+      await progress.record("resolve_plan", "completed", 1);
       try {
+        await progress.record("select_evidence", "started", 1);
         await this.bindEvidenceWithTool(draft, safeInput, factsHash, false, 1, evidenceSelectionReceipts);
+        await progress.record("select_evidence", "completed", 1);
       } catch (firstEvidenceError) {
         if (!(firstEvidenceError instanceof EvidenceSelectionError)) throw firstEvidenceError;
+        await progress.record("select_evidence", "failed", 1, errorSummary(firstEvidenceError));
+        await progress.record("bounded_retry", "started", 2);
         await this.bindEvidenceWithTool(
           draft,
           safeInput,
@@ -79,11 +105,17 @@ export class ThetaPlannerService {
           evidenceSelectionReceipts,
           errorSummary(firstEvidenceError),
         );
+        await progress.record("bounded_retry", "completed", 2);
       }
+      await progress.record("validate_plan", "started", 1);
+      await progress.record("validate_plan", "completed", 1);
+      await progress.record("final_review", "started", 1);
+      await progress.record("final_review", "completed", 1);
       return planProposalResultSchema.parse({
         schemaVersion: PLANNER_CONTRACT_VERSION,
         source: "minimax",
         factsHash,
+        plannerProgress: progress.events,
         evidenceSelectionReceipts,
         draft,
       });
@@ -94,6 +126,7 @@ export class ThetaPlannerService {
         plannerFallbackReason(error),
         errorSummary(error),
         evidenceSelectionReceipts,
+        progress.events,
       );
     }
   }
@@ -164,7 +197,22 @@ export class ThetaPlannerService {
         compactRetry: compact,
       },
     });
-    const selected = executeSelectEvidence(response.output, aliases, targets);
+    let selected: SelectedEvidence[];
+    try {
+      selected = executeSelectEvidence(response.output, aliases, targets);
+    } catch (error) {
+      if (error instanceof EvidenceSelectionError) {
+        receipts.push(createRejectedEvidenceSelectionReceipt({
+          bundle: input.evidenceBundle,
+          targets,
+          factsHash,
+          attempt,
+          provider: "minimax",
+          model: this.options.modelAlias ?? "configured-planner-model",
+        }, error));
+      }
+      throw error;
+    }
     try {
       receipts.push(validateEvidenceSelections({
         bundle: input.evidenceBundle,
@@ -658,6 +706,7 @@ const fallback = (
   reason: PlannerFallbackReason,
   detail?: string,
   evidenceSelectionReceipts: EvidenceSelectionReceipt[] = [],
+  plannerProgress: PlannerProgressEvent[] = [],
 ): PlanProposalResult => {
   const recommendations = input.recommendation.recommendations;
   const primary = recommendations[0];
@@ -718,10 +767,38 @@ const fallback = (
     fallbackReason: reason,
     ...(detail ? { fallbackDetail: detail.slice(0, 500) } : {}),
     factsHash,
+    plannerProgress,
     evidenceSelectionReceipts,
     draft,
   });
 };
+
+class PlannerProgressRecorder {
+  readonly events: PlannerProgressEvent[] = [];
+  private readonly startedAt = Date.now();
+
+  constructor(
+    private readonly listener?: (event: PlannerProgressEvent) => void | Promise<void>,
+  ) {}
+
+  async record(
+    stage: PlannerProgressEvent["stage"],
+    status: PlannerProgressEvent["status"],
+    attempt: number,
+    detail?: string,
+  ): Promise<void> {
+    const event: PlannerProgressEvent = {
+      stage,
+      status,
+      attempt,
+      occurredAt: new Date().toISOString(),
+      elapsedMs: Date.now() - this.startedAt,
+      ...(detail ? { detail: detail.slice(0, 240) } : {}),
+    };
+    this.events.push(event);
+    await this.listener?.(event);
+  }
+}
 
 class PlannerBoundaryError extends Error {
   constructor(readonly reason: PlannerFallbackReason, message: string) { super(message); }
