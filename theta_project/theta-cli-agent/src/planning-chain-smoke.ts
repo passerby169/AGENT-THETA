@@ -4,7 +4,50 @@ import {
   createDryRunReceipt,
   createTrainingPlanRecord,
 } from "./planning/engine.js";
+import {
+  applyUserParameterOverrides,
+  applyValidatorParameterCorrections,
+  buildParameterDecisions,
+} from "./planning/parameter-decisions.js";
 import { createPlanningFixture } from "./planning/test-fixture.js";
+
+const recommendedPlan = {
+  modelId: "lda",
+  mode: "unsupervised",
+  topicCountMode: "fixed",
+  numTopics: 10,
+  epochs: 100,
+};
+const recommendedDecisions = buildParameterDecisions({
+  recommendedPlan,
+  effectivePlan: recommendedPlan,
+});
+const userDecisions = applyUserParameterOverrides(
+  recommendedDecisions,
+  { numTopics: 8 },
+  { ...recommendedPlan, numTopics: 8 },
+  "2026-07-28T00:00:00.000Z",
+);
+if (
+  userDecisions.numTopics?.recommendedValue !== 10 ||
+  userDecisions.numTopics.effectiveValue !== 8 ||
+  userDecisions.numTopics.source !== "user_override"
+) {
+  throw new Error("A user parameter override lost its recommendation lineage.");
+}
+const validatorDecisions = applyValidatorParameterCorrections(
+  userDecisions,
+  { ...recommendedPlan, numTopics: 8 },
+  { ...recommendedPlan, numTopics: 7 },
+  "2026-07-28T00:00:01.000Z",
+);
+if (
+  validatorDecisions.numTopics?.recommendedValue !== 10 ||
+  validatorDecisions.numTopics.effectiveValue !== 7 ||
+  validatorDecisions.numTopics.source !== "validator_correction"
+) {
+  throw new Error("A validator correction lost its recommendation lineage.");
+}
 
 const first = createTrainingPlanRecord({
   ...createPlanningFixture(),
@@ -19,6 +62,37 @@ if (
   first.planId !== sameMaterial.planId
 ) {
   throw new Error("Display timestamps changed the canonical plan identity.");
+}
+
+const decisionInput = createPlanningFixture();
+const materialResolution = {
+  resolvedPlan: decisionInput.validatedPlan,
+  acceptedFields: ["numTopics"],
+  rejectedFields: [],
+  source: "deterministic_fallback",
+};
+decisionInput.plannerResolution = {
+  ...materialResolution,
+  parameterDecisions: userDecisions,
+};
+const decisionPlan = createTrainingPlanRecord({
+  ...decisionInput,
+  createdAt: "2026-07-28T00:00:00.000Z",
+});
+const decisionPlanWithoutMetadata = createTrainingPlanRecord({
+  ...createPlanningFixture(),
+  plannerResolution: materialResolution,
+  createdAt: "2026-07-28T00:00:00.000Z",
+});
+if (
+  decisionPlan.review.parameterDecisions?.numTopics?.recommendedValue !== 10 ||
+  decisionPlan.review.parameterDecisions.numTopics.effectiveValue !== 8 ||
+  decisionPlan.review.parameterDecisions.numTopics.source !== "user_override"
+) {
+  throw new Error("Plan Review did not persist the parameter decision lineage.");
+}
+if (decisionPlan.planHash !== decisionPlanWithoutMetadata.planHash) {
+  throw new Error("Parameter decision metadata changed the canonical plan hash.");
 }
 
 const changedInput = createPlanningFixture();
@@ -167,6 +241,7 @@ console.log(
     planHash: first.planHash,
     changedPlanHash: changed.planHash,
     alternateModelId: alternate.canonicalPlan.model.modelId,
+    parameterDecisionSource: decisionPlan.review.parameterDecisions?.numTopics?.source,
     unlistedModelRejected,
     planReviewApprovalId: planReview.approvalId,
     trainingReviewApprovalId: trainingReview.approvalId,

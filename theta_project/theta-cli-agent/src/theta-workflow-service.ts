@@ -42,6 +42,11 @@ import {
   createApprovalReceipt,
 } from "./planning/engine.js";
 import {
+  applyUserParameterOverrides,
+  applyValidatorParameterCorrections,
+  parameterDecisionsFromResolution,
+} from "./planning/parameter-decisions.js";
+import {
   THETA_APPROVAL_KEYS,
   THETA_DOMAIN_PACK_ID,
   THETA_DOMAIN_PACK_VERSION,
@@ -1205,11 +1210,26 @@ const executeThetaState = async (
             execution.state.id,
           );
         }
+        const normalizedPlan = requireRecord(
+          validation.normalizedPlan,
+          "normalized plan",
+        );
+        const plannerResolution = requireRecord(
+          variables.plannerResolution,
+          "planner resolution",
+        );
+        const parameterDecisions = applyValidatorParameterCorrections(
+          parameterDecisionsFromResolution(plannerResolution),
+          candidate,
+          normalizedPlan,
+          now(),
+        );
         return transition(THETA_WORKFLOW_STATES.awaitPlanCreationApproval, {
-          validatedPlan: requireRecord(
-            validation.normalizedPlan,
-            "normalized plan",
-          ),
+          validatedPlan: normalizedPlan,
+          plannerResolution: {
+            ...plannerResolution,
+            parameterDecisions,
+          },
           validation: {
             valid: true,
             validatorVersion:
@@ -1230,12 +1250,32 @@ const executeThetaState = async (
             stringValue(variables.processedPlanAdjustmentHash) !==
             adjustmentHash
           ) {
+            const currentCandidate = requireRecord(
+              variables.candidatePlan,
+              "candidate plan",
+            );
+            const sanitizedAdjustment = sanitizePlanAdjustment(
+              variables.planAdjustment,
+            );
+            const adjustedCandidate = {
+              ...currentCandidate,
+              ...planFieldsFromAdjustment(sanitizedAdjustment),
+            };
+            const plannerResolution = requireRecord(
+              variables.plannerResolution,
+              "planner resolution",
+            );
+            const parameterDecisions = applyUserParameterOverrides(
+              parameterDecisionsFromResolution(plannerResolution),
+              sanitizedAdjustment,
+              adjustedCandidate,
+              execution.projection.lastResume?.resumedAt ?? now(),
+            );
             return transition(THETA_WORKFLOW_STATES.validatePlan, {
-              candidatePlan: {
-                ...requireRecord(variables.candidatePlan, "candidate plan"),
-                ...planFieldsFromAdjustment(
-                  sanitizePlanAdjustment(variables.planAdjustment),
-                ),
+              candidatePlan: adjustedCandidate,
+              plannerResolution: {
+                ...plannerResolution,
+                parameterDecisions,
               },
               validatedPlan: null,
               processedPlanAdjustmentHash: adjustmentHash,

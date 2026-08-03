@@ -5,6 +5,10 @@ import type { ThetaTrainingPlan } from "../tools/plan-validate-tool.js";
 import type { PlanProposalResult } from "./contracts.js";
 import { evidenceCompatibilityIssue } from "./evidence-compatibility.js";
 import type { EvidenceSelectionTarget } from "./select-evidence-tool.js";
+import {
+  buildParameterDecisions,
+} from "../planning/parameter-decisions.js";
+import type { ParameterDecisionMap } from "../planning/contracts.js";
 
 export interface ResolvePlannerInput {
   proposal: PlanProposalResult;
@@ -25,6 +29,7 @@ export interface PlannerResolution {
   evidenceBundleHash: string;
   acceptedEvidenceRefs: string[];
   authorityPolicy: "implementation_over_paper";
+  parameterDecisions: ParameterDecisionMap;
 }
 
 export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResolution => {
@@ -40,6 +45,11 @@ export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResol
       evidenceBundleHash: input.evidenceBundle.bundleHash,
       acceptedEvidenceRefs: [],
       authorityPolicy: "implementation_over_paper",
+      parameterDecisions: buildParameterDecisions({
+        recommendedPlan: explicit,
+        effectivePlan: explicit,
+        source: "user_override",
+      }),
     };
   }
   const selected = input.recommendation.recommendations.find((item) => item.modelId === input.proposal.draft.primary.modelId) ?? input.recommendation.recommendations[0];
@@ -144,6 +154,12 @@ export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResol
     resolvedPlan.numTopics = null;
   }
   if (modelId === "bertopic" && resolvedPlan.topicCountMode === "auto") resolvedPlan.numTopics = null;
+  const parameterRationales = Object.fromEntries(
+    selected.parameters.map((parameter) => [
+      parameter.name,
+      parameter.reasonCodes.join(", "),
+    ]),
+  );
   return {
     schemaVersion: "1.0.0",
     source: input.proposal.source,
@@ -154,6 +170,11 @@ export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResol
     evidenceBundleHash: input.evidenceBundle.bundleHash,
     acceptedEvidenceRefs: [...acceptedEvidenceRefs],
     authorityPolicy: "implementation_over_paper",
+    parameterDecisions: buildParameterDecisions({
+      recommendedPlan: selected.recommendedPlanPatch,
+      effectivePlan: resolvedPlan,
+      rationales: parameterRationales,
+    }),
   };
 };
 

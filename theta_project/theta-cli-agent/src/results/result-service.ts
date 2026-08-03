@@ -68,6 +68,7 @@ export interface RunResultOverview {
     evidence: string;
   }>;
   comparison: string[];
+  parameterDecisions: Record<string, unknown>;
   warnings: string[];
   topicTable?: string;
   logPath?: string;
@@ -173,6 +174,10 @@ export class ResultService {
       };
     });
     const researchBrief = asRecord(plan.researchBrief) ?? {};
+    const parameterDecisions =
+      asRecord(asRecord(plan.plannerResolution)?.parameterDecisions) ??
+      asRecord(asRecord(asRecord(plan.planRecord)?.review)?.parameterDecisions) ??
+      {};
     const temporalRequested = researchBrief.trendAnalysis === true;
     const groupComparisonRequested =
       strings(researchBrief.comparisonGroups).length > 0;
@@ -255,6 +260,7 @@ export class ResultService {
       experiments,
       goalAssessment,
       comparison: compareExperiments(experiments),
+      parameterDecisions,
       warnings: [
         ...(string(asRecord(receipt?.quality)?.status) === 'failed'
           ? ['训练执行已完成，但质量门未通过；当前结果不得标记为研究可用。']

@@ -390,13 +390,21 @@ const plan = (
   const recommendedParameters = Array.isArray(primary.parameters)
     ? primary.parameters.map(asRecord).filter(Boolean)
     : [];
+  const parameterDecisions =
+    asRecord(plannerResolution.parameterDecisions) ??
+    asRecord(review.parameterDecisions) ??
+    {};
+  const parameterDecisionLines = renderParameterDecisions(
+    parameterDecisions,
+    recommendedParameters,
+  );
   const datasetProfile = asRecord(record.datasetProfile) ?? {};
   const researchBrief = asRecord(record.researchBrief) ?? {};
   const recommendationLines = [
     ...translateReasonCodes(strings(primary.reasonCodes)),
     ...recommendedParameters.slice(0, 6).map(
       (item) =>
-        `${fieldLabel(human(item?.name))}：建议 ${human(item?.recommended)}；调高会${translateParameterEffect(item?.effectIfHigher)}，调低会${translateParameterEffect(item?.effectIfLower)}。`,
+        `${fieldLabel(human(item?.name))}：系统原建议 ${human(item?.recommended)}；调高会${translateParameterEffect(item?.effectIfHigher)}，调低会${translateParameterEffect(item?.effectIfLower)}。`,
     ),
   ];
   const alternatives = ranked
@@ -595,6 +603,9 @@ const plan = (
         title: '方案摘要',
         lines: lines.length ? lines : ['方案详情已生成，可用 /details 查看完整结构。'],
       },
+      ...(parameterDecisionLines.length
+        ? [{ title: '参数采用值', lines: parameterDecisionLines }]
+        : []),
       {
         title: '审批说明',
         lines:
@@ -945,6 +956,10 @@ const runResults = (
     ? record.experiments.map(asRecord).filter(Boolean)
     : [];
   const comparison = strings(record.comparison);
+  const parameterDecisionLines = renderParameterDecisions(
+    asRecord(record.parameterDecisions) ?? {},
+    [],
+  );
   const metricObservations = asRecord(metrics.metric_observations) ?? {};
   const unavailableMetrics = Object.entries(metricObservations)
     .map(([name, value]) => [name, asRecord(value)] as const)
@@ -1015,6 +1030,9 @@ const runResults = (
           `研究目标：${human(record.researchStatus ?? '尚未评估')}`,
         ],
       },
+      ...(parameterDecisionLines.length
+        ? [{ title: '本次执行参数', lines: parameterDecisionLines }]
+        : []),
       {
         title: '结果位置',
         lines: [
@@ -1332,9 +1350,83 @@ const fieldLabels: Readonly<Record<string, string>> = {
   batchSize: '批大小',
   epochs: '迭代次数',
   mode: '训练模式',
+  randomState: '随机种子',
+  covariateColumns: '训练协变量列',
 };
 
 const fieldLabel = (value: string): string => fieldLabels[value] ?? value;
+
+const renderParameterDecisions = (
+  decisions: Record<string, unknown>,
+  recommendations: Array<Record<string, unknown> | undefined>,
+): string[] => {
+  const order = [
+    'modelId',
+    'mode',
+    'topicCountMode',
+    'numTopics',
+    'maxTopics',
+    'batchSize',
+    'epochs',
+    'nNeighbors',
+    'nComponents',
+    'minClusterSize',
+    'minSamples',
+    'topNWords',
+    'randomState',
+    'covariateColumns',
+  ];
+  return Object.entries(decisions)
+    .sort(
+      ([left], [right]) =>
+        sortableIndex(order, left) - sortableIndex(order, right),
+    )
+    .flatMap(([field, rawDecision]) => {
+      const decision = asRecord(rawDecision);
+      if (!decision || decision.effectiveValue === undefined) return [];
+      const source = text(decision.source) ?? 'system_recommendation';
+      const recommended = decision.recommendedValue;
+      const effective = decision.effectiveValue;
+      const recommendation = recommendations.find(
+        (item) => text(item?.name) === field,
+      );
+      const recommendedNumber = number(recommended);
+      const effectiveNumber = number(effective);
+      const effect =
+        recommendation &&
+        recommendedNumber !== undefined &&
+        effectiveNumber !== undefined &&
+        recommendedNumber !== effectiveNumber
+          ? translateParameterEffect(
+              effectiveNumber > recommendedNumber
+                ? recommendation?.effectIfHigher
+                : recommendation?.effectIfLower,
+            )
+          : undefined;
+      const parts = [
+        `当前采用：${human(effective)}`,
+        source === 'system_recommendation' &&
+        JSON.stringify(recommended) === JSON.stringify(effective)
+          ? undefined
+          : `系统原建议：${human(recommended)}`,
+        `调整来源：${parameterDecisionSourceLabel(source)}`,
+        effect && effect !== 'undefined' ? `影响：${effect}` : undefined,
+      ].filter((item): item is string => Boolean(item));
+      return [`${fieldLabel(field)}：${parts.join('；')}`];
+    });
+};
+
+const sortableIndex = (order: string[], field: string): number => {
+  const index = order.indexOf(field);
+  return index === -1 ? order.length : index;
+};
+
+const parameterDecisionSourceLabel = (source: string): string =>
+  ({
+    system_recommendation: '系统推荐',
+    user_override: '用户修改',
+    validator_correction: 'Validator 修正',
+  })[source] ?? source;
 
 const trainingStageLabel = (value: unknown): string => {
   const stage = text(value) ?? '等待训练状态';

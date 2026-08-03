@@ -37,6 +37,65 @@ if (
   throw new Error('No-Run language consent still recommended /status.');
 }
 
+const decision = {
+  recommendedValue: 10,
+  effectiveValue: 8,
+  source: 'user_override',
+};
+const planResponse = buildHumanResponse({
+  kind: 'plan.review',
+  currentState: 'AwaitPlanCreationApproval',
+  candidatePlan: {
+    modelId: 'lda',
+    mode: 'unsupervised',
+    topicCountMode: 'fixed',
+    numTopics: 8,
+  },
+  plannerResolution: {
+    parameterDecisions: { numTopics: decision },
+  },
+  recommendation: {
+    recommendations: [
+      {
+        modelId: 'lda',
+        parameters: [
+          {
+            name: 'numTopics',
+            recommended: 10,
+            effectIfHigher: 'more granular topics',
+            effectIfLower: 'broader topics',
+          },
+        ],
+      },
+    ],
+  },
+});
+const planDecisionLine = (planResponse.sections ?? [])
+  .find((section) => section.title === '参数采用值')
+  ?.lines.join('\n') ?? '';
+for (const expected of ['当前采用：8', '系统原建议：10', '调整来源：用户修改']) {
+  if (!planDecisionLine.includes(expected)) {
+    throw new Error(`Plan Review did not distinguish parameter decision: ${expected}`);
+  }
+}
+
+const resultResponse = buildHumanResponse({
+  kind: 'run.summary',
+  status: 'completed',
+  metrics: { num_topics: 8 },
+  artifacts: [],
+  topics: [],
+  parameterDecisions: { numTopics: decision },
+});
+const resultDecisionLine = (resultResponse.sections ?? [])
+  .find((section) => section.title === '本次执行参数')
+  ?.lines.join('\n') ?? '';
+for (const expected of ['当前采用：8', '系统原建议：10', '调整来源：用户修改']) {
+  if (!resultDecisionLine.includes(expected)) {
+    throw new Error(`Run summary did not retain parameter decision: ${expected}`);
+  }
+}
+
 const answer = [
   '这批数据不包含个人信息、机密内容或其他敏感数据。',
   '我的研究问题是识别主要主题，并分析主题随时间的变化趋势。',
@@ -165,6 +224,7 @@ console.log(
     noRunNavigation: 'start',
     extractedFields: Object.keys(guarded.patch).length,
     privacyFalsePositive: 'blocked',
+    parameterDecisionUx: 'verified',
     revisionEvidence: 'persisted',
   }),
 );

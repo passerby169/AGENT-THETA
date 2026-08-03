@@ -10,6 +10,7 @@ import {
   approvalReceiptSchema,
   canonicalTrainingPlanSchema,
   dryRunReceiptSchema,
+  parameterDecisionMapSchema,
   trainingPlanRecordSchema,
   type ApprovalReceipt,
   type DryRunReceipt,
@@ -77,6 +78,15 @@ export const createTrainingPlanRecord = (
     ? undefined
     : planProposalResultSchema.parse(input.planProposal);
   const plannerResolution = record(input.plannerResolution);
+  const parameterDecisionResult = parameterDecisionMapSchema.safeParse(
+    plannerResolution.parameterDecisions,
+  );
+  const parameterDecisions = parameterDecisionResult.success
+    ? parameterDecisionResult.data
+    : {};
+  const plannerResolutionBinding = input.plannerResolution === undefined
+    ? null
+    : withoutParameterDecisions(plannerResolution);
   const validation = record(input.validation);
   const validatorVersion = requiredString(
     validation.validatorVersion ?? PLAN_VALIDATOR_VERSION,
@@ -165,9 +175,7 @@ export const createTrainingPlanRecord = (
       evidenceBundleHash:
         evidenceBundle?.bundleHash ?? sha256Canonical(null),
       planProposalHash: sha256Canonical(planProposal ?? null),
-      plannerResolutionHash: sha256Canonical(
-        input.plannerResolution ?? null,
-      ),
+      plannerResolutionHash: sha256Canonical(plannerResolutionBinding),
       domainPackId: requiredString(input.domainPack.id, "domainPack.id"),
       domainPackVersion: requiredString(
         input.domainPack.version,
@@ -209,10 +217,21 @@ export const createTrainingPlanRecord = (
           : planProposal?.source ?? "deterministic",
       plannerAcceptedEvidenceRefs: acceptedEvidenceRefs,
       evidenceSelectionReceipts: planProposal?.evidenceSelectionReceipts ?? [],
+      ...(Object.keys(parameterDecisions).length > 0
+        ? { parameterDecisions }
+        : {}),
       validatorVersion,
     },
     createdAt: input.createdAt,
   });
+};
+
+const withoutParameterDecisions = (
+  plannerResolution: Record<string, unknown>,
+): Record<string, unknown> => {
+  const { parameterDecisions: _parameterDecisions, ...materialResolution } =
+    plannerResolution;
+  return materialResolution;
 };
 
 export const createApprovalReceipt = (

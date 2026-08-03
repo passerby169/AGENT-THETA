@@ -6,6 +6,33 @@ export const TRAINING_PLAN_SCHEMA_VERSION = "1.0.0";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const scalarSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
+const parameterDecisionValueSchema = z.union([
+  scalarSchema,
+  z.null(),
+  z.array(z.union([scalarSchema, z.null()])),
+]);
+
+export const parameterDecisionSchema = z
+  .object({
+    recommendedValue: parameterDecisionValueSchema,
+    effectiveValue: parameterDecisionValueSchema,
+    source: z.enum([
+      "system_recommendation",
+      "user_override",
+      "validator_correction",
+    ]),
+    rationale: z.string().min(1).max(1200).optional(),
+    overriddenAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+export const parameterDecisionMapSchema = z.record(
+  z.string().min(1),
+  parameterDecisionSchema,
+);
+
+export type ParameterDecision = z.infer<typeof parameterDecisionSchema>;
+export type ParameterDecisionMap = z.infer<typeof parameterDecisionMapSchema>;
 
 export const canonicalExperimentProtocolSchema = z
   .object({
@@ -164,6 +191,7 @@ export const planReviewSnapshotSchema = z
     planProposalSource: z.enum(["minimax", "deterministic", "explicit_user_plan"]),
     plannerAcceptedEvidenceRefs: z.array(z.string().min(1)),
     evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema).default([]),
+    parameterDecisions: parameterDecisionMapSchema.optional(),
     validatorVersion: z.string().min(1),
   })
   .strict();
