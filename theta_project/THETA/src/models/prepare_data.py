@@ -1239,22 +1239,48 @@ def prepare_baseline_data(args):
             df = pd.read_csv(data_path, encoding='utf-8')
             available_cols = [col for col in args.covariate_columns if col in df.columns]
             if available_cols:
-                # Extract covariates and encode categorical variables
-                from sklearn.preprocessing import LabelEncoder
+                # Preserve numeric covariates and one-hot encode categorical
+                # covariates. LabelEncoder would impose a false ordinal distance
+                # between categories such as industries or sources.
                 covariates_list = []
                 covariate_levels = {}
+                expanded_names = []
                 for col in available_cols:
-                    le = LabelEncoder()
-                    encoded = le.fit_transform(df[col].fillna('unknown').astype(str))
-                    covariates_list.append(encoded)
-                    covariate_levels[col] = [str(value) for value in le.classes_.tolist()]
+                    source = df[col]
+                    numeric = pd.to_numeric(source, errors='coerce')
+                    if numeric.notna().mean() >= 0.95 and numeric.nunique(dropna=True) > 1:
+                        fill_value = float(numeric.median())
+                        covariates_list.append(numeric.fillna(fill_value).to_numpy(dtype=float)[:, None])
+                        expanded_names.append(col)
+                        covariate_levels[col] = []
+                        continue
+
+                    categorical = source.fillna('unknown').astype(str)
+                    levels = sorted(str(value) for value in categorical.unique().tolist())
+                    covariate_levels[col] = levels
+                    dummies = pd.get_dummies(
+                        categorical,
+                        prefix=col,
+                        prefix_sep='=',
+                        drop_first=True,
+                        dtype=float,
+                    )
+                    if dummies.shape[1] == 0:
+                        print(f"  [Warning] Covariate '{col}' is constant and was skipped")
+                        continue
+                    covariates_list.append(dummies.to_numpy(dtype=float))
+                    expanded_names.extend(str(name) for name in dummies.columns.tolist())
+
+                if not covariates_list:
+                    raise ValueError("No non-degenerate covariate columns remain after encoding")
                 covariates = np.column_stack(covariates_list)
                 np.save(result_dir / 'covariates.npy', covariates)
                 with open(result_dir / 'covariate_names.json', 'w', encoding='utf-8') as f:
-                    json.dump(available_cols, f, ensure_ascii=False, indent=2)
+                    json.dump(expanded_names, f, ensure_ascii=False, indent=2)
                 with open(result_dir / 'covariate_levels.json', 'w', encoding='utf-8') as f:
                     json.dump(covariate_levels, f, ensure_ascii=False, indent=2)
-                print(f"\n[Covariates] Extracted {len(available_cols)} columns: {available_cols}")
+                print(f"\n[Covariates] Extracted {len(available_cols)} source columns: {available_cols}")
+                print(f"  Encoded features: {expanded_names}")
                 print(f"  Shape: {covariates.shape}")
             else:
                 print(f"\n[Warning] Covariate columns not found: {args.covariate_columns}")

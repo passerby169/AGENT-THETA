@@ -13,6 +13,11 @@ import {
 import { createDryRunReceipt } from "../planning/engine.js";
 import { callThetaBridge } from "./bridge.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
+import {
+  PLAN_VALIDATOR_VERSION,
+  validateCanonicalTrainingPlanV2,
+} from "../planning/validator-v2.js";
+import type { CapabilityCatalogModel } from "../capabilities/contracts.js";
 
 export interface ThetaTrainingDryRunInput {
   plan: TrainingPlanRecord;
@@ -137,6 +142,38 @@ export const thetaTrainingDryRunHandler: ToolHandler<
   ThetaTrainingDryRunOutput
 > = async (input: unknown, context: ToolCallContext) => {
   const value = normalizeTrainingDryRunInput(input);
+  const catalogResponse = await callThetaBridge(
+    "model.catalog",
+    {},
+    {
+      runId: context.runId,
+      stepId: `${context.stepId}.validator-v2.catalog`,
+    },
+  );
+  if (
+    catalogResponse.status !== "ok" ||
+    !catalogResponse.data ||
+    typeof catalogResponse.data !== "object"
+  ) {
+    throw new Error(
+      catalogResponse.error?.message ?? "model.catalog bridge command failed.",
+    );
+  }
+  const models = Array.isArray(
+    (catalogResponse.data as Record<string, unknown>).models,
+  )
+    ? ((catalogResponse.data as Record<string, unknown>)
+        .models as CapabilityCatalogModel[])
+    : [];
+  const validation = validateCanonicalTrainingPlanV2(
+    value.plan as unknown as Record<string, unknown>,
+    models,
+  );
+  if (!validation.valid) {
+    throw new Error(
+      `Validator V2 rejected training.dry_run: ${validation.errors.join("; ")}`,
+    );
+  }
   const response = await callThetaBridge(
     "training.dry_run",
     {
@@ -161,9 +198,23 @@ export const thetaTrainingDryRunHandler: ToolHandler<
     planHash: value.plan.planHash,
     planReviewApprovalId: value.planReview.approvalId,
     passed: data.passed === true,
-    checks: Array.isArray(data.checks)
-      ? data.checks.map((item) => dryRunCheckSchema.parse(item))
-      : [],
+    checks: [
+      {
+        code: "VALIDATOR_V2",
+        status: "pass" as const,
+        detail: `Canonical plan passed Validator ${PLAN_VALIDATOR_VERSION}.`,
+      },
+      ...validation.findings
+        .filter((finding) => finding.level !== "error")
+        .map((finding) => ({
+          code: finding.code,
+          status: "warn" as const,
+          detail: finding.message,
+        })),
+      ...(Array.isArray(data.checks)
+        ? data.checks.map((item) => dryRunCheckSchema.parse(item))
+        : []),
+    ],
     commands: Array.isArray(data.commands)
       ? data.commands.map((item) => trainingCommandSchema.parse(item))
       : [],

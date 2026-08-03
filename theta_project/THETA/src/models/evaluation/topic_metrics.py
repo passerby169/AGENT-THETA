@@ -254,7 +254,7 @@ def compute_topic_significance(
     significant_counts = np.sum(theta > threshold, axis=0)
     
     # Normalize by number of documents
-    significance = significant_counts / num_topics
+    significance = significant_counts / max(num_docs, 1)
     
     return significance
 

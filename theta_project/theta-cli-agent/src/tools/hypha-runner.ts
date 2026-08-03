@@ -42,6 +42,10 @@ import type {
   ThetaPlanValidateOutput,
 } from "./plan-validate-tool.js";
 import type {
+  ThetaPlanProposeInput,
+  ThetaPlanProposeOutput,
+} from "./plan-propose-tool.js";
+import type {
   ThetaTrainingDryRunInput,
   ThetaTrainingDryRunOutput,
 } from "./training-dry-run-tool.js";
@@ -652,6 +656,25 @@ export const runApprovedThetaLanguageGenerate = async (
     invocationId,
     options.userId ?? "local_user",
   ) as Promise<ToolCallResult<ThetaLanguageGenerateOutput>>;
+};
+
+export const runThetaPlanPropose = async (
+  input: ThetaPlanProposeInput,
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaPlanProposeOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.planPropose,
+    input,
+    context: createThetaToolCallContext("theta-plan-propose", "plan_propose", {
+      ...options,
+      permissionScopes: options.permissionScopes ?? [
+        THETA_PERMISSION_SCOPES.planRead,
+        THETA_PERMISSION_SCOPES.ragRead,
+        THETA_PERMISSION_SCOPES.inferenceUse,
+      ],
+    }),
+  }) as Promise<ToolCallResult<ThetaPlanProposeOutput>>;
 };
 
 export const runApprovedThetaConversationLanguage = async (

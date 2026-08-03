@@ -119,6 +119,7 @@ export const conversationCommandSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('why'),
       ...runReference,
+      section: z.enum(['all', 'model', 'parameters', 'protocol', 'evidence']).default('all'),
     })
     .strict(),
   z
@@ -177,7 +178,14 @@ export const conversationCommandSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.enum(['next', 'details', 'done', 'follow', 'logs', 'results', 'openResults', 'summary', 'runs', 'retry']),
+      kind: z.enum(['next', 'done', 'follow', 'logs', 'results', 'openResults', 'summary', 'runs', 'retry', 'reevaluate']),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('details'),
+      section: z.string().trim().min(1).max(120).optional(),
+      page: z.number().int().positive().default(1),
     })
     .strict(),
   z

@@ -11,6 +11,8 @@ import { createThetaWorkflowRuntime } from './theta-workflow-runtime.js';
 import { runThetaModelCatalog } from './tools/hypha-runner.js';
 import { createMiniMaxProviderFromEnv } from './providers/minimax.js';
 import { probeThetaPythonModules } from './tools/bridge.js';
+import { CapabilityRegistry } from './capabilities/registry.js';
+import { getKnowledgeIndexStatus } from './rag/service.js';
 
 export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
 
@@ -56,6 +58,8 @@ export class DoctorService {
     checks.push(await this.thetaConfigCheck());
     checks.push(this.pythonRuntimeCheck());
     checks.push(await this.pythonAndModelCheck());
+    checks.push(await this.capabilityRegistryCheck());
+    checks.push(await this.structuredKnowledgeCheck());
     checks.push(gpuCheck());
     checks.push(minimaxCheck());
 
@@ -251,6 +255,47 @@ export class DoctorService {
     }
   }
 
+  private async capabilityRegistryCheck(): Promise<DoctorCheck> {
+    try {
+      const result = await runThetaModelCatalog();
+      const models = result.output?.models ?? [];
+      if (result.status !== 'completed' || models.length === 0) {
+        throw new Error(
+          typeof result.error === 'string'
+            ? result.error
+            : (result.error?.message ?? `status=${result.status}`),
+        );
+      }
+      const registry = new CapabilityRegistry({ agentRoot: this.agentRoot });
+      const audit = registry.auditCatalog(models);
+      if (audit.status === 'fail') {
+        const failures = audit.issues
+          .filter((issue) => issue.severity === 'error')
+          .slice(0, 5)
+          .map(
+            (issue) =>
+              `${issue.code}${issue.modelId ? `(${issue.modelId})` : ''}`,
+          )
+          .join(', ');
+        return fail(
+          'capability.registry',
+          `Capability Registry 与 Catalog/CLI 发生漂移：${failures}。`,
+          '修正 knowledge/capabilities/models 中的能力卡或对应实现；在审计通过前推荐入口会 fail-closed。',
+        );
+      }
+      return pass(
+        'capability.registry',
+        `能力真相层已审计 ${audit.auditedModelIds.length} 个核心模型；Planner 可选 ${audit.plannerEligibleModelIds.length} 个（${audit.plannerEligibleModelIds.join(', ')}），安全排除 ${audit.plannerExcludedModelIds.length} 个。另有 ${audit.unauditedCatalogModelIds.length} 个 Catalog 模型尚未进入第一阶段审计。`,
+      );
+    } catch (error) {
+      return fail(
+        'capability.registry',
+        `Capability Registry 加载失败：${message(error)}`,
+        '检查 Capability Card YAML 结构、sourceRefs 与模型 Catalog，然后重新运行 doctor。',
+      );
+    }
+  }
+
   private pythonRuntimeCheck(): DoctorCheck {
     const requiredModules = [
       'pandas',
@@ -292,6 +337,42 @@ export class DoctorService {
       );
     }
   }
+
+  private async structuredKnowledgeCheck(): Promise<DoctorCheck> {
+    try {
+      const status = await getKnowledgeIndexStatus();
+      if (status.status !== 'ready' || status.totalObjects === 0) {
+        return warn(
+          'knowledge.structured-v1',
+          '结构化知识库尚未构建；推荐仍可使用确定性后备，但 MiniMax Planner 缺少本地证据集。',
+          '在 theta-cli-agent 目录运行：pnpm run rag:build',
+        );
+      }
+      const requiredTypes = [
+        'model', 'parameter', 'rule', 'recipe', 'evaluation_metric',
+        'failure_mode', 'implementation_capability', 'project_constraint',
+        'conflict_group',
+      ];
+      const missing = requiredTypes.filter((type) => !status.objectTypes[type]);
+      if (missing.length) {
+        return fail(
+          'knowledge.structured-v1',
+          `结构化知识库缺少对象类型：${missing.join(', ')}。`,
+          '修正 knowledge/structured/v1.yaml 后重新运行 pnpm run rag:build。',
+        );
+      }
+      return pass(
+        'knowledge.structured-v1',
+        `结构化知识库 V1 已就绪：${status.totalObjects} 个对象、${Object.keys(status.objectTypes).length} 种类型；多路 FTS 索引位于 ${status.database}。`,
+      );
+    } catch (error) {
+      return fail(
+        'knowledge.structured-v1',
+        `结构化知识库状态不可读：${message(error)}`,
+        '重新运行 pnpm run rag:build，并检查 knowledge/manifest.yaml。',
+      );
+    }
+  }
 }
 
 const nodeCheck = (): DoctorCheck => {
@@ -324,14 +405,14 @@ const minimaxCheck = (): DoctorCheck => {
     return warn(
       'minimax.optional',
       'MiniMax is not configured; deterministic CLI operation is unaffected.',
-      'Set MINIMAX_API_KEY in theta_project/.env only when bounded external language inference is required.',
+      'Set MINIMAX_API_KEY in theta_project/.env only when bounded language inference or MiniMax Planner is required.',
     );
   }
   try {
     const provider = createMiniMaxProviderFromEnv();
     return pass(
       'minimax.optional',
-      `Optional MiniMax provider configuration is valid for model ${provider?.model ?? 'unknown'}.`,
+      `MiniMax provider configuration is valid for bounded language tasks and Planner model ${provider?.model ?? 'unknown'} (60s default timeout).`,
     );
   } catch (error) {
     return fail(

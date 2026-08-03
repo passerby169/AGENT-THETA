@@ -34,6 +34,9 @@ export interface RunResultOverview {
   trainingRunId?: string;
   status: string;
   progress: number;
+  executionStatus?: string;
+  qualityStatus?: string;
+  researchStatus?: 'passed' | 'needs_review' | 'not_evaluated';
   currentStep?: string;
   resultRoot?: string;
   artifacts: ResultArtifactView[];
@@ -115,7 +118,7 @@ export class ResultService {
       .filter((item) => item.path);
     const resultRoot = newestExperimentRoot(
       artifacts
-        .filter((item) => item.exists)
+        .filter((item) => item.exists && item.kind === 'results')
         .map((item) => item.path),
     );
     const metricsFile = resultRoot
@@ -152,7 +155,9 @@ export class ResultService {
         ).length > 0
       : false;
     const experimentRoots = allExperimentRoots(
-      artifacts.filter((item) => item.exists).map((item) => item.path),
+      artifacts
+        .filter((item) => item.exists && item.kind.startsWith('results'))
+        .map((item) => item.path),
     );
     const experiments = experimentRoots.map((root) => {
       const experimentMetricsFile = findFiles(
@@ -190,6 +195,25 @@ export class ResultService {
               );
           })
       : [];
+    const topicCollapse = detectTopicCollapse(topics, metrics);
+    const goalAssessment = assessGoals({
+      criteria: strings(researchBrief.successCriteria),
+      trendAnalysis: researchBrief.trendAnalysis === true,
+      comparisonGroups: strings(researchBrief.comparisonGroups),
+      topics,
+      metrics,
+      hasTimestamps,
+      hasDimensions,
+      figureCount,
+      hasLog: Boolean(resolvedLogPath),
+    });
+    const qualityStatus = string(asRecord(receipt?.quality)?.status);
+    const researchStatus: RunResultOverview['researchStatus'] =
+      qualityStatus === 'failed' || goalAssessment.length === 0
+        ? 'not_evaluated'
+        : goalAssessment.every((item) => item.status === 'satisfied')
+          ? 'passed'
+          : 'needs_review';
     return {
       kind: 'run.results',
       runId,
@@ -197,6 +221,13 @@ export class ResultService {
         ? { trainingRunId }
         : {}),
       status: string(receipt?.status) ?? String(status.status),
+      ...(string(receipt?.executionStatus)
+        ? { executionStatus: string(receipt?.executionStatus) }
+        : {}),
+      ...(string(asRecord(receipt?.quality)?.status)
+        ? { qualityStatus: string(asRecord(receipt?.quality)?.status) }
+        : {}),
+      researchStatus,
       progress: number(receipt?.progress) ?? (status.status === 'completed' ? 100 : 0),
       ...(string(receipt?.currentStep)
         ? { currentStep: string(receipt?.currentStep) }
@@ -222,19 +253,21 @@ export class ResultService {
           : 'none',
       },
       experiments,
-      goalAssessment: assessGoals({
-        criteria: strings(researchBrief.successCriteria),
-        trendAnalysis: researchBrief.trendAnalysis === true,
-        comparisonGroups: strings(researchBrief.comparisonGroups),
-        topics,
-        metrics,
-        hasTimestamps,
-        hasDimensions,
-        figureCount,
-        hasLog: Boolean(resolvedLogPath),
-      }),
+      goalAssessment,
       comparison: compareExperiments(experiments),
-      warnings: visualizationWarnings,
+      warnings: [
+        ...(string(asRecord(receipt?.quality)?.status) === 'failed'
+          ? ['训练执行已完成，但质量门未通过；当前结果不得标记为研究可用。']
+          : string(asRecord(receipt?.quality)?.status) === 'warning'
+            ? ['训练执行已完成，但质量门存在警告；请先复核再用于研究结论。']
+            : []),
+        ...visualizationWarnings,
+        ...(topicCollapse.collapsed
+          ? [
+              `检测到主题塌缩：${topics.length} 个主题只有 ${topicCollapse.uniqueSignatures} 组不同的关键词，不能把“生成了目标数量的主题”等同于分析成功。`,
+            ]
+          : []),
+      ],
       ...(topicTable ? { topicTable } : {}),
       ...(resolvedLogPath ? { logPath: resolvedLogPath } : {}),
       message:
@@ -343,10 +376,19 @@ export class ResultService {
     const current = asRecord(status.trainingReceipt);
     const priorTrainingRunId = string(current?.trainingRunId);
     if (!priorTrainingRunId) {
-      throw new Error('当前任务还没有可重试的训练记录。');
+      if (status.status !== 'failed') {
+        throw new Error('当前任务既不是失败 Run，也没有可重试的训练记录。');
+      }
+      return this.retryFailedWorkflow(
+        runId,
+        runtimeDb,
+        planContext as unknown as Record<string, unknown>,
+        reason,
+      );
     }
-    if (string(current?.status) !== 'failed') {
-      throw new Error('只有失败的训练记录可以使用 /retry。');
+    const qualityFailed = string(asRecord(current?.quality)?.status) === 'failed';
+    if (string(current?.status) !== 'failed' && !qualityFailed) {
+      throw new Error('只有执行失败或质量门失败的训练记录可以使用 /retry。');
     }
     const plan = trainingPlanRecordSchema.parse(planContext.planRecord);
     const planReview = approvalReceiptSchema.parse(planContext.planReview);
@@ -392,6 +434,101 @@ export class ResultService {
       response: `已创建第 ${String(result.output.attempt)} 次训练尝试，并保留原 ResearchBrief、列绑定和审批链。`,
     };
   }
+
+  async reassess(
+    runId: string,
+    runtimeDb: string,
+  ): Promise<Record<string, unknown>> {
+    const status = await this.workflow.status(runId, runtimeDb);
+    const current = asRecord(status.trainingReceipt);
+    const trainingRunId = string(current?.trainingRunId);
+    if (!trainingRunId) throw new Error('当前任务没有可重新评估的训练产物。');
+    if (string(current?.status) !== 'completed') {
+      throw new Error('只有执行完成的训练才可以重新评估质量。');
+    }
+    const result = await runThetaTrainingStatus({
+      trainingRunId,
+      logLimit: 1,
+      reassessQuality: true,
+    });
+    if (result.status !== 'completed' || !result.output || result.output.found === false) {
+      throw new Error(
+        typeof result.error === 'string'
+          ? result.error
+          : (result.error?.message ?? '重新评估训练质量失败。'),
+      );
+    }
+    return {
+      kind: 'training.quality.reassessed',
+      runId,
+      trainingRunId: result.output.trainingRunId,
+      quality: result.output.receipt.quality,
+      reassessed: result.output.reassessed === true,
+      response: '已基于当前落盘产物重新执行质量门；没有重新训练，也没有覆盖原始质量收据。',
+    };
+  }
+
+  private async retryFailedWorkflow(
+    runId: string,
+    runtimeDb: string,
+    planContext: Record<string, unknown>,
+    reason: string,
+  ): Promise<Record<string, unknown>> {
+    const evidence = await this.workflow.evidence(runId, runtimeDb);
+    const started = evidence.orchestrationEvents.find((event) => event.type === 'run.started');
+    const originalInput = asRecord(asRecord(started?.payload)?.input);
+    if (!originalInput || !string(originalInput.filePath)) {
+      throw new Error('失败 Run 缺少可恢复的原始工作流输入。');
+    }
+    const researchBrief = asRecord(planContext.researchBrief);
+    const columnConfirmation = asRecord(planContext.columnConfirmation);
+    const research = researchBrief
+      ? Object.fromEntries(
+          Object.entries(researchBrief).filter(
+            ([key]) => !['schemaVersion', 'unknownFields'].includes(key),
+          ),
+        )
+      : undefined;
+    let recovered = await this.workflow.run({
+      runtimeDb,
+      input: {
+        ...(originalInput as Record<string, unknown>),
+        filePath: string(originalInput.filePath) as string,
+        ...(research ? { research } : {}),
+        recoveryOfRunId: runId,
+        recoveryReason: reason,
+      },
+    });
+    if (
+      recovered.currentState === 'ColumnConfirmation' &&
+      columnConfirmation
+    ) {
+      recovered = await this.workflow.resume({
+        runId: recovered.runId,
+        runtimeDb,
+        columnConfirmation: {
+          textColumns: strings(columnConfirmation.textColumns),
+          timeColumn: string(columnConfirmation.timeColumn) ?? null,
+          idColumn: string(columnConfirmation.idColumn) ?? null,
+          covariateColumns: strings(columnConfirmation.covariateColumns),
+          metadataColumns: strings(columnConfirmation.metadataColumns),
+          groupingColumns: strings(columnConfirmation.groupingColumns),
+          evaluationLabelColumns: strings(columnConfirmation.evaluationLabelColumns),
+        },
+        approvedBy: 'local_user',
+      });
+    }
+    return {
+      kind: 'workflow.retry.started',
+      runId: recovered.runId,
+      retryOfRunId: runId,
+      status: recovered.status,
+      currentState: recovered.currentState,
+      pendingActionRef: recovered.pendingActionRef,
+      response: '已创建受治理的恢复 Run；原失败 Run 保持不可变，新 Run 已复用可验证的研究档案和列绑定。',
+      workflow: recovered,
+    };
+  }
 }
 
 const newestExperimentRoot = (roots: string[]): string | undefined => {
@@ -426,9 +563,10 @@ const allExperimentRoots = (roots: string[]): string[] => {
   const candidates = new Map<string, number>();
   for (const root of roots) {
     if (!existsSync(root)) continue;
-    if (path.basename(root).startsWith('exp_')) {
-      candidates.set(root, statSync(root).mtimeMs);
-    }
+    // Runtime artifacts are already bound to an exact attempt directory
+    // (`run_*__primary_*`). Older layouts used nested `exp_*` directories.
+    // Treat the bound root itself as a first-class experiment in both cases.
+    candidates.set(root, statSync(root).mtimeMs);
     for (const directory of findDirectories(
       root,
       (name) => name.startsWith('exp_'),
@@ -571,6 +709,7 @@ const assessGoals = (input: {
   figureCount: number;
   hasLog: boolean;
 }): RunResultOverview['goalAssessment'] => {
+  const topicCollapse = detectTopicCollapse(input.topics, input.metrics);
   const criteria = [
     ...input.criteria,
     ...(input.trendAnalysis ? ['生成时间趋势分析'] : []),
@@ -584,13 +723,19 @@ const assessGoals = (input: {
       const minimum = Number(topicRange[1]);
       const maximum = Number(topicRange[2]);
       const actual = input.topics.length;
-      const satisfied = actual >= minimum && actual <= maximum;
+      const countSatisfied = actual >= minimum && actual <= maximum;
+      const requiresInterpretability =
+        /容易命名|可解释|区分|关键词|代表文档|interpretable/iu.test(criterion);
+      const satisfied =
+        countSatisfied && !(requiresInterpretability && topicCollapse.collapsed);
       return {
         criterion,
         status: satisfied ? 'satisfied' : 'not_satisfied',
         evidence: satisfied
           ? `主题表实际包含 ${actual} 个主题，位于要求的 ${minimum}–${maximum} 个范围内。`
-          : `主题表实际包含 ${actual} 个主题，不在要求的 ${minimum}–${maximum} 个范围内。`,
+          : countSatisfied && topicCollapse.collapsed
+            ? `数量上包含 ${actual} 个主题，但只有 ${topicCollapse.uniqueSignatures} 组不同关键词，发生主题塌缩，不能判定为容易命名且彼此可区分。`
+            : `主题表实际包含 ${actual} 个主题，不在要求的 ${minimum}–${maximum} 个范围内。`,
       };
     }
     const requestsArtifactBundle =
@@ -635,12 +780,26 @@ const assessGoals = (input: {
           : '结果中没有分组维度产物。',
       };
     }
+    if (/代表文档|representative\s+documents?/iu.test(criterion)) {
+      return {
+        criterion,
+        status: 'not_evaluated',
+        evidence: topicCollapse.collapsed
+          ? `主题关键词发生塌缩；现有结果也没有可供自动核验的代表文档绑定，必须人工复核。`
+          : '现有结果没有可供自动核验的代表文档绑定，必须人工复核。',
+      };
+    }
     if (/主题|关键词|解释|topic|keyword/iu.test(criterion)) {
       return {
         criterion,
-        status: input.topics.length > 0 ? 'satisfied' : 'not_satisfied',
+        status:
+          input.topics.length > 0 && !topicCollapse.collapsed
+            ? 'satisfied'
+            : 'not_satisfied',
         evidence:
-          input.topics.length > 0
+          input.topics.length > 0 && topicCollapse.collapsed
+            ? `主题表虽包含 ${input.topics.length} 个主题，但只有 ${topicCollapse.uniqueSignatures} 组不同关键词，无法支持该目标。`
+            : input.topics.length > 0
             ? `主题表包含 ${input.topics.length} 个主题及其真实关键词。`
             : '没有找到可解析的主题表。',
       };
@@ -671,6 +830,34 @@ const assessGoals = (input: {
       evidence: '该成功标准不能由现有机器产物自动判定，需要研究者复核。',
     };
   });
+};
+
+const detectTopicCollapse = (
+  topics: RunResultOverview['topics'],
+  metrics: Record<string, unknown>,
+): { collapsed: boolean; uniqueSignatures: number } => {
+  const signatures = new Set(
+    topics.map((topic) =>
+      topic.keywords
+        .slice(0, 8)
+        .map((keyword) => keyword.trim().toLowerCase())
+        .join('|'),
+    ),
+  );
+  const td = numericMetric(metrics, 'td');
+  const irbo = numericMetric(metrics, 'irbo');
+  const duplicateSignatures =
+    topics.length > 1 && signatures.size / topics.length <= 0.3;
+  const metricCollapse =
+    topics.length > 1 &&
+    td !== undefined &&
+    td <= 0.2 &&
+    irbo !== undefined &&
+    irbo <= 0.1;
+  return {
+    collapsed: duplicateSignatures || metricCollapse,
+    uniqueSignatures: signatures.size,
+  };
 };
 
 const compareExperiments = (

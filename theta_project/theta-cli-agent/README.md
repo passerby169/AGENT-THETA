@@ -26,6 +26,9 @@ follow, and a result center:
 /done
 /plan
 /adjust 把主题数改成 8
+/adjust 只运行一次，随机种子 42
+/adjust 用 LDA 做对照，种子 42、73
+/adjust 做稳定性复验，种子 17、42、73
 /approve-plan
 /start-training
 /follow
@@ -42,6 +45,35 @@ THETA CLI Agent is a local command-line surface over the THETA Python Bridge.
 Every exposed operation is registered in Hypha's `ToolRegistry` and executed
 through `GovernedToolRunner`. Read and write permissions, idempotency, audit
 events, and human approval are therefore enforced before the bridge is called.
+
+## Validator V2 and automatic topic counts
+
+Training plans are checked against the local Model Catalog and audited
+Capability Cards at four boundaries: `plan.validate`, `plan.create`,
+`training.dry_run`, and `training.start`. Model-specific parameters cannot be
+passed to another model, and the Python Bridge recomputes plan/dry-run hashes
+and training commands before starting a process.
+
+HDP and BERTopic use explicit topic-count semantics:
+
+```json
+{"modelId":"hdp","topicCountMode":"auto","numTopics":null,"maxTopics":80}
+{"modelId":"bertopic","topicCountMode":"auto","numTopics":null}
+{"modelId":"bertopic","topicCountMode":"target_reduction","numTopics":12}
+```
+
+Model selection and experiment scheduling are separate decisions. Every
+canonical plan contains an `experimentProtocol`: `quick` runs the selected
+primary model once, `comparative` runs an explicitly selected baseline, and
+`stability` repeats the primary model with at least three distinct seeds.
+MiniMax may propose that protocol, but the Catalog Resolver and Validator V2
+bound its models, seeds, evidence, and maximum run count. The Python Bridge
+executes only the approved protocol; it never adds an LDA baseline or extra
+random seeds implicitly.
+
+For offline BERTopic runs, `SBERT_MODEL_PATH` must point to an existing local
+model directory; the Dry Run blocks training when that asset cannot be
+verified.
 
 ## Requirements
 
@@ -68,9 +100,27 @@ npm run cli -- rag build
 npm run cli -- rag status
 ```
 
-The source allowlist is declared in `knowledge/manifest.yaml`. The generated
-SQLite file is stored under the ignored `.theta_agent/` directory.
+The source allowlist is declared in `knowledge/manifest.yaml`. Structured
+Knowledge V1 is split across `knowledge/structured/v1.yaml`,
+`papers-models-v1.yaml`, and `papers-evaluation-v1.yaml`. Together they cover
+88 auditable objects across models, parameters, rules, recipes, metrics,
+failure modes, implementation capabilities, project constraints, conflicts,
+and paper sources. The generated SQLite file is stored under the ignored `.theta_agent/`
+directory. Retrieval combines exact scoped aliases, raw FTS, Chinese token FTS,
+and Chinese n-gram FTS with weighted RRF, authority adjustment, source caps,
+and model/parameter/preprocessing/evaluation/resource/failure/paper coverage.
 `npm run rag:build` is a convenience alias for the same governed command.
+
+Before planning, Hybrid RAG derives separate queries for model selection,
+hyperparameters, preprocessing, evaluation, resources, and failure diagnosis.
+It then performs a second candidate-specific retrieval pass and compiles the
+results into a hashed `EvidenceBundle`. The bundle records query traces,
+authority coverage, paper/implementation conflicts, and unresolved evidence
+gaps. MiniMax receives this bundle instead of an unstructured excerpt list.
+L1/L2 implementation evidence controls executability; L3/L4 papers can justify
+research choices but cannot override Capability Cards or Validator V2. The
+formal TrainingPlan binds hashes for the EvidenceBundle, Planner proposal, and
+Resolver decision so the approval can be audited later.
 
 ## Run
 
@@ -92,7 +142,30 @@ artifact and dataset roots, THETA configuration, the governed Python model
 catalog, GPU visibility, and optional MiniMax configuration. Every failed
 check includes a concrete remediation.
 
-MiniMax is optional and cannot make Runtime decisions. With no key, network
+MiniMax is optional. Its bounded Planner first returns a compact decision
+skeleton: model roles, at most three parameter candidates per model, and the
+experiment protocol. Preprocessing, evaluation, visualizations, defaults, and
+all executable fields are expanded locally from the catalog. This keeps the
+provider response small enough to parse reliably without transferring local
+authority to the model. A malformed skeleton receives one smaller JSON repair
+attempt. A mandatory second inference stage must call the local
+`select_evidence` function tool exactly once; each decision target's tool
+schema exposes only semantically compatible aliases from the current Evidence
+Bundle and returns canonical evidence IDs. Missing calls, unknown aliases,
+duplicate targets, or incomplete target coverage invalidate only the evidence
+stage and trigger one compact evidence retry; the accepted decision skeleton
+is not regenerated. MiniMax
+cannot make an unrelated citation valid merely by choosing an in-bundle ID:
+every binding is checked locally against the target model, parameter, purpose,
+THETA support status, and authority level. Accepted and rejected attempts emit
+an `EvidenceSelectionReceipt` that is stored with the plan review. An empty
+selection lowers confidence; the recommender never falls back to unrelated
+evidence to award `EVIDENCE_SUPPORTED`.
+MiniMax cannot resolve executable parameters, generate a
+command, set hashes or permissions, approve a plan, or start training. A
+deterministic Catalog Resolver projects the draft onto Capability Registry
+fields, then Validator V2 remains authoritative at plan validation, plan
+creation, Dry Run, and training start. With no key, network
 failure, timeout, invalid JSON, schema failure, illegal intent, an invented
 column, or a tool outside the state allowlist, the language layer falls back
 to deterministic behavior. It may interpret research answers, word the next
@@ -107,7 +180,13 @@ MINIMAX_API_KEY=
 MINIMAX_API_BASE=https://api.minimaxi.com/v1
 MINIMAX_MODEL=MiniMax-M2.7
 MINIMAX_TIMEOUT_MS=60000
+MINIMAX_PLANNER_TIMEOUT_MS=120000
 ```
+
+`MINIMAX_TIMEOUT_MS` controls normal conversational language calls.
+`MINIMAX_PLANNER_TIMEOUT_MS` controls only the bounded Planner and defaults to
+120 seconds, so a slow plan does not loosen the latency budget for ordinary
+Grilling turns.
 
 The key is ignored by Git. The compiled CLI loads `../.env` at startup, or the
 file selected by `THETA_ENV_FILE`. Existing process environment variables keep
@@ -171,7 +250,7 @@ npm run cli -- language question --text "What is the analysis unit" --field anal
 npm run cli -- language explain --model-id theta --score 84 --confidence high --reason-codes "THETA_NATIVE_MODEL,EVIDENCE_SUPPORTED"
 ```
 
-MiniMax output is advisory and schema-bound. A tool proposal is checked
+MiniMax output is candidate-only and schema-bound. A tool proposal is checked
 against a fixed read-only allowlist before local execution. MiniMax cannot
 mutate an FSM transition, alter system-observed dataset fields, approve a
 plan, or start training.
@@ -187,12 +266,37 @@ ResearchClarification becomes a research answer and ColumnConfirmation becomes
 a column answer. Outside a structured wait, normal text is classified and may
 invoke only status, evidence, local RAG search, or model catalog reads.
 
+Column roles are deliberately separate. `covariateColumns` are the only
+columns passed into STM or another covariate-aware model;
+`groupingColumns` are only for post-hoc comparison and presentation;
+`metadataColumns` are descriptive; `evaluationLabelColumns` are held out from
+training. One physical column may be both an explicitly confirmed training
+covariate and display group, but the CLI never promotes a display group into a
+covariate automatically. With MiniMax disabled, the first deterministic parse
+is only a review draft. Submit a second statement beginning with `确认：` before
+the FSM accepts it. Both provider and deterministic drafts are checked against
+sampled inferred types, text length, ID uniqueness, datetime parseability, and
+low-cardinality covariate/group characteristics.
+
 Use `/llm on` to grant bounded MiniMax consent for the current persisted
 session and `/llm off` to revoke it. `/answer`, `/columns`, `/history`, and
 `/brief` expose the conversational workflow explicitly. Existing `/start`,
 `/status`, `/why`, `/evidence`, `/plan`, `/approve`, `/save`, `/back`, and
 `/exit` commands remain available. Language consent never counts as plan or
-training approval.
+training approval. When `/llm on` precedes `/start`, the same session consent
+also enables `theta.plan.propose`; otherwise the FSM records a deterministic
+Planner draft with an explicit fallback reason.
+
+Use `/why model`, `/why parameters`, `/why protocol`, or `/why evidence` to
+inspect one decision layer without opening raw JSON. `/plan` shows the selected
+model's maturity, the reasons alternatives were not selected, uncertainty,
+and evidence-binding receipts. Long language/planning turns display staged
+progress while raw provider payloads remain in technical details.
+
+Capability Cards distinguish `production`, `experimental`, `incomplete`, and
+`unavailable` models. The current DTM is an executable but experimental dynamic
+neural implementation; plans must disclose that boundary and still require
+human approval.
 
 Conversation messages, structured interpretations, turn recovery metadata,
 and immutable ResearchBrief revisions share the selected Runtime SQLite file.
@@ -396,7 +500,18 @@ The request `idempotencyKey` is bound to the plan, both approvals, and the
 dry-run hash. Repeating a queued, running, completed, cancelled, or quarantined
 request returns the existing `TrainingReceipt`. A failed run is never restarted
 implicitly: create a new key and provide `retryOfTrainingRunId` plus a
-`retryReason`.
+`retryReason`. The same explicit retry protocol is allowed when execution
+completed but the persisted quality gate is `failed`; the original artifacts
+and receipt remain immutable.
+
+In the REPL, `/retry` has two governed forms. Before training, a terminal
+Planner/tool-contract failure creates a successor workflow Run linked by
+`recoveryOfRunId`, restores the ResearchBrief, rechecks the dataset hash and
+column types, and reruns planning with fresh approvals. After training, it
+creates a new training attempt only for execution failure or quality failure.
+`/reevaluate` does not train: it rebinds the current run-scoped artifact paths
+and recomputes the quality gate in memory without overwriting the original
+quality receipt.
 
 Read training progress, recent logs, artifacts, and events:
 
@@ -450,6 +565,8 @@ npm run test:contracts
 npm run test:policy
 npm run test:replay
 npm run test:rag-eval
+npm run test:knowledge-v1
+npm run test:planner
 npm run smoke:research-agent
 npm run smoke:recommendation-golden
 npm run smoke:planning-chain
@@ -501,6 +618,12 @@ visible `NO_EVIDENCE_AVAILABLE` result and never causes fabricated citations.
 The model catalog still comes from the THETA Bridge, while hard constraints,
 ranking, topic ranges, parameter recommendations, and relative resource
 estimates execute deterministically in TypeScript.
+
+Evaluation metrics are saved with `status`, `method`, `comparable`, and error
+provenance. A failed C_V, UMass, Exclusivity, or perplexity computation is
+reported as unavailable; another metric or a magic default is never written
+under its name. Training quality gates apply shared numerical checks plus
+model-specific DTM, STM, BERTopic, and HDP diagnostics.
 
 Dataset paths are resolved to their canonical filesystem location before the
 Bridge starts. The governed handlers reject missing files, directory escapes,

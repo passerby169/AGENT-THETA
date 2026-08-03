@@ -232,6 +232,7 @@ export const thetaDatasetInspectHandler: ToolHandler<unknown, ThetaDatasetInspec
   }
 
   const output = ensureDatasetInspectOutput(response.data);
+  const textColumn = output.textColumnCandidates[0]?.name;
   const [datasetSha256, fileInfo] = await Promise.all([
     sha256File(resolved.filePath),
     stat(resolved.filePath),
@@ -240,9 +241,9 @@ export const thetaDatasetInspectHandler: ToolHandler<unknown, ThetaDatasetInspec
     ...output,
     datasetSha256,
     fileSizeBytes: fileInfo.size,
-    sampleDuplicateRatio: sampleDuplicateRatio(output.sampleRows),
-    languageDistribution: sampleLanguageDistribution(output.sampleRows),
-    timeCoverage: sampleTimeCoverage(output.columnProfiles),
+    sampleDuplicateRatio: sampleDuplicateRatio(output.sampleRows, textColumn),
+    languageDistribution: sampleLanguageDistribution(output.sampleRows, textColumn),
+    timeCoverage: sampleTimeCoverage(output.sampleRows, output.columnProfiles),
   };
 };
 
@@ -256,17 +257,20 @@ const sha256File = async (filename: string): Promise<string> => {
 
 const sampleDuplicateRatio = (
   rows: Array<Record<string, unknown>>,
+  textColumn?: string,
 ): number => {
   if (rows.length === 0) return 0;
   const uniqueRows = new Set(
     rows.map((row) =>
-      JSON.stringify(
-        Object.fromEntries(
-          Object.entries(row).sort(([left], [right]) =>
-            left.localeCompare(right),
+      textColumn
+        ? String(row[textColumn] ?? '').trim()
+        : JSON.stringify(
+            Object.fromEntries(
+              Object.entries(row).sort(([left], [right]) =>
+                left.localeCompare(right),
+              ),
+            ),
           ),
-        ),
-      ),
     ),
   );
   return (rows.length - uniqueRows.size) / rows.length;
@@ -274,9 +278,12 @@ const sampleDuplicateRatio = (
 
 const sampleLanguageDistribution = (
   rows: Array<Record<string, unknown>>,
+  textColumn?: string,
 ): Array<{ language: string; ratio: number }> => {
   const text = rows
-    .flatMap((row) => Object.values(row))
+    .flatMap((row) =>
+      textColumn ? [row[textColumn]] : Object.values(row),
+    )
     .filter((value): value is string => typeof value === 'string')
     .join('');
   const cjkCount = [...text].filter((character) =>
@@ -298,15 +305,19 @@ const sampleLanguageDistribution = (
 };
 
 const sampleTimeCoverage = (
+  rows: Array<Record<string, unknown>>,
   profiles: ThetaDatasetColumnProfile[],
 ): { start: string | null; end: string | null } => {
-  const timestamps = profiles
+  const timeColumns = profiles
     .filter(
       (profile) =>
         profile.inferredType === 'datetime' ||
         /(date|time|created|updated|timestamp)/i.test(profile.name),
     )
-    .flatMap((profile) => profile.sampleValues)
+    .map((profile) => profile.name);
+  const timestamps = rows
+    .flatMap((row) => timeColumns.map((column) => row[column]))
+    .filter((value): value is string => typeof value === 'string')
     .map((value) => Date.parse(value))
     .filter((value) => Number.isFinite(value))
     .sort((left, right) => left - right);

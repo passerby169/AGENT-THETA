@@ -426,7 +426,8 @@ class BaselineTrainer:
     def train_lda(
         self,
         max_iter: int = 100,
-        learning_method: str = 'batch'
+        learning_method: str = 'batch',
+        random_state: int = 42,
     ) -> Dict[str, Any]:
         """
         Train LDA model
@@ -451,6 +452,7 @@ class BaselineTrainer:
             num_topics=self.num_topics,
             max_iter=max_iter,
             learning_method=learning_method,
+            random_state=random_state,
             dev_mode=True
         )
         
@@ -1255,7 +1257,8 @@ class BaselineTrainer:
         self,
         max_topics: int = 150,
         alpha: float = 1.0,
-        gamma: float = 1.0
+        gamma: float = 1.0,
+        random_state: int = 42,
     ) -> Dict[str, Any]:
         """Train HDP model"""
         print(f"\n{'='*60}")
@@ -1268,7 +1271,8 @@ class BaselineTrainer:
             vocab_size=self.vocab_size,
             max_topics=max_topics,
             alpha=alpha,
-            gamma=gamma
+            gamma=gamma,
+            random_state=random_state,
         )
         
         # Handle both sparse and dense matrices
@@ -1304,7 +1308,8 @@ class BaselineTrainer:
         self,
         max_iter: int = 100,
         covariates: Optional[np.ndarray] = None,
-        covariate_names: Optional[List[str]] = None
+        covariate_names: Optional[List[str]] = None,
+        random_state: int = 42,
     ) -> Dict[str, Any]:
         """Train STM model. Requires covariates (document-level metadata).
         
@@ -1328,7 +1333,8 @@ class BaselineTrainer:
         model = STM(
             vocab_size=self.vocab_size,
             num_topics=self.num_topics,
-            max_iter=max_iter
+            max_iter=max_iter,
+            random_state=random_state,
         )
         
         # Handle both sparse and dense matrices
@@ -1401,7 +1407,8 @@ class BaselineTrainer:
         self,
         n_iter: int = 100,
         alpha: float = 1.0,
-        beta: float = 0.01
+        beta: float = 0.01,
+        random_state: int = 42,
     ) -> Dict[str, Any]:
         """Train BTM model"""
         print(f"\n{'='*60}")
@@ -1415,7 +1422,8 @@ class BaselineTrainer:
             num_topics=self.num_topics,
             alpha=alpha,
             beta=beta,
-            n_iter=n_iter
+            n_iter=n_iter,
+            random_state=random_state,
         )
         
         # Handle both sparse and dense matrices

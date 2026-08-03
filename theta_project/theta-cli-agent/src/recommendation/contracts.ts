@@ -73,6 +73,7 @@ export const modelRecommendationSchema = z
     rank: z.number().int().positive(),
     modelId: z.string().min(1),
     modelName: z.string().min(1),
+    maturity: z.enum(["production", "experimental", "incomplete", "unavailable"]).default("production"),
     score: z.number().int().min(0).max(100),
     confidence: z.enum(["low", "medium", "high"]),
     reasonCodes: z.array(z.string().min(1)).min(1),
@@ -86,10 +87,20 @@ export const modelRecommendationSchema = z
     recommendedPlanPatch: z
       .object({
         modelId: z.string().min(1),
-        mode: z.enum(["zero_shot", "finetune", "supervised", "unsupervised"]),
-        numTopics: z.number().int().min(2).max(200),
-        batchSize: z.number().int().positive(),
-        epochs: z.number().int().positive(),
+        mode: z.enum(["zero_shot", "supervised", "unsupervised"]),
+        topicCountMode: z
+          .enum(["fixed", "auto", "target_reduction"])
+          .default("fixed"),
+        numTopics: z.number().int().min(2).max(200).nullable().optional(),
+        maxTopics: z.number().int().min(2).max(1000).nullable().optional(),
+        batchSize: z.number().int().positive().optional(),
+        epochs: z.number().int().positive().optional(),
+        nNeighbors: z.number().int().min(2).max(100).optional(),
+        nComponents: z.number().int().min(2).max(50).optional(),
+        minClusterSize: z.number().int().min(2).max(100).optional(),
+        minSamples: z.number().int().positive().nullable().optional(),
+        topNWords: z.number().int().min(1).max(30).optional(),
+        randomState: z.number().int().optional(),
       })
       .strict(),
   })

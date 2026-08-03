@@ -44,6 +44,10 @@ import {
   thetaPlanValidateToolSpec,
 } from "./plan-validate-tool.js";
 import {
+  thetaPlanProposeHandler,
+  thetaPlanProposeToolSpec,
+} from "./plan-propose-tool.js";
+import {
   thetaTrainingDryRunHandler,
   thetaTrainingDryRunToolSpec,
 } from "./training-dry-run-tool.js";
@@ -81,6 +85,7 @@ export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaRagIndexToolSpec,
   thetaRagStatusToolSpec,
   thetaRagSearchToolSpec,
+  thetaPlanProposeToolSpec,
   thetaPlanValidateToolSpec,
   thetaPlanCreateToolSpec,
   thetaPlanApproveToolSpec,
@@ -139,6 +144,9 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
     replace: true,
   });
   registry.register(thetaLanguageGenerateToolSpec, thetaLanguageGenerateHandler, {
+    replace: true,
+  });
+  registry.register(thetaPlanProposeToolSpec, thetaPlanProposeHandler, {
     replace: true,
   });
   registry.register(

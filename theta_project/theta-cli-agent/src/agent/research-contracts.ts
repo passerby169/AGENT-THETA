@@ -20,6 +20,7 @@ export const researchBriefSchema = z
       .optional(),
     language: optionalText,
     comparisonGroups: z.array(z.string().trim().min(1)).default([]),
+    comparisonIntent: z.enum(['unknown', 'none', 'groups']).optional(),
     topicGranularity: z.enum(['broad', 'medium', 'fine']).optional(),
     knownBiases: z.array(z.string().trim().min(1)).default([]),
     sensitiveData: z
@@ -105,8 +106,25 @@ export const datasetProfileSchema = z
     format: z.string().min(1),
     encoding: z.string().min(1),
     rowCount: z.number().int().nonnegative(),
+    sampledRowCount: z.number().int().nonnegative().default(0),
+    profileScope: z.enum(['full', 'sample']).default('sample'),
+    estimationWarnings: z.array(z.string().min(1)).default([]),
     columnCount: z.number().int().nonnegative(),
     columns: z.array(z.string()),
+    columnProfiles: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            inferredType: z.enum(['empty', 'number', 'datetime', 'text', 'string']),
+            nonEmptySampleCount: z.number().int().nonnegative(),
+            uniqueSampleCount: z.number().int().nonnegative(),
+            avgLength: z.number().nonnegative(),
+            maxLength: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .default([]),
     missingRatio: z.number().min(0).max(1),
     duplicateRatio: z.number().min(0).max(1).nullable(),
     textLengthDistribution: z
@@ -147,7 +165,13 @@ export const columnConfirmationDraftSchema = z
     textColumns: z.array(z.string().min(1)).min(1),
     timeColumn: z.string().min(1).nullable().default(null),
     idColumn: z.string().min(1).nullable().default(null),
+    // covariateColumns are the only columns passed into models such as STM.
+    // metadataColumns are descriptive only; grouping columns are post-hoc
+    // presentation fields; evaluation labels are held out from training.
+    covariateColumns: z.array(z.string().min(1)).optional(),
     metadataColumns: z.array(z.string().min(1)).default([]),
+    groupingColumns: z.array(z.string().min(1)).optional(),
+    evaluationLabelColumns: z.array(z.string().min(1)).optional(),
   })
   .strict();
 

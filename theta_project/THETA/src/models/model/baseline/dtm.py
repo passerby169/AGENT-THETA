@@ -1,9 +1,11 @@
 """
 DTM (Dynamic Topic Model)
 
-Topic model supporting time series, can track topic evolution over time.
+Experimental dynamic neural topic model for descriptive temporal analysis.
 
-TODO: This is a pseudo-code framework, needs further implementation
+The implementation learns time-conditioned document-topic distributions and
+smoothly evolving topic embeddings. It is not a forecasting implementation of
+classic LDA-Seq and must not be presented as one.
 """
 
 import torch
@@ -113,7 +115,9 @@ class DTMDecoder(nn.Module):
         num_topics: int = 20,
         time_slices: int = 10,
         embedding_dim: int = 1024,
-        word_embeddings: Optional[torch.Tensor] = None
+        word_embeddings: Optional[torch.Tensor] = None,
+        train_word_embeddings: bool = False,
+        logit_scale: float = 10.0,
     ):
         super().__init__()
         
@@ -124,23 +128,28 @@ class DTMDecoder(nn.Module):
         
         # Word embeddings
         if word_embeddings is not None:
-            self.word_embeddings = nn.Parameter(word_embeddings, requires_grad=False)
+            self.word_embeddings = nn.Parameter(
+                word_embeddings,
+                requires_grad=train_word_embeddings,
+            )
         else:
-            self.word_embeddings = nn.Parameter(torch.randn(vocab_size, embedding_dim))
+            self.word_embeddings = nn.Parameter(
+                torch.randn(vocab_size, embedding_dim) * 0.02,
+            )
         
         # Time-dependent topic embeddings
         # Each time slice has its own topic vectors
         self.topic_embeddings = nn.Parameter(
-            torch.randn(time_slices, num_topics, embedding_dim)
+            torch.randn(time_slices, num_topics, embedding_dim) * 0.02,
         )
-        
-        # Topic evolution network (optional: model smooth topic changes over time)
-        self.topic_evolution = nn.GRU(
-            input_size=embedding_dim,
-            hidden_size=embedding_dim,
-            num_layers=1,
-            batch_first=True
-        )
+        self.logit_scale = nn.Parameter(torch.tensor(float(np.log(logit_scale))))
+
+    def _beta_from_embeddings(self, topic_embeddings: torch.Tensor) -> torch.Tensor:
+        """Map topic/word embeddings to a numerically stable probability simplex."""
+        topics = F.normalize(topic_embeddings, p=2, dim=-1, eps=1e-8)
+        words = F.normalize(self.word_embeddings, p=2, dim=-1, eps=1e-8)
+        scale = self.logit_scale.exp().clamp(min=1.0, max=100.0)
+        return F.softmax(scale * torch.matmul(topics, words.t()), dim=-1)
     
     def get_beta(self, time_index: int = None) -> torch.Tensor:
         """
@@ -156,18 +165,10 @@ class DTMDecoder(nn.Module):
             # Topic embedding for specific time
             topic_emb = self.topic_embeddings[time_index]  # (num_topics, embedding_dim)
             # Compute similarity with word embeddings
-            beta = torch.mm(topic_emb, self.word_embeddings.t())  # (num_topics, vocab_size)
-            beta = F.softmax(beta, dim=-1)
-            return beta
+            return self._beta_from_embeddings(topic_emb)
         else:
             # Beta for all times
-            betas = []
-            for t in range(self.time_slices):
-                topic_emb = self.topic_embeddings[t]
-                beta = torch.mm(topic_emb, self.word_embeddings.t())
-                beta = F.softmax(beta, dim=-1)
-                betas.append(beta)
-            return torch.stack(betas, dim=0)  # (time_slices, num_topics, vocab_size)
+            return self._beta_from_embeddings(self.topic_embeddings)
     
     def forward(
         self,
@@ -184,16 +185,13 @@ class DTMDecoder(nn.Module):
         Returns:
             word_dist: Word distribution (batch, vocab_size)
         """
-        batch_size = theta.size(0)
-        word_dists = []
-        
-        for i in range(batch_size):
-            t = time_index[i].item()
-            beta = self.get_beta(t)  # (num_topics, vocab_size)
-            word_dist = torch.mm(theta[i:i+1], beta)  # (1, vocab_size)
-            word_dists.append(word_dist)
-        
-        return torch.cat(word_dists, dim=0)
+        if time_index.ndim != 1 or time_index.size(0) != theta.size(0):
+            raise ValueError("time_index must be a one-dimensional tensor aligned with theta")
+        if torch.any(time_index < 0) or torch.any(time_index >= self.time_slices):
+            raise ValueError("time_index contains a value outside the configured time slices")
+        all_beta = self.get_beta()  # (time_slices, num_topics, vocab_size)
+        selected_beta = all_beta.index_select(0, time_index)
+        return torch.bmm(theta.unsqueeze(1), selected_beta).squeeze(1)
 
 
 class DTM(nn.Module):
@@ -207,10 +205,10 @@ class DTM(nn.Module):
     
     Maintains consistent interface with ETM for unified calling
     
-    TODO: Complete the following features
-    - [ ] Smooth constraints for topic evolution
-    - [ ] Time series prediction
-    - [ ] Topic lifecycle analysis
+    Scope boundary:
+    - temporal smoothness is implemented in the training objective;
+    - forecasting and topic lifecycle inference are intentionally unsupported;
+    - the model remains experimental pending synthetic-corpus validation.
     """
     
     def __init__(
@@ -226,6 +224,7 @@ class DTM(nn.Module):
         train_word_embeddings: bool = False,
         kl_weight: float = 0.5,
         evolution_weight: float = 0.1,  # Topic evolution smooth constraint weight
+        evolution_acceleration_weight: float = 0.25,
         dev_mode: bool = False,
         **kwargs  # Accept extra parameters for interface compatibility
     ):
@@ -239,6 +238,7 @@ class DTM(nn.Module):
         self.hidden_dim = hidden_dim
         self.kl_weight = kl_weight
         self.evolution_weight = evolution_weight
+        self.evolution_acceleration_weight = evolution_acceleration_weight
         self.dev_mode = dev_mode
         
         # Encoder
@@ -256,7 +256,8 @@ class DTM(nn.Module):
             num_topics=num_topics,
             time_slices=time_slices,
             embedding_dim=word_embedding_dim,
-            word_embeddings=word_embeddings
+            word_embeddings=word_embeddings,
+            train_word_embeddings=train_word_embeddings,
         )
         
         if self.dev_mode:
@@ -332,11 +333,14 @@ class DTM(nn.Module):
         if self.time_slices < 2:
             return torch.tensor(0.0, device=topic_emb.device)
         
-        # Compute difference between adjacent time slices
-        diff = topic_emb[1:] - topic_emb[:-1]  # (time_slices-1, num_topics, embedding_dim)
-        evolution_loss = torch.mean(diff.pow(2))
-        
-        return evolution_loss
+        normalized = F.normalize(topic_emb, p=2, dim=-1, eps=1e-8)
+        velocity = normalized[1:] - normalized[:-1]
+        velocity_loss = torch.mean(velocity.pow(2))
+        if self.time_slices < 3:
+            return velocity_loss
+        acceleration = velocity[1:] - velocity[:-1]
+        acceleration_loss = torch.mean(acceleration.pow(2))
+        return velocity_loss + self.evolution_acceleration_weight * acceleration_loss
     
     def get_beta(self, time_index: int = None) -> torch.Tensor:
         """Get topic-word distribution"""

@@ -18,6 +18,7 @@ export interface ThetaModelCatalogOutput {
     params: Record<string, unknown>;
     runnable?: boolean;
     experimental?: boolean;
+    autoTopics?: boolean;
   }>;
   supportedModelIds: string[];
 }
@@ -53,6 +54,7 @@ const modelCatalogOutputSchema: JsonSchema = {
           params: { type: "object", additionalProperties: true },
           runnable: { type: "boolean" },
           experimental: { type: "boolean" },
+          autoTopics: { type: "boolean" },
         },
         additionalProperties: true,
       },

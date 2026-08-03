@@ -257,7 +257,10 @@ def dataset_inspect(payload: dict[str, Any]) -> dict[str, Any]:
         "sampleRowCount": len(table.rows),
         "columns": table.columns,
         "columnProfiles": profile,
-        "sampleRows": table.rows[: min(5, len(table.rows))],
+        # The tool output is not included in audit traces. Return the complete
+        # bounded analysis sample so downstream statistics are not calculated
+        # from only the five display rows.
+        "sampleRows": table.rows,
         "textColumnCandidates": detect_columns_from_table(table)["textColumns"],
     }
 
@@ -1024,6 +1027,9 @@ def training_dry_run(payload: dict[str, Any]) -> dict[str, Any]:
     dataset_path = resolve_dataset_path({"filePath": payload.get("datasetPath")})
     plan_id = required_mapping_text(plan_record, "planId", "plan")
     plan_hash = required_mapping_text(plan_record, "planHash", "plan")
+    canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
+    if sha256_json(canonical) != plan_hash:
+        raise ValueError("planHash does not match canonicalPlan")
     if plan_review.get("approvalType") != "human_plan_review":
         raise ValueError("planReview must be a HumanPlanReview receipt")
     if plan_review.get("planId") != plan_id or plan_review.get("planHash") != plan_hash:
@@ -1052,6 +1058,9 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
     training_review = require_mapping(payload.get("trainingReview"), "trainingReview")
     plan_id = required_mapping_text(plan_record, "planId", "plan")
     plan_hash = required_mapping_text(plan_record, "planHash", "plan")
+    canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
+    if sha256_json(canonical) != plan_hash:
+        raise ValueError("planHash does not match canonicalPlan")
     plan_review_id = required_mapping_text(plan_review, "approvalId", "planReview")
     training_review_id = required_mapping_text(training_review, "approvalId", "trainingReview")
     dry_run_hash = required_mapping_text(dry_run, "dryRunHash", "dryRun")
@@ -1086,6 +1095,39 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("dryRun.commands must not be empty")
     if not isinstance(expected_artifacts, list):
         raise ValueError("dryRun.expectedArtifacts must be an array")
+    dry_run_material = {
+        "planId": dry_run.get("planId"),
+        "planHash": dry_run.get("planHash"),
+        "planReviewApprovalId": dry_run.get("planReviewApprovalId"),
+        "passed": dry_run.get("passed"),
+        "checks": dry_run.get("checks"),
+        "commands": commands,
+        "expectedArtifacts": expected_artifacts,
+        "notes": dry_run.get("notes"),
+    }
+    if sha256_json(dry_run_material) != dry_run_hash:
+        raise ValueError("dryRunHash does not match the dry-run material")
+    prepare_commands = [
+        item
+        for item in commands
+        if isinstance(item, dict) and item.get("step") == "prepare_data"
+    ]
+    if len(prepare_commands) != 1:
+        raise ValueError("dryRun must contain exactly one prepare_data command")
+    prepare_argv = prepare_commands[0].get("argv")
+    if not isinstance(prepare_argv, list) or "--raw-input" not in prepare_argv:
+        raise ValueError("dryRun prepare_data command must bind --raw-input")
+    raw_input_index = prepare_argv.index("--raw-input") + 1
+    if raw_input_index >= len(prepare_argv):
+        raise ValueError("dryRun --raw-input is missing its path")
+    dataset_path = resolve_dataset_path({"filePath": prepare_argv[raw_input_index]})
+    resolved_plan = legacy_plan_from_record(plan_record, dataset_path)
+    resolved_commands = build_training_commands(resolved_plan)
+    resolved_artifacts = expected_training_artifacts(resolved_plan)
+    if stable_json(commands) != stable_json(resolved_commands):
+        raise ValueError("dryRun.commands do not match the canonical command compiler")
+    if stable_json(expected_artifacts) != stable_json(resolved_artifacts):
+        raise ValueError("dryRun.expectedArtifacts do not match the canonical plan")
 
     with connect_state_db() as conn:
         init_state_db(conn)
@@ -1137,8 +1179,16 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(
                     f"Unknown retryOfTrainingRunId: {retry_of_training_run_id}"
                 )
-            if str(prior["status"]) != "failed":
-                raise ValueError("Only failed training runs may be retried")
+            prior_status = str(prior["status"])
+            prior_quality = json.loads(prior["quality_json"] or "{}")
+            quality_failed = (
+                prior_status == "completed"
+                and str(prior_quality.get("status") or "") == "failed"
+            )
+            if prior_status != "failed" and not quality_failed:
+                raise ValueError(
+                    "Only execution-failed or completed quality-failed training runs may be retried"
+                )
             if prior["plan_id"] != plan_id or prior["plan_hash"] != plan_hash:
                 raise ValueError("Retry run does not bind the same canonical plan")
             if not retry_reason:
@@ -1149,6 +1199,11 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
 
         run_hash = sha256_json({"idempotencyKey": idempotency_key})
         training_run_id = f"run_{run_hash[:12]}"
+        runtime_commands, runtime_expected_artifacts = bind_training_run_namespace(
+            commands,
+            expected_artifacts,
+            training_run_id,
+        )
         now = utc_now_iso()
         run_dir = RUNS_DIR / training_run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1180,8 +1235,8 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
                 retry_reason,
                 "queued",
                 0,
-                stable_json(commands),
-                stable_json(expected_artifacts),
+                stable_json(runtime_commands),
+                stable_json(runtime_expected_artifacts),
                 "[]",
                 "",
                 "",
@@ -1331,12 +1386,24 @@ def training_status(payload: dict[str, Any]) -> dict[str, Any]:
         process_started=bool(row["pid"]),
         message="Current persisted training receipt.",
     )
+    reassessed = bool(payload.get("reassessQuality"))
+    if reassessed:
+        rebound_artifacts = bind_result_artifacts(
+            json.loads(row["result_json"] or "[]")
+        )
+        prior_quality = json.loads(row["quality_json"] or "{}")
+        model_id = str(prior_quality.get("modelId") or "unknown")
+        receipt["resultArtifacts"] = rebound_artifacts
+        receipt["quality"] = assess_result_quality(rebound_artifacts, model_id)
+        receipt["message"] = "Quality was reassessed from current run-bound artifacts without retraining."
+    requested_log_limit = max(0, safe_int(payload.get("logLimit"), 80))
     return {
         "trainingRunId": row["training_run_id"],
         "found": True,
         "receipt": receipt,
         "status": row["status"],
-        "logs": tail_log_lines(row["log_path"], limit=safe_int(payload.get("logLimit"), 80) or 80),
+        "reassessed": reassessed,
+        "logs": tail_log_lines(row["log_path"], limit=requested_log_limit),
         "events": [
             {
                 "type": event["event_type"],
@@ -2610,23 +2677,141 @@ def legacy_plan_from_record(plan_record: dict[str, Any], dataset_path: Path) -> 
     model = require_mapping(canonical.get("model"), "plan.canonicalPlan.model")
     columns = require_mapping(canonical.get("columns"), "plan.canonicalPlan.columns")
     resources = require_mapping(canonical.get("resources"), "plan.canonicalPlan.resources")
+    experiment_protocol = require_mapping(
+        canonical.get("experimentProtocol") or {
+            "mode": "quick",
+            "primarySeeds": [42],
+            "baselineModelId": None,
+            "baselineSeeds": [],
+            "rationale": "Legacy plan: one primary-model quick run.",
+            "evidenceRefs": [],
+            "confidence": "low",
+        },
+        "plan.canonicalPlan.experimentProtocol",
+    )
     parameters = require_mapping(model.get("parameters") or {}, "plan.canonicalPlan.model.parameters")
     text_columns = columns.get("textColumns") or []
     if not isinstance(text_columns, list) or not text_columns:
         raise ValueError("plan.canonicalPlan.columns.textColumns must not be empty")
+    validate_canonical_model_semantics(model, parameters)
     device = str(resources.get("device") or "unknown")
+    plan_hash = normalize_optional_string(plan_record.get("planHash")) or sha256_json(canonical)
     return {
+        "planId": normalize_optional_string(plan_record.get("planId")) or f"plan_{plan_hash[:16]}",
+        "planHash": plan_hash,
+        # Stable, filesystem-safe experiment identity. A canonical plan always
+        # writes into its own result directory, so stale output cannot satisfy it.
+        "experimentId": "approved_plan",
         "datasetId": required_mapping_text(canonical, "datasetId", "plan.canonicalPlan"),
         "modelId": required_mapping_text(model, "modelId", "plan.canonicalPlan.model"),
         "mode": required_mapping_text(model, "mode", "plan.canonicalPlan.model"),
+        "topicCountMode": str(model.get("topicCountMode") or "fixed"),
         "numTopics": model.get("numTopics"),
+        "maxTopics": model.get("maxTopics"),
         "textColumn": str(text_columns[0]),
         "timeColumn": columns.get("timeColumn"),
+        "covariateColumns": columns.get("covariateColumns") or [],
         "metadataColumns": columns.get("metadataColumns") or [],
+        "groupingColumns": columns.get("groupingColumns") or [],
+        "evaluationLabelColumns": columns.get("evaluationLabelColumns") or [],
         "rawInput": str(dataset_path),
         "gpu": 0 if device == "gpu" else -1,
+        "experimentProtocol": experiment_protocol,
         **parameters,
     }
+
+
+def validate_canonical_model_semantics(
+    model: dict[str, Any],
+    parameters: dict[str, Any],
+) -> None:
+    model_id = required_mapping_text(model, "modelId", "plan.canonicalPlan.model").lower()
+    mode = required_mapping_text(model, "mode", "plan.canonicalPlan.model")
+    if model_id == "theta":
+        if mode not in {"zero_shot", "supervised", "unsupervised"}:
+            raise ValueError(f"THETA mode is not supported: {mode}")
+    elif mode != "unsupervised":
+        raise ValueError(f"Model '{model_id}' only supports unsupervised mode")
+
+    topic_mode = str(model.get("topicCountMode") or "fixed")
+    num_topics = model.get("numTopics")
+    max_topics = model.get("maxTopics")
+    if model_id == "hdp":
+        if topic_mode != "auto" or num_topics is not None:
+            raise ValueError("HDP requires topicCountMode=auto and numTopics=null")
+        if not isinstance(max_topics, int) or isinstance(max_topics, bool) or not 2 <= max_topics <= 1000:
+            raise ValueError("HDP maxTopics must be an integer between 2 and 1000")
+    elif model_id == "bertopic":
+        if topic_mode not in {"auto", "target_reduction"}:
+            raise ValueError("BERTopic requires auto or target_reduction topic mode")
+        if topic_mode == "auto" and num_topics is not None:
+            raise ValueError("BERTopic auto mode requires numTopics=null")
+        if topic_mode == "target_reduction" and (
+            not isinstance(num_topics, int)
+            or isinstance(num_topics, bool)
+            or not 2 <= num_topics <= 200
+        ):
+            raise ValueError("BERTopic target_reduction requires numTopics between 2 and 200")
+    else:
+        if topic_mode != "fixed":
+            raise ValueError(f"Model '{model_id}' requires topicCountMode=fixed")
+        if (
+            not isinstance(num_topics, int)
+            or isinstance(num_topics, bool)
+            or not 2 <= num_topics <= 200
+        ):
+            raise ValueError("Fixed topic mode requires numTopics between 2 and 200")
+
+    allowed_parameters = {
+        "lda": set(),
+        "btm": {"epochs"},
+        "hdp": set(),
+        "dtm": {"epochs", "batchSize"},
+        "stm": set(),
+        "bertopic": {
+            "nNeighbors",
+            "nComponents",
+            "minClusterSize",
+            "minSamples",
+            "topNWords",
+            "randomState",
+        },
+        "theta": {"modelSize", "epochs", "batchSize"},
+    }
+    allowed = allowed_parameters.get(model_id)
+    if allowed is None:
+        raise ValueError(f"Model '{model_id}' has no Validator V2 capability contract")
+    unsupported = sorted(set(parameters) - allowed)
+    if unsupported:
+        raise ValueError(
+            f"Parameters are not supported for model '{model_id}': {', '.join(unsupported)}"
+        )
+    integer_ranges = {
+        "epochs": (1, None),
+        "batchSize": (1, None),
+        "nNeighbors": (2, 100),
+        "nComponents": (2, 50),
+        "minClusterSize": (2, 100),
+        "minSamples": (1, None),
+        "topNWords": (1, 30),
+        "randomState": (None, None),
+    }
+    for name, value in parameters.items():
+        if name == "modelSize":
+            if value not in {"0.6B", "4B", "8B"}:
+                raise ValueError("modelSize must be one of 0.6B, 4B, 8B")
+            continue
+        if name not in integer_ranges:
+            continue
+        if name == "minSamples" and value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"Parameter '{name}' must be an integer")
+        minimum, maximum = integer_ranges[name]
+        if minimum is not None and value < minimum:
+            raise ValueError(f"Parameter '{name}' must be at least {minimum}")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"Parameter '{name}' must be at most {maximum}")
 
 
 def training_preflight_checks(
@@ -2656,6 +2841,26 @@ def training_preflight_checks(
         for name in required_python_modules
         if importlib.util.find_spec(name) is None
     ]
+    model_python_modules = {
+        "hdp": ("gensim",),
+        "bertopic": ("bertopic", "sentence_transformers", "umap", "hdbscan"),
+    }
+    missing_model_modules = [
+        name
+        for name in model_python_modules.get(model_id, ())
+        if importlib.util.find_spec(name) is None
+    ]
+    offline_assets_ready = True
+    offline_assets_detail = "No model-specific offline asset check is required."
+    if model_id == "bertopic" and not resources.get("networkAllowed"):
+        configured_sbert = str(os.environ.get("SBERT_MODEL_PATH") or "").strip()
+        sbert_path = Path(configured_sbert) if configured_sbert else None
+        offline_assets_ready = bool(sbert_path and sbert_path.exists())
+        offline_assets_detail = (
+            f"BERTopic will use local SBERT assets at {sbert_path.resolve()}."
+            if offline_assets_ready and sbert_path is not None
+            else "Offline BERTopic requires SBERT_MODEL_PATH to point to an existing local model directory."
+        )
     torch_available = importlib.util.find_spec("torch") is not None
     gpu_available = False
     if gpu_requested and torch_available:
@@ -2665,6 +2870,7 @@ def training_preflight_checks(
             gpu_available = bool(torch.cuda.is_available())
         except Exception:
             gpu_available = False
+    model_data_checks = training_dataset_semantic_checks(plan, dataset_path)
     return [
         {
             "code": "DATASET_EXISTS",
@@ -2694,10 +2900,15 @@ def training_preflight_checks(
         },
         {
             "code": "MODEL_DEPENDENCIES",
-            "status": "pass" if model_scripts_ready and runnable.get(model_id, False) else "fail",
-            "detail": "Model is runnable and THETA model scripts are available."
-            if model_scripts_ready and runnable.get(model_id, False)
-            else "Model is unavailable or THETA model scripts are missing.",
+            "status": "pass"
+            if model_scripts_ready and runnable.get(model_id, False) and not missing_model_modules
+            else "fail",
+            "detail": (
+                "Model is runnable and its Python dependencies are available."
+                if model_scripts_ready and runnable.get(model_id, False) and not missing_model_modules
+                else "Model is unavailable, scripts are missing, or Python modules are absent: "
+                + ", ".join(missing_model_modules)
+            ),
         },
         {
             "code": "COMMAND_WORKDIR_WRITABLE",
@@ -2727,7 +2938,153 @@ def training_preflight_checks(
             if resources.get("networkAllowed")
             else "Network access is disabled by the canonical plan.",
         },
+        {
+            "code": "OFFLINE_MODEL_ASSETS",
+            "status": "pass" if offline_assets_ready else "fail",
+            "detail": offline_assets_detail,
+        },
+        *model_data_checks,
     ]
+
+
+def training_dataset_semantic_checks(
+    plan: dict[str, Any],
+    dataset_path: Path,
+) -> list[dict[str, str]]:
+    model_id = str(plan.get("modelId") or "").lower()
+    text_column = str(plan.get("textColumn") or "").strip()
+    time_column = str(plan.get("timeColumn") or "").strip()
+    covariate_columns = [
+        str(value).strip()
+        for value in plan.get("covariateColumns") or []
+        if str(value).strip()
+    ]
+    try:
+        table = load_table({"filePath": str(dataset_path), "sampleSize": 500})
+    except Exception as exc:
+        return [
+            {
+                "code": "DATASET_SEMANTIC_READ",
+                "status": "fail",
+                "detail": f"Could not inspect dataset semantics: {exc}",
+            }
+        ]
+
+    checks: list[dict[str, str]] = []
+    if not text_column or text_column not in table.columns:
+        checks.append(
+            {
+                "code": "TEXT_COLUMN_DATA",
+                "status": "fail",
+                "detail": f"Bound text column '{text_column}' is absent from the dataset.",
+            }
+        )
+        return checks
+
+    texts = [
+        str(row.get(text_column) or "").strip()
+        for row in table.rows
+    ]
+    token_counts = [
+        len(re.findall(r"[\u3400-\u9fff]|[A-Za-z0-9_]+", text))
+        for text in texts
+    ]
+    nonempty_documents = sum(count > 0 for count in token_counts)
+    checks.append(
+        {
+            "code": "NONEMPTY_VOCABULARY_PROXY",
+            "status": "pass" if nonempty_documents > 0 else "fail",
+            "detail": (
+                f"{nonempty_documents} of {len(texts)} sampled documents contain lexical tokens."
+                if nonempty_documents > 0
+                else "No lexical tokens remain in the sampled text column."
+            ),
+        }
+    )
+
+    if model_id == "btm":
+        biterm_documents = sum(count >= 2 for count in token_counts)
+        checks.append(
+            {
+                "code": "BTM_BITERM_SUPPORT",
+                "status": "pass" if biterm_documents > 0 else "fail",
+                "detail": (
+                    f"{biterm_documents} sampled documents can form at least one biterm."
+                    if biterm_documents > 0
+                    else "No sampled document contains at least two lexical tokens; BTM cannot form biterms."
+                ),
+            }
+        )
+
+    if model_id == "dtm":
+        if not time_column or time_column not in table.columns:
+            checks.append(
+                {
+                    "code": "DTM_TIME_SLICES",
+                    "status": "fail",
+                    "detail": f"Bound time column '{time_column}' is absent from the dataset.",
+                }
+            )
+        else:
+            time_values = {
+                str(row.get(time_column) or "").strip()
+                for row in table.rows
+                if str(row.get(time_column) or "").strip()
+            }
+            checks.append(
+                {
+                    "code": "DTM_TIME_SLICES",
+                    "status": "pass" if len(time_values) >= 2 else "fail",
+                    "detail": (
+                        f"Sampled data contains {len(time_values)} distinct non-empty time values."
+                        if len(time_values) >= 2
+                        else "DTM requires at least two distinct non-empty time values."
+                    ),
+                }
+            )
+
+    if model_id == "stm":
+        missing_columns = [
+            column for column in covariate_columns if column not in table.columns
+        ]
+        if not covariate_columns or missing_columns:
+            checks.append(
+                {
+                    "code": "STM_METADATA_ALIGNMENT",
+                    "status": "fail",
+                    "detail": (
+                        "STM has no explicitly bound training covariate columns."
+                        if not covariate_columns
+                        else "STM covariate columns are absent: " + ", ".join(missing_columns)
+                    ),
+                }
+            )
+        else:
+            populated = sum(
+                any(str(row.get(column) or "").strip() for column in covariate_columns)
+                for row in table.rows
+            )
+            checks.append(
+                {
+                    "code": "STM_METADATA_ALIGNMENT",
+                    "status": "pass" if populated > 0 else "fail",
+                    "detail": (
+                        f"{populated} of {len(table.rows)} sampled rows contain bound metadata."
+                        if populated > 0
+                        else "All bound STM metadata values are empty in the sample."
+                    ),
+                }
+            )
+            if table.rows and populated / len(table.rows) < 0.5:
+                checks.append(
+                    {
+                        "code": "SEVERE_METADATA_SPARSITY",
+                        "status": "warn",
+                        "detail": "Fewer than half of sampled rows contain bound STM metadata.",
+                    }
+                )
+
+    return checks
 
 
 def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2735,13 +3092,17 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     model_id = str(plan.get("modelId")).lower()
     model_size = str(plan.get("modelSize") or "0.6B")
     mode = str(plan.get("mode") or "zero_shot")
-    num_topics = str(plan.get("numTopics") or 20)
+    topic_count_mode = str(plan.get("topicCountMode") or "fixed")
+    num_topics_value = plan.get("numTopics")
+    num_topics = str(num_topics_value if num_topics_value is not None else 20)
+    max_topics = str(plan.get("maxTopics") or 150)
     batch_size = str(plan.get("batchSize") or 64)
     epochs = str(plan.get("epochs") or 20)
     user_id = str(plan.get("userId") or "local_user")
     vocab_size = str(plan.get("vocabSize") or 5000)
     gpu = str(plan.get("gpu", -1))
     prepare_model = prepare_model_name(model_id)
+    experiment_id = str(plan.get("experimentId") or "approved_plan")
 
     prepare_cmd = [
         "python",
@@ -2779,52 +3140,90 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     if time_column:
         prepare_cmd.extend(["--with-time", "--time_column", str(time_column)])
 
-    covariates = plan.get("metadataColumns") or plan.get("covariateColumns") or []
+    covariates = plan.get("covariateColumns") or []
     if covariates:
         prepare_cmd.extend(["--covariate_columns", *[str(value) for value in covariates]])
 
-    train_cmd = [
-        "python",
-        "run_pipeline.py",
-        "--dataset",
-        dataset_id,
-        "--models",
-        model_id,
-        "--mode",
-        mode,
-        "--num_topics",
-        num_topics,
-        "--vocab_size",
-        vocab_size,
-        "--batch_size",
-        batch_size,
-        "--gpu",
-        gpu,
-        "--user_id",
-        user_id,
-        "--model_size",
-        model_size,
-        "--force",
-    ]
-    if model_id == "btm":
-        train_cmd.extend(["--n_iter", epochs])
-    else:
-        train_cmd.extend(["--epochs", epochs])
+    def experiment_command(
+        target_model: str,
+        seed: int,
+        suffix: str,
+    ) -> dict[str, Any]:
+        target_mode = mode if target_model == "theta" else "unsupervised"
+        argv = [
+            "python",
+            "run_pipeline.py",
+            "--dataset",
+            dataset_id,
+            "--models",
+            target_model,
+            "--mode",
+            target_mode,
+            "--vocab_size",
+            vocab_size,
+            "--batch_size",
+            batch_size,
+            "--gpu",
+            gpu,
+            "--user_id",
+            user_id,
+            "--model_size",
+            model_size,
+            "--force",
+            "--task_name",
+            f"{experiment_id}__{suffix}",
+        ]
+        if target_model == "hdp":
+            argv.extend(["--max_topics", max_topics])
+        elif target_model == "bertopic" and topic_count_mode == "auto":
+            argv.extend(["--num_topics", "0"])
+        else:
+            argv.extend(["--num_topics", num_topics])
 
-    return [
-        {
-            "step": "prepare_data",
+        if target_model == "bertopic":
+            bertopic_flags = {
+                "nNeighbors": ("--n_neighbors", 15),
+                "nComponents": ("--n_components", 5),
+                "minClusterSize": ("--min_cluster_size", 10),
+                "topNWords": ("--top_n_words", 10),
+            }
+            for plan_field, (flag, default) in bertopic_flags.items():
+                argv.extend([flag, str(plan.get(plan_field, default))])
+            if plan.get("minSamples") is not None:
+                argv.extend(["--min_samples", str(plan["minSamples"])])
+        if target_model == "btm":
+            argv.extend(["--n_iter", epochs])
+        elif target_model in {"theta", "dtm", "nvdm", "gsm", "prodlda", "ctm", "etm"}:
+            argv.extend(["--epochs", epochs])
+        argv.extend(["--random_state", str(seed)])
+        return {
+            "step": f"run_pipeline_{suffix}",
             "cwd": str(PROJECT_ROOT / "THETA" / "src" / "models"),
-            "argv": prepare_cmd,
-            "sideEffect": "writes local workspace matrices",
-        },
-        {
-            "step": "run_pipeline",
-            "cwd": str(PROJECT_ROOT / "THETA" / "src" / "models"),
-            "argv": train_cmd,
-            "sideEffect": "writes local model result artifacts",
-        },
-    ]
+            "argv": argv,
+            "sideEffect": "writes an isolated local model experiment",
+        }
+
+    protocol = normalized_experiment_protocol(plan)
+    experiments: list[dict[str, Any]] = []
+    baseline_model = protocol["baselineModelId"]
+    if baseline_model:
+        for seed in protocol["baselineSeeds"]:
+            experiments.append(
+                experiment_command(
+                    baseline_model,
+                    seed,
+                    f"baseline_{baseline_model}_s{seed}",
+                )
+            )
+    for seed in protocol["primarySeeds"]:
+        experiments.append(experiment_command(model_id, seed, f"primary_{model_id}_s{seed}"))
+
+    return [{
+        "step": "prepare_data",
+        "cwd": str(PROJECT_ROOT / "THETA" / "src" / "models"),
+        "argv": prepare_cmd,
+        "sideEffect": "writes local workspace matrices",
+    }, *experiments]
 
 
 def prepare_model_name(model_id: str) -> str:
@@ -2833,6 +3232,54 @@ def prepare_model_name(model_id: str) -> str:
     if model_id == "dtm":
         return "dtm"
     return "baseline"
+
+
+def normalized_experiment_protocol(plan: dict[str, Any]) -> dict[str, Any]:
+    raw = plan.get("experimentProtocol")
+    if not isinstance(raw, dict) or not raw:
+        return {
+            "mode": "quick",
+            "primarySeeds": [42],
+            "baselineModelId": None,
+            "baselineSeeds": [],
+        }
+    mode = str(raw.get("mode") or "").strip().lower()
+    primary_seeds = raw.get("primarySeeds")
+    baseline_seeds = raw.get("baselineSeeds")
+    baseline_model = normalize_optional_string(raw.get("baselineModelId")) or None
+    if mode not in {"quick", "comparative", "stability"}:
+        raise ValueError(f"Unsupported experiment protocol mode: {mode}")
+    if not isinstance(primary_seeds, list) or not primary_seeds:
+        raise ValueError("experimentProtocol.primarySeeds must not be empty")
+    if not isinstance(baseline_seeds, list):
+        raise ValueError("experimentProtocol.baselineSeeds must be an array")
+    for seed in [*primary_seeds, *baseline_seeds]:
+        if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 2_147_483_647:
+            raise ValueError("experiment protocol seeds must be non-negative integers")
+    if len(set(primary_seeds)) != len(primary_seeds) or len(set(baseline_seeds)) != len(baseline_seeds):
+        raise ValueError("experiment protocol seeds must be unique within each run group")
+    if mode == "quick" and (
+        len(primary_seeds) != 1 or baseline_model is not None or baseline_seeds
+    ):
+        raise ValueError("quick experiment protocol must contain one primary run and no baseline")
+    if mode == "comparative" and baseline_model is None:
+        raise ValueError("comparative experiment protocol requires a baseline model")
+    if mode == "stability" and len(primary_seeds) < 3:
+        raise ValueError("stability experiment protocol requires at least three primary seeds")
+    if baseline_model is None and baseline_seeds:
+        raise ValueError("baseline seeds require a baseline model")
+    if baseline_model is not None and not baseline_seeds:
+        raise ValueError("baseline model requires at least one seed")
+    if baseline_model == str(plan.get("modelId") or "").strip().lower():
+        raise ValueError("baseline model must differ from the primary model")
+    if len(primary_seeds) + len(baseline_seeds) > 6:
+        raise ValueError("experiment protocol may run at most six experiments")
+    return {
+        "mode": mode,
+        "primarySeeds": primary_seeds,
+        "baselineModelId": baseline_model.lower() if baseline_model else None,
+        "baselineSeeds": baseline_seeds,
+    }
 
 
 def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
@@ -2844,18 +3291,65 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
         if model_id == "dtm"
         else f"THETA/data/workspace/{dataset_id}/{user_id}"
     )
-    return [
-        {
-            "kind": "workspace",
-            "path": workspace_path,
-            "description": "Prepared matrices, vocabulary, approved time slices, metadata dimensions and optional embeddings.",
-        },
-        {
+    experiment_id = str(plan.get("experimentId") or "approved_plan")
+    artifacts = [{
+        "kind": "workspace",
+        "path": workspace_path,
+        "description": "Prepared matrices, vocabulary, approved time slices, metadata dimensions and optional embeddings.",
+    }]
+    protocol = normalized_experiment_protocol(plan)
+    baseline_model = protocol["baselineModelId"]
+    if baseline_model:
+        for seed in protocol["baselineSeeds"]:
+            artifacts.append({
+                "kind": "results_baseline",
+                "path": f"THETA/result/{user_id}/{dataset_id}/{baseline_model}/{experiment_id}__baseline_{baseline_model}_s{seed}",
+                "description": f"Plan-bound {baseline_model.upper()} comparison run (seed {seed}).",
+            })
+    for seed in protocol["primarySeeds"]:
+        artifacts.append({
             "kind": "results",
-            "path": f"THETA/result/{user_id}/{dataset_id}/{model_id}",
-            "description": "Model metrics, topic words, visualizations and exports.",
-        },
-    ]
+            "path": f"THETA/result/{user_id}/{dataset_id}/{model_id}/{experiment_id}__primary_{model_id}_s{seed}",
+            "description": f"Plan-bound primary-model run (seed {seed}).",
+        })
+    return artifacts
+
+
+def bind_training_run_namespace(
+    commands: list[dict[str, Any]],
+    expected_artifacts: list[dict[str, Any]],
+    training_run_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Replace the approved plan namespace with an attempt-specific namespace.
+
+    This only changes the output namespace; all model/data arguments remain the
+    ones reviewed in the dry run. Retries therefore cannot overwrite or inherit
+    another attempt's result directory.
+    """
+    runtime_commands = json.loads(stable_json(commands))
+    for command in runtime_commands:
+        argv = command.get("argv")
+        if not str(command.get("step") or "").startswith("run_pipeline_") or not isinstance(argv, list):
+            continue
+        if "--task_name" not in argv:
+            raise ValueError("run_pipeline command must bind --task_name")
+        index = argv.index("--task_name") + 1
+        if index >= len(argv):
+            raise ValueError("run_pipeline --task_name is missing its value")
+        current = str(argv[index])
+        suffix = current.split("__", 1)[1] if "__" in current else "primary"
+        argv[index] = f"{training_run_id}__{suffix}"
+
+    runtime_artifacts = json.loads(stable_json(expected_artifacts))
+    for artifact in runtime_artifacts:
+        if str(artifact.get("kind") or "").startswith("results"):
+            current_path = Path(str(artifact["path"]))
+            suffix = current_path.name.split("__", 1)[1] if "__" in current_path.name else "primary"
+            artifact["path"] = str(current_path.parent / f"{training_run_id}__{suffix}")
+            artifact["description"] = (
+                "Exact training-run-bound model metrics, topic words, visualizations and exports."
+            )
+    return runtime_commands, runtime_artifacts
 
 
 def bind_result_artifacts(expected_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2871,8 +3365,16 @@ def bind_result_artifacts(expected_artifacts: list[dict[str, Any]]) -> list[dict
             content_hash: str | None = sha256_file(artifact_path)
         elif artifact_path.is_dir():
             file_type = "directory"
-            size_bytes = None
-            content_hash = None
+            files = sorted(path for path in artifact_path.rglob("*") if path.is_file())
+            size_bytes = sum(path.stat().st_size for path in files)
+            tree_digest = hashlib.sha256()
+            for path in files:
+                relative = path.relative_to(artifact_path).as_posix()
+                tree_digest.update(relative.encode("utf-8"))
+                tree_digest.update(b"\0")
+                tree_digest.update(sha256_file(path).encode("ascii"))
+                tree_digest.update(b"\n")
+            content_hash = tree_digest.hexdigest()
         else:
             file_type = "missing"
             size_bytes = None
@@ -2891,11 +3393,261 @@ def bind_result_artifacts(expected_artifacts: list[dict[str, Any]]) -> list[dict
     return bound
 
 
+def assess_result_quality(
+    result_artifacts: list[dict[str, Any]],
+    model_id: str = "unknown",
+) -> dict[str, Any]:
+    """Run shared gates plus model-specific diagnostics on bound output."""
+    model_id = str(model_id or "unknown").strip().lower()
+    profile = {
+        "lda": {"unique_fail": 0.4, "unique_warn": 0.6, "variation_fail": 1e-4, "variation_warn": 1e-3},
+        "btm": {"unique_fail": 0.35, "unique_warn": 0.55, "variation_fail": 1e-4, "variation_warn": 1e-3},
+        "hdp": {"unique_fail": 0.4, "unique_warn": 0.6, "variation_fail": 1e-5, "variation_warn": 5e-4},
+        "dtm": {"unique_fail": 0.4, "unique_warn": 0.65, "variation_fail": 1e-4, "variation_warn": 1e-3},
+        "stm": {"unique_fail": 0.4, "unique_warn": 0.6, "variation_fail": 1e-4, "variation_warn": 1e-3},
+        "bertopic": {"unique_fail": 0.5, "unique_warn": 0.7, "variation_fail": 1e-5, "variation_warn": 5e-4},
+        "theta": {"unique_fail": 0.5, "unique_warn": 0.7, "variation_fail": 1e-4, "variation_warn": 1e-3},
+    }.get(model_id, {"unique_fail": 0.4, "unique_warn": 0.6, "variation_fail": 1e-4, "variation_warn": 1e-3})
+    checks: list[dict[str, Any]] = []
+    result_dirs = [
+        Path(str(item["path"]))
+        for item in result_artifacts
+        if item.get("kind") == "results" and item.get("exists")
+    ]
+    workspace_dirs = [
+        Path(str(item["path"]))
+        for item in result_artifacts
+        if item.get("kind") == "workspace" and item.get("exists")
+    ]
+    if not result_dirs:
+        return {
+            "status": "failed",
+            "checks": [{
+                "code": "RESULT_DIRECTORY_MISSING",
+                "status": "fail",
+                "detail": "The run-bound result directory is missing.",
+            }],
+            "assessedAt": utc_now_iso(),
+            "modelId": model_id,
+            "profileVersion": "2.1.0",
+        }
+
+    result_dir = result_dirs[0]
+    topic_files = sorted(result_dir.rglob("topic_words*.json"))
+    theta_files = sorted(result_dir.rglob("theta*.npy"))
+    beta_files = sorted(result_dir.rglob("beta*.npy"))
+    signatures: list[tuple[str, ...]] = []
+    for topic_file in topic_files:
+        try:
+            payload = json.loads(topic_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        values = list(payload.values()) if isinstance(payload, dict) else payload
+        if not isinstance(values, list):
+            continue
+        for words in values:
+            if isinstance(words, list):
+                signatures.append(tuple(str(word).strip().lower() for word in words[:10]))
+    signature_source = "topic_words"
+    if not signatures and beta_files and workspace_dirs:
+        try:
+            import numpy as np
+
+            vocab_files = sorted(
+                path
+                for workspace_dir in workspace_dirs
+                for path in workspace_dir.rglob("vocab.json")
+            )
+            if vocab_files:
+                vocab_payload = json.loads(vocab_files[0].read_text(encoding="utf-8"))
+                if isinstance(vocab_payload, list):
+                    vocab = [str(item) for item in vocab_payload]
+                elif isinstance(vocab_payload, dict):
+                    candidate = vocab_payload.get("vocab")
+                    if isinstance(candidate, list):
+                        vocab = [str(item) for item in candidate]
+                    else:
+                        indexed = sorted(
+                            (
+                                (int(index), str(word))
+                                for word, index in vocab_payload.items()
+                                if isinstance(index, int) or str(index).isdigit()
+                            ),
+                            key=lambda item: item[0],
+                        )
+                        vocab = [word for _, word in indexed]
+                else:
+                    vocab = []
+                beta = np.load(beta_files[0], allow_pickle=False)
+                if beta.ndim == 3:
+                    beta = beta[-1]
+                if beta.ndim == 2 and vocab and beta.shape[1] <= len(vocab):
+                    for row in beta:
+                        top_indices = np.argsort(row)[::-1][:10]
+                        signatures.append(
+                            tuple(vocab[int(index)].strip().lower() for index in top_indices)
+                        )
+                    signature_source = "beta+vocab"
+        except (ImportError, OSError, ValueError, json.JSONDecodeError):
+            signatures = []
+    checks.append({
+        "code": "CORE_OUTPUTS_PRESENT",
+        "status": "pass" if signatures and theta_files and beta_files else "fail",
+        "detail": (
+            f"topic signatures={len(signatures)} ({signature_source}), "
+            f"theta files={len(theta_files)}, beta files={len(beta_files)}"
+        ),
+    })
+    if signatures:
+        unique_ratio = len(set(signatures)) / len(signatures)
+        checks.append({
+            "code": "TOPIC_DIVERSITY",
+            "status": "fail" if unique_ratio < profile["unique_fail"] else ("warn" if unique_ratio < profile["unique_warn"] else "pass"),
+            "detail": f"{len(set(signatures))}/{len(signatures)} unique top-word signatures ({unique_ratio:.3f}).",
+            "value": unique_ratio,
+        })
+    else:
+        checks.append({
+            "code": "TOPIC_DIVERSITY",
+            "status": "fail",
+            "detail": "No readable topic-word signatures were found.",
+        })
+
+    try:
+        import numpy as np
+
+        numeric_ok = True
+        variation_values: list[float] = []
+        for array_path in [*theta_files, *beta_files]:
+            array = np.load(array_path, allow_pickle=False)
+            numeric_ok = numeric_ok and bool(np.isfinite(array).all())
+            if array_path in theta_files and array.ndim == 2 and array.shape[0] > 1:
+                variation_values.append(float(np.mean(np.std(array, axis=0))))
+        checks.append({
+            "code": "NUMERICAL_FINITE",
+            "status": "pass" if numeric_ok else "fail",
+            "detail": "All theta/beta arrays are finite." if numeric_ok else "NaN or infinite values found in theta/beta arrays.",
+        })
+        if variation_values:
+            variation = min(variation_values)
+            checks.append({
+                "code": "DOCUMENT_TOPIC_VARIATION",
+                "status": "fail" if variation < profile["variation_fail"] else ("warn" if variation < profile["variation_warn"] else "pass"),
+                "detail": f"Mean document-topic standard deviation={variation:.6g}.",
+                "value": variation,
+            })
+
+        # Model-specific gates are intentionally artifact-derived and never
+        # substitute one metric for another.
+        if model_id == "dtm":
+            temporal_files = sorted(result_dir.rglob("beta_over_time*.npy"))
+            if not temporal_files:
+                checks.append({
+                    "code": "DTM_TEMPORAL_OUTPUT_PRESENT",
+                    "status": "fail",
+                    "detail": "DTM did not produce beta_over_time.",
+                })
+            else:
+                temporal_beta = np.load(temporal_files[0], allow_pickle=False)
+                valid_shape = temporal_beta.ndim == 3 and temporal_beta.shape[0] >= 2
+                checks.append({
+                    "code": "DTM_TEMPORAL_OUTPUT_PRESENT",
+                    "status": "pass" if valid_shape else "fail",
+                    "detail": f"beta_over_time shape={tuple(temporal_beta.shape)}.",
+                })
+                if valid_shape and np.isfinite(temporal_beta).all():
+                    delta = float(np.mean(np.abs(temporal_beta[1:] - temporal_beta[:-1])))
+                    checks.append({
+                        "code": "DTM_ADJACENT_SLICE_CHANGE",
+                        "status": "warn" if delta < 1e-7 or delta > 0.05 else "pass",
+                        "detail": f"Mean adjacent topic-word absolute change={delta:.6g}; extreme values require review.",
+                        "value": delta,
+                    })
+        elif model_id == "stm":
+            covariate_files = sorted(result_dir.rglob("covariate_info*.json"))
+            checks.append({
+                "code": "STM_COVARIATE_OUTPUT_PRESENT",
+                "status": "pass" if covariate_files else "fail",
+                "detail": f"covariate info files={len(covariate_files)}.",
+            })
+        elif model_id == "bertopic" and theta_files:
+            theta = np.load(theta_files[0], allow_pickle=False)
+            empty_ratio = float(np.mean(np.sum(theta, axis=1) <= 1e-8)) if theta.ndim == 2 else 1.0
+            checks.append({
+                "code": "BERTOPIC_UNASSIGNED_DOCUMENT_RATIO",
+                "status": "fail" if empty_ratio > 0.5 else ("warn" if empty_ratio > 0.2 else "pass"),
+                "detail": f"Documents without topic mass={empty_ratio:.3f}.",
+                "value": empty_ratio,
+            })
+        elif model_id == "hdp" and theta_files:
+            theta = np.load(theta_files[0], allow_pickle=False)
+            effective_topics = int(np.sum(np.mean(theta, axis=0) >= 1e-4)) if theta.ndim == 2 else 0
+            checks.append({
+                "code": "HDP_EFFECTIVE_TOPIC_COUNT",
+                "status": "fail" if effective_topics < 2 else "pass",
+                "detail": f"Effective topics with mean mass >=1e-4: {effective_topics}.",
+                "value": effective_topics,
+            })
+    except (ImportError, OSError, ValueError) as exc:
+        checks.append({
+            "code": "NUMERICAL_FINITE",
+            "status": "warn",
+            "detail": f"Numerical quality check could not run: {exc}",
+        })
+
+    seed_topic_sets: list[list[set[str]]] = []
+    for seed_dir in result_dirs:
+        seed_files = sorted(seed_dir.rglob("topic_words*.json"))
+        if not seed_files:
+            continue
+        try:
+            payload = json.loads(seed_files[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        values = list(payload.values()) if isinstance(payload, dict) else payload
+        if isinstance(values, list):
+            seed_topic_sets.append([
+                {str(word).strip().lower() for word in words[:10]}
+                for words in values
+                if isinstance(words, list)
+            ])
+    if len(seed_topic_sets) >= 2:
+        similarities: list[float] = []
+        reference = seed_topic_sets[0]
+        for candidate in seed_topic_sets[1:]:
+            for topic in reference:
+                best = max(
+                    (
+                        len(topic & other) / max(1, len(topic | other))
+                        for other in candidate
+                    ),
+                    default=0.0,
+                )
+                similarities.append(best)
+        stability = sum(similarities) / len(similarities) if similarities else 0.0
+        checks.append({
+            "code": "MULTI_SEED_TOPIC_STABILITY",
+            "status": "fail" if stability < 0.15 else ("warn" if stability < 0.3 else "pass"),
+            "detail": f"Mean best-match top-word Jaccard across seeds={stability:.3f}.",
+            "value": stability,
+        })
+
+    statuses = {str(check["status"]) for check in checks}
+    status = "failed" if "fail" in statuses else ("warning" if "warn" in statuses else "passed")
+    return {
+        "status": status,
+        "checks": checks,
+        "assessedAt": utc_now_iso(),
+        "modelId": model_id,
+        "profileVersion": "2.1.0",
+    }
+
+
 TRAINING_RUN_SELECT_COLUMNS = """
     training_run_id, plan_id, plan_hash, approval_id,
     plan_review_approval_id, training_review_approval_id, dry_run_hash,
     idempotency_key, attempt, retry_of_training_run_id, retry_reason,
-    status, progress, command_json, artifact_json, result_json,
+    status, progress, command_json, artifact_json, result_json, quality_json,
     cancellation_json, error_message, failure_json, quarantine_reason,
     pid, runner_pid, active_pid, current_step, log_path,
     python_executable, python_version, conda_environment,
@@ -2977,6 +3729,8 @@ def training_run_response(
         "analysisBindings": analysis_bindings_from_commands(commands),
         "expectedArtifacts": json.loads(row["artifact_json"]),
         "resultArtifacts": json.loads(row["result_json"] or "[]"),
+        "executionStatus": row["status"],
+        "quality": json.loads(row["quality_json"] or "{}"),
         "errorMessage": row["error_message"] or None,
         "failure": json.loads(row["failure_json"] or "null"),
         "quarantineReason": row["quarantine_reason"] or None,
@@ -3005,17 +3759,18 @@ def analysis_bindings_from_commands(commands: list[dict[str, Any]]) -> dict[str,
         index = prepare.index(flag) + 1
         return str(prepare[index]) if index < len(prepare) else None
 
-    metadata_columns: list[str] = []
+    covariate_columns: list[str] = []
     if "--covariate_columns" in prepare:
         index = prepare.index("--covariate_columns") + 1
         while index < len(prepare) and not str(prepare[index]).startswith("--"):
-            metadata_columns.append(str(prepare[index]))
+            covariate_columns.append(str(prepare[index]))
             index += 1
     return {
         "timeColumn": value_after("--time_column"),
-        "metadataColumns": metadata_columns,
+        "covariateColumns": covariate_columns,
+        "metadataColumns": [],
         "temporalArtifactsRequested": "--with-time" in prepare,
-        "groupArtifactsRequested": bool(metadata_columns),
+        "groupArtifactsRequested": bool(covariate_columns),
     }
 
 
@@ -3047,7 +3802,7 @@ def spawn_training_runner(training_run_id: str) -> int:
 
 
 def tail_log_lines(log_path: str | None, limit: int = 80) -> list[str]:
-    if not log_path:
+    if not log_path or limit <= 0:
         return []
     path = Path(log_path)
     if not path.exists():
@@ -3181,6 +3936,7 @@ def init_state_db(conn: sqlite3.Connection) -> None:
             command_json TEXT NOT NULL,
             artifact_json TEXT NOT NULL,
             result_json TEXT NOT NULL DEFAULT '[]',
+            quality_json TEXT NOT NULL DEFAULT '{}',
             cancellation_json TEXT NOT NULL DEFAULT '',
             error_message TEXT NOT NULL DEFAULT '',
             failure_json TEXT NOT NULL DEFAULT '',
@@ -3276,6 +4032,7 @@ def init_state_db(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "training_runs", "retry_reason", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "training_runs", "result_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "training_runs", "quality_json", "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, "training_runs", "failure_json", "TEXT NOT NULL DEFAULT ''")
     ensure_column(
         conn,

@@ -56,7 +56,7 @@ theta_project/Hypha/
 theta_project/theta-cli-agent/data/
 theta_project/data/
 theta_project/users/
-theta_project/THETA/data/
+theta_project/THETA/data/*
 theta_project/THETA/models/
 theta_project/THETA/result/
 theta_project/THETA/logs/

@@ -83,6 +83,7 @@ export class ThetaTurnOrchestrator {
             'classify_conversation_intent',
             'propose_readonly_tool',
             'compose_grounded_response',
+            'draft_training_plan',
           ],
           trainingApprovalGranted: false,
         },
@@ -172,6 +173,7 @@ export class ThetaTurnOrchestrator {
     const result = await this.deterministicExecutor.execute(command, {
       activeRunId,
       runtimeDb: context.runtimeDb,
+      plannerConsent: session.languageConsent,
     });
     if (result.activeRunId) {
       this.store.updateSession(context.sessionId, {
@@ -404,7 +406,11 @@ export class ThetaTurnOrchestrator {
       planAdjustment: adjustment,
     });
     const changed = Object.entries(adjustment)
-      .map(([field, value]) => `${planFieldLabel(field)}=${String(value)}`)
+      .map(([field, value]) =>
+        field === 'experimentProtocol'
+          ? experimentProtocolAdjustmentLabel(asRecord(value) ?? {})
+          : `${planFieldLabel(field)}=${String(value)}`,
+      )
       .join('，');
     const response = `已应用方案调整：${changed}。系统已重新验证候选计划，旧的待审批方案不会被直接复用。`;
     this.assistantMessage(context, runId, 'plan.adjusted', response);
@@ -452,6 +458,7 @@ export class ThetaTurnOrchestrator {
             time: profile.columnCandidates.time.map((item) => item.name),
             metadata: profile.columnCandidates.metadata.map((item) => item.name),
           },
+          columnProfiles: profile.columnProfiles,
           recentMessages: recent(this.store, context.sessionId, runId),
         },
         context.sessionId,
@@ -480,6 +487,9 @@ export class ThetaTurnOrchestrator {
             kind: 'columns.unresolved',
             explanation,
             columns: profile.columns,
+            ...(language.output.task === 'interpret_column_confirmation' && language.output.draft
+              ? { proposedDraft: language.output.draft }
+              : {}),
           },
           activeRunId: runId,
         };
@@ -491,7 +501,7 @@ export class ThetaTurnOrchestrator {
         approvedBy: 'local_user',
       });
       this.store.updateTurn(turn.turnId, 'fsm_resumed');
-      const response = `数据列已经确认：正文列 ${language.output.draft.textColumns.join('、')}，时间列 ${language.output.draft.timeColumn ?? '无'}，ID 列 ${language.output.draft.idColumn ?? '无'}，元数据列 ${language.output.draft.metadataColumns.join('、') || '无'}。`;
+      const response = `数据列已经确认：正文列 ${language.output.draft.textColumns.join('、')}，时间列 ${language.output.draft.timeColumn ?? '无'}，ID 列 ${language.output.draft.idColumn ?? '无'}，训练协变量 ${(language.output.draft.covariateColumns ?? []).join('、') || '无'}，描述元数据 ${language.output.draft.metadataColumns.join('、') || '无'}，展示分组 ${(language.output.draft.groupingColumns ?? []).join('、') || '无'}，评估标签 ${(language.output.draft.evaluationLabelColumns ?? []).join('、') || '无'}。`;
       this.assistantMessage(context, runId, 'columns.confirmed', response);
       this.store.updateTurn(turn.turnId, 'responded');
       return {
@@ -954,8 +964,22 @@ const requiredRun = (runId: string | undefined): string => {
 export const parsePlanAdjustment = (input: string): Record<string, unknown> => {
   const text = input.trim();
   const patch: Record<string, unknown> = {};
+  const baselineModelMatch =
+    text.match(
+      /(?:用|以)?\s*\b(BTM|LDA|HDP|DTM|STM|CTM|BERTopic|THETA)\b\s*(?:作为|做|当)?\s*(?:基线|对照)/iu,
+    ) ??
+    text.match(
+      /(?:基线|对照)(?:模型)?[^a-z0-9]{0,8}\b(BTM|LDA|HDP|DTM|STM|CTM|BERTopic|THETA)\b/iu,
+    );
+  const baselineModel = baselineModelMatch?.[1]?.toLowerCase();
   const topicMatch = text.match(
     /(?:主题(?:数|数量)?|topics?)[^\d]{0,12}(\d{1,3})/iu,
+  );
+  const maxTopicMatch = text.match(
+    /(?:最大主题数|主题上限|max(?:imum)?\s*topics?)[^\d]{0,12}(\d{1,4})/iu,
+  );
+  const targetTopicMatch = text.match(
+    /(?:缩减|归并|reduce)[^\d]{0,16}(\d{1,3})/iu,
   );
   const epochMatch = text.match(
     /(?:迭代(?:次数)?|训练轮次|epochs?)[^\d]{0,12}(\d{1,6})/iu,
@@ -964,12 +988,75 @@ export const parsePlanAdjustment = (input: string): Record<string, unknown> => {
     /(?:批大小|batch(?:\s*size)?)[^\d]{0,12}(\d{1,6})/iu,
   );
   const modelMatch = text.match(
-    /\b(BERTopic|BTM|CTM|DTM|ETM|GSM|HDP|LDA|NVDM|ProdLDA|STM|THETA)\b/iu,
+    /\b(BERTopic|BTM|CTM|DTM|ETM|GSM|HDP|LDA|NVDM|ProdLDA|STM|THETA|Top2Vec|TopicBERT)\b/iu,
   );
-  if (topicMatch) patch.numTopics = Number(topicMatch[1]);
+  const selectedModel = baselineModel ? undefined : modelMatch?.[1].toLowerCase();
+  if (
+    /(?:自动主题|自动决定主题|auto(?:matic)?\s*topics?)/iu.test(text) ||
+    selectedModel === 'hdp'
+  ) {
+    patch.topicCountMode = 'auto';
+    patch.numTopics = null;
+  }
+  if (selectedModel === 'bertopic' && !targetTopicMatch) {
+    patch.topicCountMode = 'auto';
+    patch.numTopics = null;
+  }
+  if (targetTopicMatch) {
+    patch.topicCountMode = 'target_reduction';
+    patch.numTopics = Number(targetTopicMatch[1]);
+  } else if (topicMatch && !maxTopicMatch && patch.topicCountMode !== 'auto') {
+    patch.topicCountMode = 'fixed';
+    patch.numTopics = Number(topicMatch[1]);
+  }
+  if (maxTopicMatch) patch.maxTopics = Number(maxTopicMatch[1]);
   if (epochMatch) patch.epochs = Number(epochMatch[1]);
   if (batchMatch) patch.batchSize = Number(batchMatch[1]);
-  if (modelMatch) patch.modelId = modelMatch[1].toLowerCase();
+  if (selectedModel) patch.modelId = selectedModel;
+  const seedValues = [
+    ...text.matchAll(/(?:随机种子|种子|seeds?)[^\d]{0,8}([\d、，,\s/]+)/giu),
+  ]
+    .flatMap((match) => (match[1]?.match(/\d+/gu) ?? []).map(Number))
+    .filter((value, index, values) =>
+      Number.isInteger(value) &&
+      value >= 0 &&
+      value <= 2_147_483_647 &&
+      values.indexOf(value) === index,
+    );
+  const quickRequested =
+    /(?:只|仅)?(?:运行|训练)?一次|单次(?:快速)?运行|quick\s*run|取消基线|移除基线|不要基线/iu.test(text);
+  const stabilityRequested = /稳定性|复验|多(?:随机)?种子|stability/iu.test(text);
+  if (quickRequested) {
+    patch.experimentProtocol = {
+      mode: 'quick',
+      primarySeeds: [seedValues[0] ?? 42],
+      baselineModelId: null,
+      baselineSeeds: [],
+      rationale: '用户要求先执行一次主模型快速运行。',
+      evidenceRefs: [],
+      confidence: 'high',
+    };
+  } else if (baselineModel) {
+    patch.experimentProtocol = {
+      mode: 'comparative',
+      primarySeeds: [seedValues[0] ?? 42],
+      baselineModelId: baselineModel,
+      baselineSeeds: [seedValues[1] ?? seedValues[0] ?? 42],
+      rationale: `用户要求将 ${baselineModel.toUpperCase()} 作为对照模型。`,
+      evidenceRefs: [],
+      confidence: 'high',
+    };
+  } else if (stabilityRequested) {
+    patch.experimentProtocol = {
+      mode: 'stability',
+      primarySeeds: seedValues.length >= 3 ? seedValues.slice(0, 5) : [17, 42, 73],
+      baselineModelId: null,
+      baselineSeeds: [],
+      rationale: '用户要求使用多个随机种子复验主模型稳定性。',
+      evidenceRefs: [],
+      confidence: 'high',
+    };
+  }
   if (/监督/iu.test(text) && !/无监督/iu.test(text)) {
     patch.mode = 'supervised';
   } else if (/无监督/iu.test(text)) {
@@ -977,7 +1064,7 @@ export const parsePlanAdjustment = (input: string): Record<string, unknown> => {
   }
   if (Object.keys(patch).length === 0) {
     throw new Error(
-      '没有识别出可调整项。请明确说明模型、主题数、迭代次数或批大小，例如“把主题数改成 8”。',
+      '没有识别出可调整项。请明确说明模型、主题数、实验次数或基线，例如“只运行一次，种子 42”“用 LDA 做对照”或“做三种子稳定性复验”。',
     );
   }
   return patch;
@@ -987,10 +1074,26 @@ const planFieldLabel = (field: string): string =>
   ({
     modelId: '模型',
     numTopics: '主题数',
+    maxTopics: '最大主题数',
+    topicCountMode: '主题数模式',
     epochs: '迭代次数',
     batchSize: '批大小',
     mode: '训练模式',
+    experimentProtocol: '实验设计',
   })[field] ?? field;
+
+const experimentProtocolAdjustmentLabel = (
+  protocol: Record<string, unknown>,
+): string => {
+  const mode = String(protocol.mode ?? 'quick');
+  const primarySeeds = Array.isArray(protocol.primarySeeds)
+    ? protocol.primarySeeds.join('、')
+    : '42';
+  const baseline = typeof protocol.baselineModelId === 'string'
+    ? `，对照 ${protocol.baselineModelId.toUpperCase()}（${Array.isArray(protocol.baselineSeeds) ? protocol.baselineSeeds.join('、') : '42'}）`
+    : '';
+  return `实验设计=${mode}，主模型种子 ${primarySeeds}${baseline}`;
+};
 
 const researchFieldLabel = (field: string): string =>
   ({
@@ -1001,6 +1104,7 @@ const researchFieldLabel = (field: string): string =>
     timeRange: '时间范围',
     language: '数据语言',
     comparisonGroups: '比较对象',
+    comparisonIntent: '比较需求',
     topicGranularity: '主题粒度',
     knownBiases: '已知偏差',
     sensitiveData: '敏感数据情况',

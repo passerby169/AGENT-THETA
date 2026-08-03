@@ -4,6 +4,7 @@ export const THETA_TOOL_IDS = {
   datasetCleanPreview: "theta.dataset.clean_preview",
   modelCatalog: "theta.model.catalog",
   modelRecommend: "theta.model.recommend",
+  planPropose: "theta.plan.propose",
   planValidate: "theta.plan.validate",
   planCreate: "theta.plan.create",
   planApprove: "theta.plan.approve",

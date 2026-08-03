@@ -105,6 +105,7 @@ export const runThetaWorkflowCliCommand = async (
                 textColumns: string[];
                 timeColumn: string | null;
                 idColumn: string | null;
+                covariateColumns: string[];
                 metadataColumns: string[];
               },
             }

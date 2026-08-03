@@ -223,7 +223,11 @@ export const runRepl = async (
           output.write(
             lastRawValue === undefined
               ? '\n还没有可展开的技术详情。'
-              : JSON.stringify(lastRawValue, null, 2),
+              : renderTechnicalDetails(
+                  lastRawValue,
+                  command.section,
+                  command.page,
+                ),
           );
           if (readline.terminal) readline.prompt();
           continue;
@@ -282,11 +286,20 @@ export const runRepl = async (
           if (readline.terminal) readline.prompt();
           continue;
         }
-        if (command.kind === 'retry') {
+        if (command.kind === 'retry' || command.kind === 'reevaluate') {
           if (!activeRunId) {
             throw new Error('No active Run. Use /start <dataset> first.');
           }
-          lastRawValue = await results.retry(activeRunId, runtimeDb);
+          lastRawValue = command.kind === 'retry'
+            ? await results.retry(activeRunId, runtimeDb)
+            : await results.reassess(activeRunId, runtimeDb);
+          const recoveredRunId = typeof (lastRawValue as Record<string, unknown>)?.runId === 'string'
+            ? String((lastRawValue as Record<string, unknown>).runId)
+            : undefined;
+          if (command.kind === 'retry' && recoveredRunId && recoveredRunId !== activeRunId) {
+            activeRunId = recoveredRunId;
+            store.updateSession(sessionId, { activeRunId });
+          }
           output.write(renderValue(lastRawValue));
           if (readline.terminal) readline.prompt();
           continue;
@@ -306,8 +319,20 @@ export const runRepl = async (
           const result = usesLanguage
             ? await withActivityHeartbeat(
                 command.kind === 'columns'
-                  ? '正在理解列角色'
-                  : '正在理解你的回答并准备下一步',
+                  ? [
+                      '正在理解并校验列角色',
+                      '正在更新数据画像并推进工作流',
+                      '正在检索模型、参数和评估证据',
+                      'MiniMax 正在拟定候选方案',
+                      '正在绑定证据并执行硬约束验证',
+                    ]
+                  : [
+                      '正在理解你的回答',
+                      '正在更新研究档案并判断信息缺口',
+                      '正在推进工作流并准备下一步',
+                      '如已满足规划条件，正在检索证据',
+                      '如已进入规划阶段，正在绑定证据并验证方案',
+                    ],
                 output,
                 () =>
                   orchestrator.execute(command, {
@@ -357,9 +382,10 @@ const replHelp = `THETA 交互命令
   /brief                  查看当前研究档案
   /history                查看已持久化的最近对话
   /next                   查看当前推荐的下一步
-  /details                展开上一条响应的机器详情
+  /details [section] [页]  分区、分页查看上一条响应的技术详情
   /status [runId]         查看任务状态
-  /why [runId]            解释当前状态和原因
+  /why [model|parameters|protocol|evidence] [runId]
+                          解释状态、模型、参数、实验或证据
   /evidence [runId]       查看受治理证据摘要
   /plan [runId]           查看完整候选或正式训练方案
   /approve-plan           审批 1/2：固化训练方案
@@ -375,6 +401,8 @@ const replHelp = `THETA 交互命令
   /summary                解读真实指标和结果
   /runs                   列出本地持久化任务
   /cancel <原因>          预览取消；添加 --confirm 执行
+  /retry                 恢复失败 Run，或为执行/质量失败创建新训练尝试
+  /reevaluate            不重新训练，按当前落盘产物重新计算质量门
   /save [runId]           生成确定性 Replay
   /back                   清除当前活动任务
   /exit                   退出`;
@@ -456,8 +484,13 @@ const followTraining = async (
   }
 };
 
-const humanTrainingStage = (stage: string): string =>
-  ({
+const humanTrainingStage = (stage: string): string => {
+  const normalized = stage.replace(/_completed$/u, '');
+  const primary = normalized.match(/^run_pipeline_primary_([a-z0-9_-]+)_s(\d+)$/u);
+  if (primary) return `训练主模型 ${primary[1]?.toUpperCase()}（随机种子 ${primary[2]}）`;
+  const baseline = normalized.match(/^run_pipeline_baseline_([a-z0-9_-]+)_s(\d+)$/u);
+  if (baseline) return `训练对照模型 ${baseline[1]?.toUpperCase()}（随机种子 ${baseline[2]}）`;
+  return ({
     queued: '等待后台执行',
     prepare_data: '读取并准备数据',
     data_prepared: '数据准备完成',
@@ -467,7 +500,8 @@ const humanTrainingStage = (stage: string): string =>
     verify_visualizations: '验证图表',
     bind_results: '整理并绑定结果',
     completed: '训练完成',
-  })[stage] ?? stage;
+  })[normalized] ?? normalized;
+};
 
 const asRecord = (
   value: unknown,
@@ -476,21 +510,57 @@ const asRecord = (
     ? (value as Record<string, unknown>)
     : undefined;
 
+const renderTechnicalDetails = (
+  value: unknown,
+  section: string | undefined,
+  page: number,
+): string => {
+  let selected = value;
+  if (section) {
+    for (const segment of section.split('.').filter(Boolean)) {
+      const item = asRecord(selected);
+      if (!item || !(segment in item)) {
+        const available = item ? Object.keys(item).sort().join('、') : '无';
+        return `\n没有详情分区“${section}”。当前可用分区：${available}`;
+      }
+      selected = item[segment];
+    }
+  }
+  const lines = JSON.stringify(selected, null, 2).split('\n');
+  const pageSize = 80;
+  const totalPages = Math.max(1, Math.ceil(lines.length / pageSize));
+  const boundedPage = Math.min(page, totalPages);
+  const body = lines.slice((boundedPage - 1) * pageSize, boundedPage * pageSize).join('\n');
+  return [
+    section ? `详情：${section}` : '技术详情',
+    `第 ${String(boundedPage)}/${String(totalPages)} 页`,
+    body,
+    boundedPage < totalPages
+      ? `继续查看：/details${section ? ` ${section}` : ''} ${String(boundedPage + 1)}`
+      : '',
+  ].filter(Boolean).join('\n');
+};
+
 const withActivityHeartbeat = async <T>(
-  label: string,
+  labels: string | readonly string[],
   output: AgentCliOutput,
   operation: () => Promise<T>,
 ): Promise<T> => {
   const startedAt = Date.now();
-  output.write(`${label}……`);
+  const stages = typeof labels === 'string' ? [labels] : [...labels];
+  let stageIndex = 0;
+  output.write(`● ${stages[0]}……`);
   const timer = setInterval(() => {
+    stageIndex = Math.min(stageIndex + 1, stages.length - 1);
     output.write(
-      `${label}，已等待 ${formatElapsed(Date.now() - startedAt)}，仍在处理……`,
+      `● ${stages[stageIndex]}（已等待 ${formatElapsed(Date.now() - startedAt)}）……`,
     );
-  }, 15_000);
+  }, 8_000);
   timer.unref();
   try {
-    return await operation();
+    const result = await operation();
+    output.write(`✓ 本轮处理完成（${formatElapsed(Date.now() - startedAt)}）`);
+    return result;
   } finally {
     clearInterval(timer);
   }

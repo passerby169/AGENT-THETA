@@ -130,7 +130,7 @@ export const detectCollectionMethodGap: GapRule = (brief) =>
       );
 
 export const detectComparisonGroupsGap: GapRule = (brief) =>
-  brief.comparisonGroups.length > 0
+  (brief.comparisonIntent ?? 'unknown') !== 'unknown'
     ? null
     : gap(
         'gap.comparison-groups',

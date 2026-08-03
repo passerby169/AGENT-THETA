@@ -266,7 +266,11 @@ class STM(TraditionalTopicModel):
         self._scaler = scaler
         n_cov_with_intercept = X.shape[1]
         
-        # Initialize parameters
+        # Initialize parameters.  The Python backend is an approximation of the
+        # R stm package: document-topic assignments are estimated with a
+        # multinomial EM step and shrunk towards a covariate-dependent
+        # logistic-normal prior.  LDA initialization is important here because
+        # a uniform theta makes every topic-word row identical.
         # Gamma: covariate coefficients for topic prevalence, shape (n_cov+1, K-1)
         Gamma = np.zeros((n_cov_with_intercept, K - 1))
         # Sigma: topic covariance matrix, shape (K-1, K-1)
@@ -276,90 +280,93 @@ class STM(TraditionalTopicModel):
         lda_init = LatentDirichletAllocation(
             n_components=K, max_iter=10, random_state=self.random_state
         )
-        lda_init.fit(bow_matrix)
+        theta = lda_init.fit_transform(bow_matrix)
         Beta = lda_init.components_ / lda_init.components_.sum(axis=1, keepdims=True)
-        
-        # Variational parameters for each document
-        # eta_d: logistic-normal parameter, shape (n_docs, K-1)
-        eta = X @ Gamma  # Initialize at prior mean
+
+        eps = 1e-12
+        eta = np.log(theta[:, :-1] + eps) - np.log(theta[:, [-1]] + eps)
+        XtX = X.T @ X + 1e-4 * np.eye(n_cov_with_intercept)
+        Gamma = np.linalg.solve(XtX, X.T @ eta)
         
         # EM iterations
-        prev_elbo = -np.inf
+        convergence_tolerance = 1e-5
+        prior_weight = 0.15
+        topic_smoothing = 0.1
+        word_smoothing = 1e-3
         for iteration in range(self.max_iter):
-            # === E-step: update variational parameters eta_d via Newton's method ===
-            theta = np.zeros((n_docs, K))
+            previous_theta = theta.copy()
+            previous_beta = Beta.copy()
+            theta_new = np.zeros((n_docs, K), dtype=float)
+            topic_word_counts = np.full((K, V), word_smoothing, dtype=float)
+
+            # === E-step: expected topic assignments for every observed word ===
             for d in range(n_docs):
                 doc_bow = bow_matrix[d]
                 if hasattr(doc_bow, 'toarray'):
                     doc_bow = doc_bow.toarray().flatten()
+                else:
+                    doc_bow = np.asarray(doc_bow).reshape(-1)
                 doc_total = doc_bow.sum()
                 if doc_total == 0:
-                    theta[d] = 1.0 / K
+                    theta_new[d] = 1.0 / K
                     continue
-                
-                mu_d = X[d] @ Gamma  # (K-1,)
-                eta_d = mu_d.copy()
-                
-                # Newton-Raphson (3 iterations for speed)
-                for _ in range(3):
-                    # Softmax to get theta
-                    eta_full = np.append(eta_d, 0.0)  # K-dim, last is reference
-                    eta_full -= eta_full.max()
-                    exp_eta = np.exp(eta_full)
-                    theta_d = exp_eta / exp_eta.sum()
-                    
-                    # Gradient: doc_counts * (I_{-K} - theta_{-K}) - Sigma_inv @ (eta_d - mu_d)
-                    Sigma_inv = np.linalg.solve(Sigma, np.eye(K - 1))
-                    
-                    # Expected word counts contribution
-                    grad = doc_total * (doc_bow @ Beta[:, :].T)  # not used directly
-                    
-                    # Simplified gradient for logistic-normal
-                    theta_mk = theta_d[:-1]  # first K-1
-                    diff = eta_d - mu_d
-                    gradient = doc_total * (theta_mk - theta_d[:-1]) - Sigma_inv @ diff
-                    
-                    # Approximate Hessian (diagonal)
-                    hess_diag = -doc_total * theta_mk * (1 - theta_mk) - np.diag(Sigma_inv)
-                    
-                    # Update
-                    step = gradient / (hess_diag - 1e-8)
-                    eta_d -= 0.5 * step  # Damped update
-                
-                # Final theta
-                eta_full = np.append(eta_d, 0.0)
-                eta_full -= eta_full.max()
-                exp_eta = np.exp(eta_full)
-                theta[d] = exp_eta / exp_eta.sum()
-                eta[d] = eta_d
+
+                nonzero = np.flatnonzero(doc_bow)
+                counts = doc_bow[nonzero]
+                weighted = theta[d, :, None] * Beta[:, nonzero]
+                responsibilities = weighted / np.maximum(
+                    weighted.sum(axis=0, keepdims=True), eps
+                )
+                expected = responsibilities * counts[None, :]
+                content_counts = expected.sum(axis=1)
+                content_theta = (content_counts + topic_smoothing) / (
+                    doc_total + K * topic_smoothing
+                )
+
+                prior_logits = np.append(X[d] @ Gamma, 0.0)
+                prior_logits -= prior_logits.max()
+                prior_theta = np.exp(prior_logits)
+                prior_theta /= prior_theta.sum()
+                combined = (
+                    (1.0 - prior_weight) * content_theta
+                    + prior_weight * prior_theta
+                )
+                theta_new[d] = combined / combined.sum()
+                topic_word_counts[:, nonzero] += expected
             
             # === M-step ===
-            # Update Gamma (covariate coefficients)
-            # Gamma = (X^T X)^{-1} X^T eta
-            XtX = X.T @ X + 1e-6 * np.eye(n_cov_with_intercept)
+            theta = theta_new
+            eta = np.log(theta[:, :-1] + eps) - np.log(theta[:, [-1]] + eps)
             Gamma = np.linalg.solve(XtX, X.T @ eta)
             
             # Update Sigma (topic covariance)
             residuals = eta - X @ Gamma
             Sigma = (residuals.T @ residuals) / n_docs + 1e-6 * np.eye(K - 1)
             
-            # Update Beta (topic-word distributions)
-            # Weighted word counts
-            Beta_new = theta.T @ bow_matrix if not hasattr(bow_matrix, 'toarray') else theta.T @ bow_matrix
-            if hasattr(Beta_new, 'toarray'):
-                Beta_new = np.asarray(Beta_new)
-            Beta_new = np.maximum(Beta_new, 1e-10)
-            Beta = Beta_new / Beta_new.sum(axis=1, keepdims=True)
-            
-            # Check convergence (simplified ELBO proxy)
-            elbo = np.sum(theta * np.log(Beta @ bow_matrix.T + 1e-10).T) if n_docs < 50000 else 0
+            Beta = topic_word_counts / topic_word_counts.sum(axis=1, keepdims=True)
+
+            theta_change = float(np.max(np.abs(theta - previous_theta)))
+            beta_change = float(np.max(np.abs(Beta - previous_beta)))
+            change = max(theta_change, beta_change)
             if iteration > 0 and iteration % 10 == 0:
-                print(f"  STM iteration {iteration}/{self.max_iter}")
-            
-            if abs(elbo - prev_elbo) < 1e-4 and elbo != 0:
-                print(f"  STM converged at iteration {iteration}")
+                print(
+                    f"  STM iteration {iteration}/{self.max_iter} "
+                    f"(max parameter change={change:.6g})"
+                )
+
+            if iteration >= 4 and change < convergence_tolerance:
+                print(
+                    f"  STM converged at iteration {iteration} "
+                    f"(max parameter change={change:.6g})"
+                )
                 break
-            prev_elbo = elbo
+
+        if not np.isfinite(theta).all() or not np.isfinite(Beta).all():
+            raise FloatingPointError("STM produced non-finite theta or beta values")
+        if not np.allclose(theta.sum(axis=1), 1.0, atol=1e-6):
+            raise FloatingPointError("STM document-topic rows are not normalized")
+        if not np.allclose(Beta.sum(axis=1), 1.0, atol=1e-6):
+            raise FloatingPointError("STM topic-word rows are not normalized")
         
         self._theta = theta
         self._beta = Beta

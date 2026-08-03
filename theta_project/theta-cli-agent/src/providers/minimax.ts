@@ -55,10 +55,22 @@ export class MiniMaxInferenceProvider implements InferenceProvider {
           },
           body: JSON.stringify({
             model: this.model,
-            messages: input.messages.map((message) => ({
-              role: apiRole(message.role),
-              content: message.content,
-            })),
+            messages: input.messages.map(apiMessage),
+            ...(request.tools?.length
+              ? {
+                  tools: request.tools.map((tool) => ({
+                    type: 'function',
+                    function: {
+                      name: tool.name,
+                      description: tool.description,
+                      parameters: tool.inputSchema,
+                    },
+                  })),
+                  tool_choice: miniMaxToolChoice(
+                    request.options?.extra?.toolChoice,
+                  ),
+                }
+              : {}),
             temperature: request.options?.temperature ?? 0.2,
             max_completion_tokens: Math.min(
               request.options?.maxTokens ?? 800,
@@ -75,8 +87,10 @@ export class MiniMaxInferenceProvider implements InferenceProvider {
         );
       }
       const payload = await responseJson(response);
-      const content = responseContent(payload);
-      const output = parseJsonObject(content);
+      const toolCalls = responseToolCalls(payload);
+      const output = toolCalls.length
+        ? { kind: 'tool_calls', toolCalls }
+        : parseJsonObject(responseContent(payload));
       const usage = record(payload.usage);
       return {
         id:
@@ -128,7 +142,9 @@ export class MiniMaxProviderError extends Error {
 export const isMiniMaxConfigured = (): boolean =>
   Boolean(process.env.MINIMAX_API_KEY?.trim());
 
-export const createMiniMaxProviderFromEnv = ():
+export const createMiniMaxProviderFromEnv = (
+  overrides: { timeoutMs?: number } = {},
+):
   | MiniMaxInferenceProvider
   | undefined => {
   const apiKey = process.env.MINIMAX_API_KEY?.trim();
@@ -137,10 +153,9 @@ export const createMiniMaxProviderFromEnv = ():
     apiKey,
     baseUrl: process.env.MINIMAX_API_BASE,
     model: process.env.MINIMAX_MODEL,
-    timeoutMs: environmentInteger(
-      process.env.MINIMAX_TIMEOUT_MS,
-      DEFAULT_TIMEOUT_MS,
-    ),
+    timeoutMs:
+      overrides.timeoutMs ??
+      environmentInteger(process.env.MINIMAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
   });
 };
 
@@ -174,6 +189,15 @@ const providerInput = (value: unknown): MiniMaxProviderInput => {
 const apiRole = (role: PromptMessage['role']): 'system' | 'user' | 'assistant' =>
   role === 'system' || role === 'assistant' ? role : 'user';
 
+const apiMessage = (message: PromptMessage): Record<string, unknown> => ({
+  role: apiRole(message.role),
+  content: message.content,
+  ...(message.name ? { name: message.name } : {}),
+});
+
+const miniMaxToolChoice = (value: unknown): 'auto' | 'none' =>
+  value === 'none' ? 'none' : 'auto';
+
 const responseJson = async (
   response: Response,
 ): Promise<Record<string, unknown>> => {
@@ -202,6 +226,47 @@ const responseContent = (payload: Record<string, unknown>): string => {
     );
   }
   return message.content;
+};
+
+const responseToolCalls = (
+  payload: Record<string, unknown>,
+): Array<{ id: string; name: string; arguments: Record<string, unknown> }> => {
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const message = record(record(choices[0]).message);
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  return calls.map((rawCall, index) => {
+    const call = record(rawCall);
+    const fn = record(call.function);
+    const name = typeof fn.name === 'string' ? fn.name.trim() : '';
+    if (!name) {
+      throw new MiniMaxProviderError(
+        'non_json_response',
+        'MiniMax tool call did not contain a function name.',
+      );
+    }
+    let args: unknown = fn.arguments;
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch (error) {
+        throw new MiniMaxProviderError(
+          'non_json_response',
+          `MiniMax tool arguments were not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      throw new MiniMaxProviderError(
+        'non_json_response',
+        'MiniMax tool arguments must be a JSON object.',
+      );
+    }
+    return {
+      id: typeof call.id === 'string' ? call.id : `tool-call-${index + 1}`,
+      name,
+      arguments: args as Record<string, unknown>,
+    };
+  });
 };
 
 const parseJsonObject = (content: string): Record<string, unknown> => {

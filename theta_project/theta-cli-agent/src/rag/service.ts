@@ -6,12 +6,14 @@ import { FtsEvidenceIndex } from './fts-index.js';
 import { loadKnowledgeManifest } from './manifest.js';
 
 export interface KnowledgeIndexStatus {
-  schemaVersion: '1.0.0';
+  schemaVersion: '1.1.0';
   status: 'ready' | 'not_built';
   database: string;
   manifest: string;
   totalSources: number;
   totalChunks: number;
+  totalObjects: number;
+  objectTypes: Record<string, number>;
 }
 
 export interface KnowledgeIndexBuildResult extends KnowledgeIndexStatus {
@@ -36,6 +38,8 @@ export const getKnowledgeIndexStatus =
         status: 'not_built',
         totalSources: 0,
         totalChunks: 0,
+        totalObjects: 0,
+        objectTypes: {},
       };
     }
     const database = new DatabaseSync(paths.databasePath, { readOnly: true });
@@ -91,7 +95,7 @@ const knowledgePaths = (): KnowledgePaths => {
 const baseStatus = (
   paths: KnowledgePaths,
 ): Pick<KnowledgeIndexStatus, 'schemaVersion' | 'database' | 'manifest'> => ({
-  schemaVersion: '1.0.0',
+  schemaVersion: '1.1.0',
   database: displayPath(paths.packageRoot, paths.databasePath),
   manifest: displayPath(paths.packageRoot, paths.manifestPath),
 });
@@ -115,8 +119,24 @@ const readCounts = (database: DatabaseSync) => {
   const chunks = database
     .prepare('SELECT COUNT(*) AS count FROM knowledge_chunks')
     .get() as { count: number };
+  let totalObjects = 0;
+  let objectTypes: Record<string, number> = {};
+  try {
+    const objects = database
+      .prepare('SELECT COUNT(*) AS count FROM knowledge_objects')
+      .get() as { count: number };
+    totalObjects = Number(objects.count);
+    const rows = database
+      .prepare('SELECT object_type AS type, COUNT(*) AS count FROM knowledge_objects GROUP BY object_type')
+      .all() as Array<{ type: string; count: number }>;
+    objectTypes = Object.fromEntries(rows.map((row) => [row.type, Number(row.count)]));
+  } catch {
+    // A pre-V1.1 local index remains readable and is reported as zero objects.
+  }
   return {
     totalSources: Number(sources.count),
-    totalChunks: Number(chunks.count),
+    totalChunks: Number(chunks.count) + totalObjects,
+    totalObjects,
+    objectTypes,
   };
 };

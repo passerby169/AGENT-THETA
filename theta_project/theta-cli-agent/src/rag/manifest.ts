@@ -12,6 +12,12 @@ export interface ResolvedKnowledgeSource extends KnowledgeSource {
   relativePath: string;
 }
 
+export interface ResolvedKnowledgeObjectSet {
+  absolutePath: string;
+  relativePath: string;
+  sourceCommit: string;
+}
+
 export const loadKnowledgeManifest = async (
   manifestPath: string,
   packageRoot: string,
@@ -39,6 +45,29 @@ export const resolveKnowledgeSources = (
     }
     return {
       ...source,
+      absolutePath,
+      relativePath: relative.split(path.sep).join("/"),
+    };
+  });
+};
+
+export const resolveKnowledgeObjectSets = (
+  manifest: KnowledgeManifest,
+  packageRoot: string,
+): ResolvedKnowledgeObjectSet[] => {
+  const allowedRoot = path.resolve(packageRoot, "..");
+  return manifest.objectSets.map((objectSet) => {
+    const absolutePath = path.resolve(packageRoot, objectSet.path);
+    const relative = path.relative(allowedRoot, absolutePath);
+    if (
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new Error(`Knowledge object set '${objectSet.path}' escapes the theta_project boundary.`);
+    }
+    return {
+      ...objectSet,
       absolutePath,
       relativePath: relative.split(path.sep).join("/"),
     };

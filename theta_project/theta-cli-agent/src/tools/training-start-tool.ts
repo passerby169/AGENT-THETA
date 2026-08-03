@@ -15,6 +15,8 @@ import {
 } from "../training/contracts.js";
 import { callThetaBridge } from "./bridge.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
+import { validateCanonicalTrainingPlanV2 } from "../planning/validator-v2.js";
+import type { CapabilityCatalogModel } from "../capabilities/contracts.js";
 
 export interface ThetaTrainingStartInput {
   plan: TrainingPlanRecord;
@@ -101,6 +103,47 @@ const trainingStartOutputSchema: JsonSchema = {
     trainingReviewApprovalId: { type: "string" },
     dryRunHash: { type: "string" },
     status: { type: "string" },
+    executionStatus: {
+      enum: [
+        "queued",
+        "running",
+        "cancel_requested",
+        "completed",
+        "failed",
+        "cancelled",
+        "quarantined",
+      ],
+    },
+    quality: {
+      anyOf: [
+        {
+          type: "object",
+          required: ["status", "checks", "assessedAt"],
+          properties: {
+            modelId: { type: "string", minLength: 1 },
+            profileVersion: { type: "string", minLength: 1 },
+            status: { enum: ["passed", "warning", "failed"] },
+            checks: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["code", "status", "detail"],
+                properties: {
+                  code: { type: "string", minLength: 1 },
+                  status: { enum: ["pass", "warn", "fail"] },
+                  detail: { type: "string", minLength: 1 },
+                  value: { type: "number" },
+                },
+                additionalProperties: false,
+              },
+            },
+            assessedAt: { type: "string", format: "date-time" },
+          },
+          additionalProperties: false,
+        },
+        { type: "object", maxProperties: 0, additionalProperties: false },
+      ],
+    },
     progress: { type: "number" },
     processStarted: { type: "boolean" },
     pid: { anyOf: [{ type: "integer" }, { type: "null" }] },
@@ -153,7 +196,7 @@ const trainingStartOutputSchema: JsonSchema = {
 
 export const thetaTrainingStartToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.trainingStart,
-  version: "3.0.0",
+  version: "3.1.0",
   displayName: "Start Training",
   description:
     "Start THETA only with a canonical plan, HumanPlanReview, successful dry-run, and distinct HumanTrainingReview.",
@@ -209,6 +252,38 @@ export const thetaTrainingStartHandler: ToolHandler<
   ThetaTrainingStartOutput
 > = async (input: unknown, context: ToolCallContext) => {
   const value = normalizeTrainingStartInput(input);
+  const catalogResponse = await callThetaBridge(
+    "model.catalog",
+    {},
+    {
+      runId: context.runId,
+      stepId: `${context.stepId}.validator-v2.catalog`,
+    },
+  );
+  if (
+    catalogResponse.status !== "ok" ||
+    !catalogResponse.data ||
+    typeof catalogResponse.data !== "object"
+  ) {
+    throw new Error(
+      catalogResponse.error?.message ?? "model.catalog bridge command failed.",
+    );
+  }
+  const models = Array.isArray(
+    (catalogResponse.data as Record<string, unknown>).models,
+  )
+    ? ((catalogResponse.data as Record<string, unknown>)
+        .models as CapabilityCatalogModel[])
+    : [];
+  const validation = validateCanonicalTrainingPlanV2(
+    value.plan as unknown as Record<string, unknown>,
+    models,
+  );
+  if (!validation.valid) {
+    throw new Error(
+      `Validator V2 rejected training.start: ${validation.errors.join("; ")}`,
+    );
+  }
   const response = await callThetaBridge("training.start", value, {
     runId: context.runId,
     stepId: context.stepId,

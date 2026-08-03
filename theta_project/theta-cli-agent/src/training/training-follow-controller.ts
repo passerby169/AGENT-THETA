@@ -102,7 +102,7 @@ const retryAwareStatus = async (
       return value;
     }
     const receipt = asRecord(result.output.receipt);
-    if (!receipt || receipt.trainingRunId === sourceRunId) return value;
+    if (!receipt) return value;
     const retryStatus = String(receipt.status);
     return {
       ...value,

@@ -26,9 +26,12 @@ const outputSchema: JsonSchema = {
     'indexedSources',
     'unchangedSources',
     'indexedChunks',
+    'indexedObjects',
+    'totalObjects',
+    'objectTypes',
   ],
   properties: {
-    schemaVersion: { const: '1.0.0' },
+    schemaVersion: { const: '1.1.0' },
     status: { const: 'ready' },
     database: { type: 'string' },
     manifest: { type: 'string' },
@@ -37,6 +40,9 @@ const outputSchema: JsonSchema = {
     indexedSources: { type: 'integer', minimum: 0 },
     unchangedSources: { type: 'integer', minimum: 0 },
     indexedChunks: { type: 'integer', minimum: 0 },
+    indexedObjects: { type: 'integer', minimum: 0 },
+    totalObjects: { type: 'integer', minimum: 0 },
+    objectTypes: { type: 'object', additionalProperties: { type: 'integer', minimum: 0 } },
   },
   additionalProperties: false,
 };

@@ -314,17 +314,29 @@ export class ConversationService {
     }
     if (
       name === 'next' ||
-      name === 'details' ||
       name === 'done' ||
       name === 'follow' ||
       name === 'logs' ||
       name === 'results' ||
       name === 'summary' ||
       name === 'runs' ||
-      name === 'retry'
+      name === 'retry' ||
+      name === 'reevaluate'
     ) {
       requireNoArgument(name, argument);
       return conversationCommandSchema.parse({ kind: name });
+    }
+    if (name === 'details') {
+      const parts = argument?.split(/\s+/u).filter(Boolean) ?? [];
+      const pageText = parts.at(-1);
+      const hasPage = Boolean(pageText && /^\d+$/u.test(pageText));
+      return conversationCommandSchema.parse({
+        kind: 'details',
+        ...(parts.length - (hasPage ? 1 : 0) > 0
+          ? { section: parts.slice(0, hasPage ? -1 : undefined).join('.') }
+          : {}),
+        page: hasPage ? Number(pageText) : 1,
+      });
     }
     if (name === 'open-results') {
       requireNoArgument(name, argument);
@@ -356,9 +368,18 @@ export class ConversationService {
         filePath: argument,
       });
     }
+    if (name === 'why') {
+      const parts = (argument ?? '').split(/\s+/u).filter(Boolean);
+      const sections = new Set(['all', 'model', 'parameters', 'protocol', 'evidence']);
+      const section = parts[0] && sections.has(parts[0]) ? parts.shift() : 'all';
+      return conversationCommandSchema.parse({
+        kind: 'why',
+        section,
+        ...(parts[0] ? { runId: parts[0] } : {}),
+      });
+    }
     if (
       name === 'status' ||
-      name === 'why' ||
       name === 'evidence' ||
       name === 'plan' ||
       name === 'approve' ||

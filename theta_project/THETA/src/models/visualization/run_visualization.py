@@ -1017,7 +1017,7 @@ def load_baseline_data(result_dir, dataset, model, num_topics=20):
 
 
 def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
-    """STM covariate visualizations: platform-topic association charts."""
+    """STM covariate visualizations with labels derived from bound columns."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -1033,6 +1033,7 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
     theta = data.get('theta')
     covariates = data.get('covariates')
     covariate_names = data.get('covariate_names', [])
+    dimension_name = covariate_names[0] if covariate_names else ('分组维度' if language == 'zh' else 'Grouping dimension')
     topic_words = data.get('topic_words', [])
     K = theta.shape[1] if theta is not None else 0
 
@@ -1040,7 +1041,7 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
         print("  [WARN] STM covariate viz skipped: theta/covariates unavailable or shape mismatch")
         return
 
-    # Recover original platform labels
+    # Recover original category labels when the original source is available.
     platform_labels = {}
     try:
         import pandas as pd
@@ -1098,7 +1099,7 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
     except Exception as e:
         print(f"  [WARN] heatmap: {e}")
 
-    # Chart 2: 各平台主题分布堆积图
+    # Chart 2: grouping-dimension topic distribution
     try:
         colors = cm.tab10(np.linspace(0, 1, K))
         fig, ax = plt.subplots(figsize=(max(8, len(unique_vals) * 1.5), 6))
@@ -1106,15 +1107,15 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
         for k in range(K):
             ax.bar(cov_labels, mean_theta[:, k], bottom=bottom, color=colors[k], label=topic_labels[k], alpha=0.85)
             bottom += mean_theta[:, k]
-        ax.set_title('各平台主题分布对比（堆积）' if zh else 'Topic Distribution by Platform', fontsize=12, fontweight='bold')
+        ax.set_title(f'按{dimension_name}的主题分布对比（堆积）' if zh else f'Topic Distribution by {dimension_name}', fontsize=12, fontweight='bold')
         ax.legend(loc='upper right', bbox_to_anchor=(1.18, 1), fontsize=7)
         plt.xticks(rotation=30, ha='right', fontsize=9); plt.tight_layout()
-        plt.savefig(global_dir / ('各平台主题分布堆积图.png' if zh else 'platform_topic_stacked.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
-        plt.close(); print(f"  [OK] 各平台主题分布堆积图.png")
+        plt.savefig(global_dir / ('分组维度主题分布堆积图.png' if zh else 'group_topic_stacked.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(); print(f"  [OK] 分组维度主题分布堆积图.png")
     except Exception as e:
         print(f"  [WARN] stacked bar: {e}")
 
-    # Chart 3: 平台主题偏好偏差图
+    # Chart 3: grouping-dimension topic deviation
     try:
         deviation = mean_theta - theta.mean(axis=0)[np.newaxis, :]
         vmax = np.abs(deviation).max()
@@ -1123,17 +1124,17 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
         plt.colorbar(im, ax=ax, label='偏差（相对全局均值）' if zh else 'Deviation from Global Mean')
         ax.set_xticks(range(K)); ax.set_xticklabels(topic_labels, rotation=45, ha='right', fontsize=8)
         ax.set_yticks(range(len(unique_vals))); ax.set_yticklabels(cov_labels, fontsize=9)
-        ax.set_title('平台主题偏好偏差图（红=高于均值，蓝=低于均值）' if zh else 'Platform Topic Deviation', fontsize=11, fontweight='bold')
+        ax.set_title(f'{dimension_name}主题偏好偏差图（红=高于均值，蓝=低于均值）' if zh else f'{dimension_name} Topic Deviation', fontsize=11, fontweight='bold')
         for i in range(len(unique_vals)):
             for j in range(K):
                 ax.text(j, i, f'{deviation[i,j]:+.3f}', ha='center', va='center', fontsize=6, color='black')
         plt.tight_layout()
-        plt.savefig(global_dir / ('平台主题偏好偏差图.png' if zh else 'platform_topic_deviation.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
-        plt.close(); print(f"  [OK] 平台主题偏好偏差图.png")
+        plt.savefig(global_dir / ('分组维度主题偏好偏差图.png' if zh else 'group_topic_deviation.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(); print(f"  [OK] 分组维度主题偏好偏差图.png")
     except Exception as e:
         print(f"  [WARN] deviation: {e}")
 
-    # Chart 4: 各平台主导主题 Top-5
+    # Chart 4: dominant topics by grouping dimension
     try:
         colors_top = cm.tab10(np.linspace(0, 1, K))
         fig, axes = plt.subplots(1, len(unique_vals), figsize=(len(unique_vals) * 3, 5), sharey=False)
@@ -1143,10 +1144,10 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
             ax.barh(range(5), mean_theta[i, top5][::-1], color=[colors_top[j] for j in top5[::-1]], alpha=0.85)
             ax.set_yticks(range(5)); ax.set_yticklabels([topic_labels[j] for j in top5[::-1]], fontsize=8)
             ax.set_title(cov_labels[i], fontsize=9, fontweight='bold')
-        fig.suptitle('各平台 Top-5 主导主题' if zh else 'Top-5 Topics per Platform', fontsize=12, fontweight='bold')
+        fig.suptitle(f'{dimension_name}各组 Top-5 主导主题' if zh else f'Top-5 Topics by {dimension_name}', fontsize=12, fontweight='bold')
         plt.tight_layout()
-        plt.savefig(global_dir / ('各平台主导主题.png' if zh else 'platform_dominant_topics.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
-        plt.close(); print(f"  [OK] 各平台主导主题.png")
+        plt.savefig(global_dir / ('分组维度主导主题.png' if zh else 'group_dominant_topics.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(); print(f"  [OK] 分组维度主导主题.png")
     except Exception as e:
         print(f"  [WARN] dominant topics: {e}")
 
@@ -1187,7 +1188,7 @@ def _run_stm_specific_visualizations(data, output_dir, language='zh', dpi=300):
         fig, ax = plt.subplots(figsize=(max(8, K * 0.8), 5))
         ax.bar(range(K), f_stats, color=['#d62728' if p < 0.05 else '#aec7e8' for p in p_vals], alpha=0.85, edgecolor='white')
         ax.set_xticks(range(K)); ax.set_xticklabels(topic_labels, rotation=45, ha='right', fontsize=8)
-        ax.set_title('平台对各主题的协变量效应（ANOVA F检验，红=p<0.05）' if zh else 'ANOVA F-Statistic: Platform Effect on Topics', fontsize=10, fontweight='bold')
+        ax.set_title(f'{dimension_name}对各主题的协变量效应（ANOVA F检验，红=p<0.05）' if zh else f'ANOVA F-Statistic: {dimension_name} Effect on Topics', fontsize=10, fontweight='bold')
         ax.grid(axis='y', alpha=0.3)
         for i, (f, p) in enumerate(zip(f_stats, p_vals)):
             ax.text(i, f + f_stats.max() * 0.02, f'p={p:.3f}', ha='center', va='bottom', fontsize=6)

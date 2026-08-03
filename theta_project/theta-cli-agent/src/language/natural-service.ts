@@ -132,7 +132,7 @@ const shape = (request: NaturalLanguageRequest): string => {
     case 'generate_grilling_question':
       return `Shape: {"task":"generate_grilling_question","gapId":${JSON.stringify(request.gapId)},"field":${JSON.stringify(request.field)},"question":"...","reason":"...","examples":[],"answerHint":"..."}.`;
     case 'interpret_column_confirmation':
-      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"metadataColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. Omit draft when ambiguous.';
+      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft when ambiguous.';
     case 'classify_conversation_intent':
       return 'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|unknown","response":"..."}.';
     case 'propose_readonly_tool':
@@ -208,11 +208,19 @@ const validateOutput = (
       ...output.draft.textColumns,
       ...(output.draft.timeColumn ? [output.draft.timeColumn] : []),
       ...(output.draft.idColumn ? [output.draft.idColumn] : []),
+      ...(output.draft.covariateColumns ?? []),
       ...output.draft.metadataColumns,
+      ...(output.draft.groupingColumns ?? []),
+      ...(output.draft.evaluationLabelColumns ?? []),
     ];
     if (selected.some((column) => !allowed.has(column))) {
       throw new Error('Provider invented a dataset column.');
     }
+    const roleIssue = validateColumnRoleDraft(
+      { ...output.draft, covariateColumns: output.draft.covariateColumns ?? [] },
+      request.columnProfiles ?? [],
+    );
+    if (roleIssue) throw new Error(roleIssue);
   }
   if (
     request.task === 'propose_readonly_tool' &&
@@ -380,21 +388,30 @@ const deterministicColumns = (
   const mentioned = request.columns.filter((column) =>
     request.answer.toLowerCase().includes(column.toLowerCase()),
   );
-  const text =
-    mentioned.find((column) =>
-      new RegExp(`${escape(column)}.{0,10}(正文|文本|内容)|(?:正文|文本|内容).{0,10}${escape(column)}`, 'iu').test(
-        request.answer,
-      ),
-    ) ??
-    request.candidates.text.find((column) => mentioned.includes(column));
-  const time =
-    mentioned.find((column) =>
-      new RegExp(`${escape(column)}.{0,10}(时间|日期)|(?:时间|日期).{0,10}${escape(column)}`, 'iu').test(
-        request.answer,
-      ),
-    ) ??
-    request.candidates.time.find((column) => mentioned.includes(column)) ??
-    null;
+  const linked = (column: string, labels: string): boolean => {
+    const columnName = column.toLowerCase();
+    const roleLabels = labels.split('|').map((label) => label.toLowerCase());
+    return request.answer
+      .toLowerCase()
+      .split(/[，,；;。\n]/u)
+      .some(
+        (clause) =>
+          clause.includes(columnName) &&
+          roleLabels.some((label) => clause.includes(label)),
+      );
+  };
+  const text = mentioned.find((column) => linked(column, '正文|文本内容|待分析文本|语料'));
+  const time = mentioned.find((column) => linked(column, '时间列|日期列|时间戳')) ?? null;
+  const id = mentioned.find((column) => linked(column, 'ID列|标识列|编号列|唯一标识')) ?? null;
+  const covariates = mentioned.filter((column) =>
+    linked(column, '训练协变量|协变量列|STM协变量|模型协变量'),
+  );
+  const groups = mentioned.filter((column) =>
+    linked(column, '展示分组|分组列|对比分组|分组展示'),
+  );
+  const labels = mentioned.filter((column) =>
+    linked(column, '评估标签|标签列|Golden标签|真值标签'),
+  );
   if (!text) {
     return {
       task: request.task,
@@ -405,23 +422,121 @@ const deterministicColumns = (
       explanation: '无法确定唯一文本列，请明确说明正文列名称。',
     };
   }
+  const draft = {
+    textColumns: [text],
+    timeColumn: time,
+    idColumn: id,
+    covariateColumns: covariates,
+    metadataColumns: [],
+    groupingColumns: groups,
+    evaluationLabelColumns: labels,
+  };
+  const roleIssue = validateColumnRoleDraft(draft, request.columnProfiles ?? []);
+  if (roleIssue) {
+    return {
+      task: request.task,
+      draft,
+      unknownMentions: [],
+      ambiguousMentions: mentioned,
+      confidence: 0,
+      needsClarification: true,
+      explanation: `${roleIssue} 请重新明确各列角色。`,
+    };
+  }
+  const explicitlyReviewed = /(?:^|[：:\s])(?:我)?确认(?:无误)?|confirm/iu.test(request.answer);
   return {
     task: request.task,
-    draft: {
-      textColumns: [text],
-      timeColumn: time,
-      idColumn: null,
-      metadataColumns: mentioned.filter(
-        (column) => column !== text && column !== time,
-      ),
-    },
+    draft,
     unknownMentions: [],
-    ambiguousMentions: [],
-    confidence: 0.65,
-    needsClarification: false,
-    explanation: '已按真实列名生成列确认草案。',
+    ambiguousMentions: explicitlyReviewed ? [] : mentioned,
+    confidence: explicitlyReviewed ? 0.9 : 0.6,
+    needsClarification: !explicitlyReviewed,
+    explanation: explicitlyReviewed
+      ? '已通过列类型校验并记录显式确认。'
+      : `请复核后再次提交“确认：${columnDraftSummary(draft)}”。确定性模式不会直接采用首次解析结果。`,
   };
 };
+
+type ColumnRoleDraft = {
+  textColumns: string[];
+  timeColumn: string | null;
+  idColumn: string | null;
+  covariateColumns: string[];
+  metadataColumns: string[];
+  groupingColumns?: string[];
+  evaluationLabelColumns?: string[];
+};
+
+const validateColumnRoleDraft = (
+  draft: ColumnRoleDraft,
+  profiles: ReadonlyArray<{
+    name: string;
+    inferredType: 'empty' | 'number' | 'datetime' | 'text' | 'string';
+    nonEmptySampleCount: number;
+    uniqueSampleCount: number;
+    avgLength: number;
+    maxLength: number;
+  }>,
+): string | undefined => {
+  const byName = new Map(profiles.map((profile) => [profile.name, profile]));
+  const profile = (name: string) => byName.get(name);
+  const idLike = (name: string) => /(?:^|_)(?:id|uuid|key|index|record_id)(?:$|_)/iu.test(name);
+  for (const column of draft.textColumns) {
+    const item = profile(column);
+    if (idLike(column) || item?.inferredType === 'number' || item?.inferredType === 'datetime' || item?.inferredType === 'empty') {
+      return `列 ${column} 的类型不适合作为正文`;
+    }
+    if (item && item.avgLength < 8 && item.inferredType !== 'text') {
+      return `列 ${column} 的样本文本过短，不足以安全认定为正文`;
+    }
+  }
+  if (draft.timeColumn) {
+    const item = profile(draft.timeColumn);
+    if (item && item.inferredType !== 'datetime') return `列 ${draft.timeColumn} 不能稳定解析为时间`;
+  }
+  if (draft.idColumn) {
+    const item = profile(draft.idColumn);
+    const uniqueRatio = item && item.nonEmptySampleCount > 0
+      ? item.uniqueSampleCount / item.nonEmptySampleCount
+      : 0;
+    if (!idLike(draft.idColumn) && item && uniqueRatio < 0.8) {
+      return `列 ${draft.idColumn} 不具备唯一标识特征`;
+    }
+  }
+  const roles = [
+    ...draft.textColumns.map((name) => [name, '正文'] as const),
+    ...(draft.timeColumn ? [[draft.timeColumn, '时间'] as const] : []),
+    ...(draft.idColumn ? [[draft.idColumn, 'ID'] as const] : []),
+    ...draft.covariateColumns.map((name) => [name, '训练协变量'] as const),
+    ...draft.metadataColumns.map((name) => [name, '描述元数据'] as const),
+    ...(draft.groupingColumns ?? []).map((name) => [name, '展示分组'] as const),
+    ...(draft.evaluationLabelColumns ?? []).map((name) => [name, '评估标签'] as const),
+  ];
+  const assigned = new Map<string, string[]>();
+  for (const [name, role] of roles) assigned.set(name, [...(assigned.get(name) ?? []), role]);
+  const overlap = [...assigned].find(([, values]) => {
+    const roles = new Set(values);
+    return values.length > 1 && !(
+      roles.size === 2 &&
+      roles.has('训练协变量') &&
+      roles.has('展示分组')
+    );
+  });
+  if (overlap) return `列 ${overlap[0]} 同时被绑定为 ${overlap[1].join('、')}`;
+  for (const column of [...draft.covariateColumns, ...(draft.groupingColumns ?? [])]) {
+    const item = profile(column);
+    const uniqueRatio = item && item.nonEmptySampleCount > 0
+      ? item.uniqueSampleCount / item.nonEmptySampleCount
+      : 0;
+    if (item && (item.inferredType === 'text' || uniqueRatio > 0.8)) {
+      return `列 ${column} 不适合作为低基数协变量或展示分组`;
+    }
+  }
+  return undefined;
+};
+
+const columnDraftSummary = (draft: ColumnRoleDraft): string =>
+  `正文 ${draft.textColumns.join('、')}；时间 ${draft.timeColumn ?? '无'}；ID ${draft.idColumn ?? '无'}；训练协变量 ${draft.covariateColumns.join('、') || '无'}；展示分组 ${(draft.groupingColumns ?? []).join('、') || '无'}`;
 
 const deterministicIntent = (
   text: string,
@@ -659,6 +774,7 @@ const researchFieldValueRule = (field: string): string => {
     language: 'VALUE must be a non-empty string.',
     textFieldIntent: 'VALUE must be a non-empty string.',
     comparisonGroups: 'VALUE must be an array of non-empty strings.',
+    comparisonIntent: 'VALUE must be exactly "unknown", "none", or "groups".',
     knownBiases: 'VALUE must be an array of non-empty strings.',
     successCriteria: 'VALUE must be an array of non-empty strings.',
     topicGranularity:

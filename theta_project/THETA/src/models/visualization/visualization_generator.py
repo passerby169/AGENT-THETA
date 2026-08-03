@@ -1492,6 +1492,7 @@ class VisualizationGenerator:
         # Figure 1: Overall Topic Quality Metrics
         metric_names = []
         metric_values = []
+        available_metric_names = []
         
         if 'topic_diversity_td' in self.metrics:
             metric_names.append('TD')
@@ -1553,15 +1554,22 @@ class VisualizationGenerator:
         
         for name in metric_names:
             # Try different key formats
-            val = self.metrics.get(name) or self.metrics.get(f'topic_{name.lower()}') or 0.0
+            val = self.metrics.get(name)
             if val is None:
-                val = 0.0
-            metric_values.append(float(val))
+                val = self.metrics.get(f'topic_{name.lower()}')
+            if isinstance(val, (int, float, np.number)) and np.isfinite(val):
+                available_metric_names.append(name)
+                metric_values.append(float(val))
+
+        if not metric_values:
+            print("  [SKIP] 7_core_metrics_chart (all normalized metrics unavailable)")
+            plt.close(fig)
+            return
         
-        left_positions = np.arange(len(metric_names))
+        left_positions = np.arange(len(available_metric_names))
         width = 0.6
         
-        colors = plt.cm.Set2(np.linspace(0, 1, len(metric_names)))
+        colors = plt.cm.Set2(np.linspace(0, 1, len(available_metric_names)))
         bars_left = ax_left.bar(left_positions, metric_values, width, color=colors, 
                               edgecolor='black', linewidth=0.8)
         
@@ -1575,17 +1583,17 @@ class VisualizationGenerator:
                             f'{val:.3f}', ha='center', va='top', fontsize=10)
         
         # Right: PPL (separate scale)
-        ppl_value = self.metrics.get('PPL') or self.metrics.get('perplexity') or 1000.0
+        ppl_value = self.metrics.get('PPL')
         if ppl_value is None:
-            ppl_value = 1000.0
-        ppl_value = float(ppl_value)
-        
-        right_position = [6.5]
-        bars_right = ax_right.bar(right_position, [ppl_value], width, color='coral', 
-                               edgecolor='black', linewidth=0.8, alpha=0.8)
-        
-        ax_right.text(right_position[0], ppl_value + ppl_value * 0.02, f'{ppl_value:.1f}',
-                   ha='center', va='bottom', fontsize=12, fontweight='bold', color='coral')
+            ppl_value = self.metrics.get('perplexity')
+        ppl_available = isinstance(ppl_value, (int, float, np.number)) and np.isfinite(ppl_value)
+        right_position = [len(available_metric_names) + 0.5]
+        if ppl_available:
+            ppl_value = float(ppl_value)
+            ax_right.bar(right_position, [ppl_value], width, color='coral',
+                         edgecolor='black', linewidth=0.8, alpha=0.8)
+            ax_right.text(right_position[0], ppl_value + ppl_value * 0.02, f'{ppl_value:.1f}',
+                          ha='center', va='bottom', fontsize=12, fontweight='bold', color='coral')
         
         min_val = min(metric_values) if metric_values else 0
         max_val = max(metric_values) if metric_values else 1.0
@@ -1595,11 +1603,12 @@ class VisualizationGenerator:
         ax_left.set_ylim(y_min, y_max)
         
         ax_right.set_ylabel('Perplexity (PPL)', fontsize=12, color='coral')
-        ax_right.set_ylim(0, 1600)
+        if ppl_available:
+            ax_right.set_ylim(0, max(1.0, ppl_value * 1.15))
         ax_right.tick_params(axis='y', labelcolor='coral')
         
-        all_labels = metric_names + ['PPL']
-        all_positions = list(left_positions) + right_position
+        all_labels = available_metric_names + (['PPL'] if ppl_available else [])
+        all_positions = list(left_positions) + (right_position if ppl_available else [])
         ax_left.set_xticks(all_positions)
         ax_left.set_xticklabels(all_labels, rotation=15, ha='right')
         

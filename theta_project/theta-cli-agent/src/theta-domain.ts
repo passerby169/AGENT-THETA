@@ -175,16 +175,20 @@ const workflowStates: WorkflowStateSpec[] = [
         THETA_TOOL_IDS.modelCatalog,
         THETA_TOOL_IDS.ragSearch,
         THETA_TOOL_IDS.modelRecommend,
+        THETA_TOOL_IDS.planPropose,
       ],
       allowedToolRefs: [
         toolRef(THETA_TOOL_IDS.modelCatalog),
-        toolRef(THETA_TOOL_IDS.ragSearch),
+        toolRef(THETA_TOOL_IDS.ragSearch, "1.1.0"),
         toolRef(THETA_TOOL_IDS.modelRecommend, "2.0.0"),
+        toolRef(THETA_TOOL_IDS.planPropose, "1.3.0"),
       ],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.modelRead,
         THETA_PERMISSION_SCOPES.datasetRead,
         THETA_PERMISSION_SCOPES.ragRead,
+        THETA_PERMISSION_SCOPES.planRead,
+        THETA_PERMISSION_SCOPES.inferenceUse,
       ],
       policyRefs: [readonlyPolicy.id],
     },
@@ -194,7 +198,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Validate the candidate plan deterministically.",
     {
       allowedTools: [THETA_TOOL_IDS.planValidate],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planValidate)],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planValidate, "2.0.0")],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.planRead,
         THETA_PERMISSION_SCOPES.modelRead,
@@ -211,7 +215,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Create the approved canonical training plan.",
     {
       allowedTools: [THETA_TOOL_IDS.planCreate],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate, "2.0.0")],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate, "2.1.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.planWrite],
       humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
       policyRefs: [stateWritePolicy.id],
@@ -249,7 +253,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Start training through the governed Bridge.",
     {
       allowedTools: [THETA_TOOL_IDS.trainingStart],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart, "3.0.0")],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.trainingStart, "3.1.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.trainingWrite],
       humanApprovalPolicyRef: toolRef(trainingControlPolicy.id),
       policyRefs: [trainingControlPolicy.id],

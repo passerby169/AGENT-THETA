@@ -10,6 +10,7 @@ import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
 export interface ThetaTrainingStatusInput {
   trainingRunId: string;
   logLimit?: number;
+  reassessQuality?: boolean;
 }
 
 export type ThetaTrainingStatusOutput = TrainingStatusOutput;
@@ -20,6 +21,7 @@ const trainingStatusInputSchema: JsonSchema = {
   properties: {
     trainingRunId: { type: "string", minLength: 1 },
     logLimit: { type: "integer", minimum: 1, maximum: 500 },
+    reassessQuality: { type: "boolean" },
   },
   additionalProperties: false,
 };
@@ -31,6 +33,7 @@ const trainingStatusOutputSchema: JsonSchema = {
     trainingRunId: { type: "string" },
     found: { type: "boolean" },
     status: { type: "string" },
+    reassessed: { type: "boolean" },
     logs: { type: "array", items: { type: "string" } },
     receipt: { type: "object", additionalProperties: true },
     events: {
@@ -62,7 +65,7 @@ export const thetaTrainingStatusToolSpec: ToolSpec = {
   auditPolicy: {
     enabled: true,
     includeInput: true,
-    includeOutput: true,
+    includeOutput: false,
   },
   source: "local",
 };

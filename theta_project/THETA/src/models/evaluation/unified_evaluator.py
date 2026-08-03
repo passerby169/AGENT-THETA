@@ -80,6 +80,32 @@ class UnifiedEvaluator:
         self.dev_mode = dev_mode
         
         self.metrics = {}
+        self.metric_observations = {}
+
+    def _record_metric(self, name: str, value: Any, method: str) -> None:
+        native_value = float(value) if isinstance(value, (np.floating, np.integer)) else value
+        self.metrics[name] = native_value
+        self.metric_observations[name] = {
+            'value': native_value,
+            'status': 'computed',
+            'method': method,
+            'comparable': True,
+            'error': None,
+        }
+
+    def _mark_unavailable(self, name: str, method: str, error: Exception) -> None:
+        self.metrics[name] = None
+        self.metric_observations[name] = {
+            'value': None,
+            'status': 'unavailable',
+            'method': method,
+            'comparable': False,
+            'error': f'{type(error).__name__}: {error}',
+        }
+
+    def _format_metric(self, name: str, precision: int = 4) -> str:
+        value = self.metrics.get(name)
+        return f'{value:.{precision}f}' if isinstance(value, (int, float, np.number)) else 'unavailable'
     
     def compute_all_metrics(self, top_k: int = 10) -> Dict[str, Any]:
         """
@@ -105,19 +131,19 @@ class UnifiedEvaluator:
         # 1. TD (Topic Diversity)
         print("  [1/7] Computing TD (Topic Diversity)...")
         td = compute_topic_diversity(self.beta, top_k=25)
-        self.metrics['TD'] = td
+        self._record_metric('TD', td, 'top_word_unique_ratio')
         
         # 2. iRBO (Inverse Rank-Biased Overlap)
         print("  [2/7] Computing iRBO (Inverse Rank-Biased Overlap)...")
         irbo = compute_topic_diversity_inverted_rbo(self.beta, top_k=25)
-        self.metrics['iRBO'] = irbo
+        self._record_metric('iRBO', irbo, 'inverted_rank_biased_overlap')
         
         # 3. NPMI (Normalized PMI)
         print("  [3/7] Computing NPMI (Normalized PMI)...")
         npmi_avg, npmi_per_topic = compute_topic_coherence_npmi(
             self.beta, self.bow_matrix, top_k=top_k
         )
-        self.metrics['NPMI'] = npmi_avg
+        self._record_metric('NPMI', npmi_avg, 'document_cooccurrence_npmi')
         self.metrics['NPMI_per_topic'] = npmi_per_topic
         
         # 4. C_V (C_V Coherence)
@@ -126,13 +152,12 @@ class UnifiedEvaluator:
             cv_avg, cv_per_topic = compute_topic_coherence_cv(
                 self.beta, self.bow_matrix, top_k=top_k
             )
-            self.metrics['C_V'] = cv_avg
+            self._record_metric('C_V', cv_avg, 'sliding_window_cv')
             self.metrics['C_V_per_topic'] = cv_per_topic
         except Exception as e:
-            print(f"    Warning: C_V computation failed, using fallback: {e}")
-            # Fallback: use NPMI as approximation
-            self.metrics['C_V'] = npmi_avg
-            self.metrics['C_V_per_topic'] = npmi_per_topic
+            print(f"    Warning: C_V computation unavailable: {e}")
+            self._mark_unavailable('C_V', 'sliding_window_cv', e)
+            self.metrics['C_V_per_topic'] = []
         
         # 5. UMass (UMass Coherence)
         print("  [5/7] Computing UMass (UMass Coherence)...")
@@ -140,34 +165,32 @@ class UnifiedEvaluator:
             umass_avg, umass_per_topic = compute_topic_coherence_umass(
                 self.beta, self.bow_matrix, top_k=top_k
             )
-            self.metrics['UMass'] = umass_avg
+            self._record_metric('UMass', umass_avg, 'document_cooccurrence_umass')
             self.metrics['UMass_per_topic'] = umass_per_topic
         except Exception as e:
-            print(f"    Warning: UMass computation failed, using fallback: {e}")
-            self.metrics['UMass'] = 0.0
-            self.metrics['UMass_per_topic'] = [0.0] * self.num_topics
+            print(f"    Warning: UMass computation unavailable: {e}")
+            self._mark_unavailable('UMass', 'document_cooccurrence_umass', e)
+            self.metrics['UMass_per_topic'] = []
         
         # 6. Exclusivity (Topic Exclusivity)
         print("  [6/7] Computing Exclusivity (Topic Exclusivity)...")
         try:
             excl_avg, excl_per_topic = compute_topic_exclusivity(self.beta, top_k=top_k)
-            self.metrics['Exclusivity'] = excl_avg
+            self._record_metric('Exclusivity', excl_avg, 'topic_word_exclusivity')
             self.metrics['Exclusivity_per_topic'] = excl_per_topic
         except Exception as e:
-            print(f"    Warning: Exclusivity computation failed, using fallback: {e}")
-            # Fallback: compute simple exclusivity based on word overlap
-            self.metrics['Exclusivity'] = td  # Use TD as approximation
-            self.metrics['Exclusivity_per_topic'] = [td] * self.num_topics
+            print(f"    Warning: Exclusivity computation unavailable: {e}")
+            self._mark_unavailable('Exclusivity', 'topic_word_exclusivity', e)
+            self.metrics['Exclusivity_per_topic'] = []
         
         # 7. PPL (Perplexity)
         print("  [7/7] Computing PPL (Perplexity)...")
         try:
             ppl = compute_perplexity(self.beta, self.theta, self.bow_matrix)
-            self.metrics['PPL'] = ppl
+            self._record_metric('PPL', ppl, 'reconstructed_document_likelihood')
         except Exception as e:
-            print(f"    Warning: Perplexity computation failed, using fallback: {e}")
-            # Fallback: estimate perplexity from reconstruction
-            self.metrics['PPL'] = self._estimate_perplexity_fallback()
+            print(f"    Warning: Perplexity computation unavailable: {e}")
+            self._mark_unavailable('PPL', 'reconstructed_document_likelihood', e)
         
         # Compute topic significance for visualization (NOT part of 7 core metrics)
         print("  [Extra] Computing Topic Significance (for visualization only)...")
@@ -184,13 +207,13 @@ class UnifiedEvaluator:
         print(f"\n  {'='*50}")
         print(f"  7 Core Metrics Results:")
         print(f"  {'='*50}")
-        print(f"    1. TD:          {self.metrics['TD']:.4f}")
-        print(f"    2. iRBO:        {self.metrics['iRBO']:.4f}")
-        print(f"    3. NPMI:        {self.metrics['NPMI']:.4f}")
-        print(f"    4. C_V:         {self.metrics['C_V']:.4f}")
-        print(f"    5. UMass:       {self.metrics['UMass']:.4f}")
-        print(f"    6. Exclusivity: {self.metrics['Exclusivity']:.4f}")
-        print(f"    7. PPL:         {self.metrics['PPL']:.2f}")
+        print(f"    1. TD:          {self._format_metric('TD')}")
+        print(f"    2. iRBO:        {self._format_metric('iRBO')}")
+        print(f"    3. NPMI:        {self._format_metric('NPMI')}")
+        print(f"    4. C_V:         {self._format_metric('C_V')}")
+        print(f"    5. UMass:       {self._format_metric('UMass')}")
+        print(f"    6. Exclusivity: {self._format_metric('Exclusivity')}")
+        print(f"    7. PPL:         {self._format_metric('PPL', 2)}")
         print(f"  {'='*50}")
         print(f"  [Visualization Data] Significance: {self.metrics['Significance']:.4f}")
         
@@ -244,13 +267,13 @@ class UnifiedEvaluator:
         """
         # Ensure all 7 metrics are present
         core_metrics = {
-            'TD': self.metrics.get('TD', 0.0),
-            'iRBO': self.metrics.get('iRBO', 0.0),
-            'NPMI': self.metrics.get('NPMI', 0.0),
-            'C_V': self.metrics.get('C_V', 0.0),
-            'UMass': self.metrics.get('UMass', 0.0),
-            'Exclusivity': self.metrics.get('Exclusivity', 0.0),
-            'PPL': self.metrics.get('PPL', 1000.0),
+            'TD': self.metrics.get('TD'),
+            'iRBO': self.metrics.get('iRBO'),
+            'NPMI': self.metrics.get('NPMI'),
+            'C_V': self.metrics.get('C_V'),
+            'UMass': self.metrics.get('UMass'),
+            'Exclusivity': self.metrics.get('Exclusivity'),
+            'PPL': self.metrics.get('PPL'),
         }
         
         # Add per-topic metrics
@@ -269,6 +292,8 @@ class UnifiedEvaluator:
             'model_name': self.model_name,
             'dataset': self.dataset,
             'num_topics': self.num_topics,
+            'metric_observations': self.metric_observations,
+            'metric_schema_version': '2.0.0',
         }
         
         return {**core_metrics, **per_topic_metrics, **metadata}

@@ -9,6 +9,7 @@ export const USER_ASSERTED_RESEARCH_FIELDS = new Set<
   'timeRange',
   'language',
   'comparisonGroups',
+  'comparisonIntent',
   'topicGranularity',
   'knownBiases',
   'sensitiveData',

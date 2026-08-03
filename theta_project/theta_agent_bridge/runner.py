@@ -13,6 +13,7 @@ from typing import Any
 
 from .bridge import (
     PROJECT_ROOT,
+    assess_result_quality,
     bind_result_artifacts,
     connect_state_db,
     init_state_db,
@@ -52,10 +53,18 @@ def run_training(training_run_id: str) -> None:
                     return
 
                 step = str(command.get("step") or f"step_{index + 1}")
-                progress = 10 if index == 0 else 55
+                progress_start = 5 + round(index * 90 / len(commands))
+                progress_end = 5 + round((index + 1) * 90 / len(commands))
+                progress = progress_start
                 mark_running(training_run_id, step, progress)
                 write_log(log, f"[runner] step={step}")
-                code = run_command(training_run_id, command, log)
+                code = run_command(
+                    training_run_id,
+                    command,
+                    log,
+                    progress_start,
+                    progress_end,
+                )
                 if isinstance(code, dict):
                     mark_cancelled(
                         training_run_id,
@@ -76,6 +85,7 @@ def run_training(training_run_id: str) -> None:
                     mark_failed(training_run_id, step, message, failure)
                     write_log(log, f"[runner] failed: {message}")
                     return
+                mark_running(training_run_id, f"{step}_completed", progress_end)
 
             terminal_status = mark_completed(training_run_id)
             write_log(log, f"[runner] {terminal_status}")
@@ -90,7 +100,13 @@ def run_training(training_run_id: str) -> None:
             raise
 
 
-def run_command(training_run_id: str, command: dict[str, Any], log) -> int | dict[str, Any]:
+def run_command(
+    training_run_id: str,
+    command: dict[str, Any],
+    log,
+    progress_start: int,
+    progress_end: int,
+) -> int | dict[str, Any]:
     argv = command_argv(command)
     cwd = Path(str(command.get("cwd") or PROJECT_ROOT))
     write_log(log, "[run] " + " ".join(argv))
@@ -116,16 +132,16 @@ def run_command(training_run_id: str, command: dict[str, Any], log) -> int | dic
     reader.start()
 
     while True:
-        drain_output(output_queue, log, training_run_id)
+        drain_output(output_queue, log, training_run_id, progress_start, progress_end)
         if is_cancel_requested(training_run_id):
             outcome = terminate_process(process, log)
-            drain_output(output_queue, log, training_run_id)
+            drain_output(output_queue, log, training_run_id, progress_start, progress_end)
             return outcome
 
         code = process.poll()
         if code is not None:
             reader.join(timeout=2)
-            drain_output(output_queue, log, training_run_id)
+            drain_output(output_queue, log, training_run_id, progress_start, progress_end)
             clear_active_process(training_run_id)
             return int(code)
 
@@ -139,6 +155,20 @@ def command_argv(command: dict[str, Any]) -> list[str]:
     return argv
 
 
+def model_id_from_commands(commands: Any) -> str:
+    """Read the canonical model id from the compiled training command."""
+    if not isinstance(commands, list):
+        return "unknown"
+    for command in reversed(commands):
+        if not isinstance(command, dict):
+            continue
+        argv = [str(value) for value in command.get("argv") or []]
+        for flag in ("--models", "--model_id"):
+            if flag in argv and argv.index(flag) + 1 < len(argv):
+                return argv[argv.index(flag) + 1].strip().lower()
+    return "unknown"
+
+
 def read_stdout(process: subprocess.Popen, output_queue: queue.Queue[str | None]) -> None:
     assert process.stdout is not None
     for line in process.stdout:
@@ -150,6 +180,8 @@ def drain_output(
     output_queue: queue.Queue[str | None],
     log,
     training_run_id: str,
+    progress_start: int,
+    progress_end: int,
 ) -> None:
     while True:
         try:
@@ -162,20 +194,21 @@ def drain_output(
         log.flush()
         progress_update = progress_from_output(line)
         if progress_update is not None:
-            step, progress = progress_update
+            step, fraction = progress_update
+            progress = progress_start + round((progress_end - progress_start) * fraction)
             mark_running(training_run_id, step, progress)
 
 
-def progress_from_output(line: str) -> tuple[str, int] | None:
+def progress_from_output(line: str) -> tuple[str, float] | None:
     normalized = line.strip().lower()
     milestones = (
-        ("baseline data preparation completed", ("data_prepared", 45)),
-        ("[done] only generated bow", ("data_prepared", 45)),
-        ("[evaluating ", ("evaluate_model", 70)),
-        ("[visualizing ", ("generate_visualizations", 82)),
-        ("[visualization] starting isolated", ("generate_visualizations", 86)),
-        ("done! total charts generated", ("verify_visualizations", 94)),
-        ("summary", ("bind_results", 97)),
+        ("baseline data preparation completed", ("data_prepared", 0.9)),
+        ("[done] only generated bow", ("data_prepared", 0.9)),
+        ("[evaluating ", ("evaluate_model", 0.55)),
+        ("[visualizing ", ("generate_visualizations", 0.75)),
+        ("[visualization] starting isolated", ("generate_visualizations", 0.8)),
+        ("done! total charts generated", ("verify_visualizations", 0.92)),
+        ("summary", ("bind_results", 0.97)),
     )
     for marker, value in milestones:
         if marker in normalized:
@@ -309,7 +342,7 @@ def mark_running(training_run_id: str, step: str, progress: int) -> None:
         conn.execute(
             """
             UPDATE training_runs
-            SET status = 'running', current_step = ?, progress = ?, started_at = ?, updated_at = ?
+            SET status = 'running', current_step = ?, progress = MAX(progress, ?), started_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
             (step, progress, started_at, now, training_run_id),
@@ -330,7 +363,8 @@ def mark_completed(training_run_id: str) -> str:
         row = conn.execute(
             """
             SELECT plan_id, plan_hash, plan_review_approval_id,
-                   training_review_approval_id, dry_run_hash, artifact_json
+                   training_review_approval_id, dry_run_hash, artifact_json,
+                   command_json
             FROM training_runs
             WHERE training_run_id = ?
             """,
@@ -373,15 +407,21 @@ def mark_completed(training_run_id: str) -> str:
                 },
             )
             return "quarantined"
+        quality = assess_result_quality(
+            result_artifacts,
+            model_id_from_commands(json.loads(row["command_json"])),
+        )
         conn.execute(
             """
             UPDATE training_runs
             SET status = 'completed', current_step = 'completed', progress = 100,
-                result_json = ?, active_pid = NULL, finished_at = ?, updated_at = ?
+                result_json = ?, quality_json = ?, active_pid = NULL,
+                finished_at = ?, updated_at = ?
             WHERE training_run_id = ?
             """,
             (
                 json.dumps(result_artifacts, ensure_ascii=False, sort_keys=True),
+                json.dumps(quality, ensure_ascii=False, sort_keys=True),
                 now,
                 now,
                 training_run_id,
@@ -523,6 +563,7 @@ def mark_failed(
                 "error": message,
                 "failure": structured_failure,
                 "resultArtifacts": result_artifacts,
+                "quality": quality,
             },
         )
 

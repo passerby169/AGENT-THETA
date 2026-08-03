@@ -50,6 +50,26 @@ export const buildHumanResponse = (value: unknown): HumanFacingResponse => {
     return runResults(record, value, kind === 'run.summary');
   }
   if (kind === 'training.logs') return trainingLogs(record, value);
+  if (kind === 'training.quality.reassessed') {
+    const quality = asRecord(record.quality);
+    return {
+      kind,
+      title: '质量门已重新评估',
+      summary: text(record.response) ?? '已按当前落盘产物重新计算质量门。',
+      sections: [{
+        title: '评估结果',
+        lines: [
+          `训练 ID：${human(record.trainingRunId)}`,
+          `质量状态：${human(quality?.status ?? 'unknown')}`,
+          `检查项：${Array.isArray(quality?.checks) ? quality.checks.length : 0} 项`,
+        ],
+      }],
+      nextActions: record.runId
+        ? resolveNextActions('Completed')
+        : resolveNextActions(undefined),
+      technicalDetails: value,
+    };
+  }
   if (kind === 'run.catalog') return runCatalog(record, value);
   if (kind.startsWith('training.cancel')) {
     return response(
@@ -117,7 +137,7 @@ const workflow = (
       lines: [
         `训练 ID：${human(receipt.trainingRunId)}`,
         `进度：${human(receipt.progress)}%`,
-        `当前步骤：${human(receipt.currentStep)}`,
+        `当前步骤：${trainingStageLabel(receipt.currentStep)}`,
       ],
     });
   }
@@ -186,6 +206,15 @@ const runExplanation = (
             lines: strings(record.suggestedCommands),
           },
         ]
+      : []),
+    ...(Array.isArray(record.explanationSections)
+      ? record.explanationSections
+          .map(asRecord)
+          .filter(Boolean)
+          .map((item) => ({
+            title: text(item?.title) ?? '方案解释',
+            lines: strings(item?.lines),
+          }))
       : []),
   ],
   ...(text(record.technicalDetail)
@@ -270,14 +299,15 @@ const columns = (
   record: Record<string, unknown>,
   raw: unknown,
 ): HumanFacingResponse => {
-  const draft = asRecord(record.draft);
+  const draft = asRecord(record.draft) ?? asRecord(record.proposedDraft);
   const workflowRecord = asRecord(record.workflow);
   const lines = draft
     ? [
         `正文列：${strings(draft.textColumns).join('、') || '未确认'}`,
         `时间列：${human(draft.timeColumn ?? '无')}`,
         `ID 列：${human(draft.idColumn ?? '无')}`,
-        `元数据列：${strings(draft.metadataColumns).join('、') || '无'}`,
+        `训练协变量：${strings(draft.covariateColumns).join('、') || '无'}`,
+        `展示分组：${strings(draft.groupingColumns).join('、') || '无'}`,
       ]
     : [`可用列：${strings(record.columns).join('、')}`];
   return {
@@ -286,7 +316,7 @@ const columns = (
     summary:
       text(record.explanation) ??
       text(record.response) ??
-      '请明确正文、时间、ID 和元数据列。',
+      '请明确正文、时间、ID、训练协变量和展示分组列。',
     sections: [{ title: '列角色', lines }],
     nextActions: resolveNextActions(
       workflowRecord?.currentState ?? 'ColumnConfirmation',
@@ -315,11 +345,47 @@ const plan = (
     {};
   const review = asRecord(asRecord(record.planRecord)?.review) ?? {};
   const recommendation = asRecord(record.recommendation) ?? {};
+  const evidenceBundle = asRecord(record.evidenceBundle) ?? {};
+  const proposalEnvelope = asRecord(record.planProposal) ?? {};
+  const proposal = asRecord(proposalEnvelope.draft) ?? {};
+  const plannerSource = text(proposalEnvelope.source);
+  const plannerFallbackReason = text(proposalEnvelope.fallbackReason);
+  const plannerFallbackLabels: Record<string, string> = {
+    planner_not_enabled: '当前 Run 未启用 MiniMax Planner',
+    provider_not_configured: '未配置 MiniMax Provider',
+    network_failure: 'MiniMax 网络请求失败',
+    timeout: 'MiniMax Planner 请求超时',
+    provider_error: 'MiniMax Provider 返回错误',
+    schema_validation_failed: 'MiniMax 紧凑方案结构无效',
+    evidence_violation: 'MiniMax 证据选择未通过兼容性校验',
+    catalog_violation: 'MiniMax 选择超出本地模型或参数目录',
+  };
+  const plannerStatusLines = plannerSource === 'minimax'
+    ? ['MiniMax Planner：已采纳；模型角色、实验协议与证据绑定均通过治理校验。']
+    : [
+        'MiniMax Planner：未采纳；当前执行的是确定性后备方案。',
+        plannerFallbackReason
+          ? `回退原因：${plannerFallbackLabels[plannerFallbackReason] ?? plannerFallbackReason}。`
+          : undefined,
+        text(proposalEnvelope.fallbackDetail)
+          ? `技术摘要：${text(proposalEnvelope.fallbackDetail)}`
+          : undefined,
+      ].filter((item): item is string => Boolean(item));
+  const experimentProtocol =
+    asRecord(candidate.experimentProtocol) ??
+    asRecord(proposal.experimentProtocol) ??
+    {};
+  const plannerPrimary = asRecord(proposal.primary) ?? {};
+  const plannerResolution = asRecord(record.plannerResolution) ?? {};
+  const validation = asRecord(record.validation) ?? {};
   const degradation = asRecord(recommendation.degradation) ?? {};
   const ranked = Array.isArray(recommendation.recommendations)
     ? recommendation.recommendations.map(asRecord).filter(Boolean)
     : [];
-  const primary = ranked[0] ?? {};
+  const primary =
+    ranked.find((item) => text(item?.modelId) === text(plannerPrimary.modelId)) ??
+    ranked[0] ??
+    {};
   const recommendedParameters = Array.isArray(primary.parameters)
     ? primary.parameters.map(asRecord).filter(Boolean)
     : [];
@@ -336,13 +402,128 @@ const plan = (
     .slice(1, 3)
     .map(
       (item) =>
-        `${human(item?.modelName ?? item?.modelId)}：评分 ${human(item?.score)}，置信度${confidenceLabel(text(item?.confidence))}。`,
+        `${human(item?.modelName ?? item?.modelId)}：评分 ${human(item?.score)}，比主方案低 ${Math.max(0, (number(primary.score) ?? 0) - (number(item?.score) ?? 0))} 分；${strings(item?.warnings).map(translateWarning).join('；') || '综合匹配度低于主方案'}。`,
     );
+  const skippedLines = Array.isArray(recommendation.skipped)
+    ? recommendation.skipped
+        .map(asRecord)
+        .filter(Boolean)
+        .slice(0, 8)
+        .map(
+          (item) =>
+            `${human(item?.modelId)}：未进入候选，因为 ${strings(item?.reasonCodes).join('、') || '不满足硬约束'}。`,
+        )
+    : [];
+  const plannerDecisionLines = [
+    text(proposal.summary),
+    text(plannerPrimary.choice),
+    ...strings(plannerPrimary.assumptions).map((item) => `假设：${item}`),
+  ].filter((item): item is string => Boolean(item));
+  const plannerRisks = strings(plannerPrimary.risks).map((item) => `规划风险：${item}`);
+  const evidenceReceipts = Array.isArray(proposalEnvelope.evidenceSelectionReceipts)
+    ? proposalEnvelope.evidenceSelectionReceipts.map(asRecord).filter(Boolean)
+    : [];
+  const evidenceReceiptLines = evidenceReceipts.map((receipt) => {
+    const bindings = Array.isArray(receipt?.bindings) ? receipt.bindings.length : 0;
+    const issues = Array.isArray(receipt?.issues)
+      ? receipt.issues.map(asRecord).filter(Boolean)
+      : [];
+    const summary = `${human(receipt?.receiptId)}：${receipt?.outcome === 'accepted' ? '证据兼容性校验通过' : '证据绑定被拒绝'}，检查 ${bindings} 个决策目标${issues.length ? `，发现 ${issues.length} 个问题` : ''}。`;
+    return [
+      summary,
+      ...issues.slice(0, 3).map(
+        (issue) =>
+          `  ${human(issue?.targetId)}：${human(issue?.code)}${text(issue?.evidenceId) ? `（${text(issue?.evidenceId)}）` : ''}`,
+      ),
+    ];
+  }).flat();
+  const evaluationLines = Array.isArray(proposal.evaluation)
+    ? proposal.evaluation.map(asRecord).filter(Boolean).map((item) => human(item?.choice))
+    : [];
+  const primarySeeds = numbers(experimentProtocol.primarySeeds);
+  const baselineSeeds = numbers(experimentProtocol.baselineSeeds);
+  const baselineModelId = text(experimentProtocol.baselineModelId);
+  const protocolMode = text(experimentProtocol.mode) ?? 'quick';
+  const protocolRunCount = primarySeeds.length + baselineSeeds.length;
+  const experimentLines = [
+    `实验类型：${protocolMode === 'comparative' ? '主模型与基线对照' : protocolMode === 'stability' ? '主模型稳定性复验' : '单次快速运行'}`,
+    `真实训练次数：${protocolRunCount || 1} 次`,
+    `主模型随机种子：${primarySeeds.join('、') || '42'}`,
+    baselineModelId
+      ? `对照模型：${baselineModelId.toUpperCase()}（随机种子 ${baselineSeeds.join('、')}）`
+      : '对照模型：无',
+    text(experimentProtocol.rationale)
+      ? `设计理由：${text(experimentProtocol.rationale)}`
+      : undefined,
+  ].filter((item): item is string => Boolean(item));
+  const preprocessingLines = Array.isArray(proposal.preprocessing)
+    ? proposal.preprocessing.map(asRecord).filter(Boolean).map((item) => human(item?.choice))
+    : [];
+  const openQuestionLines = strings(proposal.openQuestions);
+  const acceptedEvidenceRefs = new Set(strings(plannerResolution.acceptedEvidenceRefs));
+  const allEvidence = Array.isArray(evidenceBundle.evidence)
+    ? evidenceBundle.evidence.map(asRecord).filter(Boolean)
+    : [];
+  const evidenceLines = [
+    ...allEvidence.filter((item) => acceptedEvidenceRefs.has(text(item?.evidenceId) ?? '')),
+    ...allEvidence,
+  ]
+    .filter((item, index, items) =>
+      items.findIndex((candidate) => text(candidate?.evidenceId) === text(item?.evidenceId)) === index,
+    )
+    .slice(0, 6)
+    .map((item) => {
+      const citation = [
+        text(item?.sourceYear),
+        text(item?.authority),
+        text(item?.sourceId),
+      ].filter(Boolean).join(' · ');
+      return `${human(item?.title ?? item?.objectId ?? item?.sourceId)}${citation ? `（${citation}）` : ''}`;
+    });
+  const conflictLines = Array.isArray(evidenceBundle.conflicts)
+    ? evidenceBundle.conflicts
+        .map(asRecord)
+        .filter(Boolean)
+        .slice(0, 4)
+        .map((item) => `需区分：${human(item?.summary)}`)
+    : [];
+  const uncertaintyLines = Array.isArray(evidenceBundle.uncertainties)
+    ? evidenceBundle.uncertainties
+        .map(asRecord)
+        .filter(Boolean)
+        .slice(0, 5)
+        .map((item) => human(item?.message))
+    : [];
+  const rejectedPlannerFields = Array.isArray(plannerResolution.rejectedFields)
+    ? plannerResolution.rejectedFields
+        .map(asRecord)
+        .filter(Boolean)
+        .map((item) => `${human(item?.field)}：${human(item?.reason)}`)
+    : [];
+  const validatorLines = [
+    validation.valid === true
+      ? `Validator ${human(validation.validatorVersion ?? 'V2')} 已通过；可执行参数以校验后的方案为准。`
+      : undefined,
+    strings(plannerResolution.acceptedFields).length
+      ? `采纳的 Planner 参数：${strings(plannerResolution.acceptedFields).join('、')}`
+      : 'Planner 没有直接覆盖确定性参数。',
+    ...rejectedPlannerFields.map((item) => `未采纳：${item}`),
+  ].filter((item): item is string => Boolean(item));
   const state = text(record.currentState);
+  const topicCountMode = text(model.topicCountMode ?? candidate.topicCountMode);
+  const topicCountDisplay =
+    topicCountMode === 'auto'
+      ? model.maxTopics ?? candidate.maxTopics
+        ? `自动推断（最多 ${human(model.maxTopics ?? candidate.maxTopics)} 个）`
+        : '自动推断'
+      : topicCountMode === 'target_reduction'
+        ? `自动发现后缩减到约 ${human(model.numTopics ?? candidate.numTopics)} 个`
+        : model.numTopics ?? parameters.numTopics ?? candidate.numTopics;
   const lines = [
     pair('模型', model.modelId),
+    pair('模型成熟度', primary.maturity),
     pair('训练模式', model.mode),
-    pair('主题数', model.numTopics ?? parameters.numTopics),
+    pair('主题数', topicCountDisplay),
     pair('批大小', candidate.batchSize ?? parameters.batchSize),
     pair(
       String(model.modelId).toLowerCase() === 'btm'
@@ -359,7 +540,10 @@ const plan = (
     ),
     pair('时间列', columnsRecord.timeColumn),
     pair('ID 列', columnsRecord.idColumn),
-    pair('元数据列', strings(columnsRecord.metadataColumns).join('、')),
+    pair('训练协变量列', strings(columnsRecord.covariateColumns).join('、')),
+    pair('描述元数据列', strings(columnsRecord.metadataColumns).join('、')),
+    pair('展示分组列', strings(columnsRecord.groupingColumns).join('、')),
+    pair('评估标签列', strings(columnsRecord.evaluationLabelColumns).join('、')),
     pair('运行设备', resources.device),
     pair(
       '网络访问',
@@ -431,12 +615,52 @@ const plan = (
       ...(recommendationLines.length
         ? [{ title: '推荐解释', lines: recommendationLines }]
         : []),
+      ...(plannerStatusLines.length
+        ? [{ title: 'Planner 状态', lines: plannerStatusLines }]
+        : []),
+      ...(plannerDecisionLines.length
+        ? [{
+            title: proposalEnvelope.source === 'minimax' ? 'MiniMax 规划判断' : '确定性后备规划',
+            lines: plannerDecisionLines,
+          }]
+        : []),
+      {
+        title: '本次实验设计',
+        lines: experimentLines,
+      },
+      ...(evaluationLines.length
+        ? [{
+            title: '验收与评估',
+            lines: evaluationLines,
+          }]
+        : []),
+      ...(preprocessingLines.length
+        ? [{ title: '数据准备', lines: preprocessingLines }]
+        : []),
+      ...(evidenceLines.length
+        ? [{ title: '关键证据', lines: evidenceLines }]
+        : []),
+      ...(validatorLines.length
+        ? [{ title: '可执行性校验', lines: validatorLines }]
+        : []),
+      ...([...conflictLines, ...uncertaintyLines].length
+        ? [{ title: '证据边界与不确定性', lines: [...conflictLines, ...uncertaintyLines] }]
+        : []),
+      ...(openQuestionLines.length
+        ? [{ title: '仍需确认', lines: openQuestionLines }]
+        : []),
       ...(alternatives.length
-        ? [{ title: '备选方案', lines: alternatives }]
+        ? [{ title: '为什么没有选择其他模型', lines: [...alternatives, ...skippedLines] }]
+        : skippedLines.length
+          ? [{ title: '为什么没有选择其他模型', lines: skippedLines }]
+        : []),
+      ...(evidenceReceiptLines.length
+        ? [{ title: '证据绑定审计', lines: evidenceReceiptLines }]
         : []),
     ],
     ...([
       ...warnings,
+      ...plannerRisks,
       ...(number(datasetProfile.rowCount) !== undefined &&
       number(datasetProfile.rowCount)! < 100
         ? [
@@ -495,7 +719,7 @@ const training = (
     progress: {
       current: state === 'Completed' ? 7 : 6,
       total: WORKFLOW_TOTAL_STEPS,
-      label: text(receipt.currentStep) ?? stateLabel(state).title,
+      label: trainingStageLabel(receipt.currentStep) ?? stateLabel(state).title,
       percent: number(receipt.progress) ?? (state === 'Completed' ? 100 : 0),
     },
     sections: [
@@ -504,7 +728,7 @@ const training = (
         lines: [
           pair('训练 ID', receipt.trainingRunId),
           pair('进度', number(receipt.progress) === undefined ? undefined : `${number(receipt.progress)}%`),
-          pair('当前阶段', receipt.currentStep),
+          pair('当前阶段', trainingStageLabel(receipt.currentStep)),
           pair('Python', receipt.pythonExecutable),
           pair('日志', receipt.logPath),
         ].filter((line): line is string => Boolean(line)),
@@ -695,15 +919,26 @@ const runResults = (
     ? record.experiments.map(asRecord).filter(Boolean)
     : [];
   const comparison = strings(record.comparison);
+  const metricObservations = asRecord(metrics.metric_observations) ?? {};
+  const unavailableMetrics = Object.entries(metricObservations)
+    .map(([name, value]) => [name, asRecord(value)] as const)
+    .filter(([, value]) => value?.status === 'unavailable');
   const metricLines = flattenMetrics(metrics)
     .filter(
       ([key]) =>
-        !['model_name', 'dataset', 'num_topics'].includes(key.toLowerCase()),
+        !['model_name', 'dataset', 'num_topics', 'metric_schema_version'].includes(
+          key.toLowerCase(),
+        ) && !key.toLowerCase().startsWith('metric_observations.'),
     )
     .slice(0, 12)
     .map(([key, item]) => `${metricLabel(key)}：${formatMetric(item)}`);
   const resultRoot = text(record.resultRoot);
-  const warnings: string[] = [];
+  const warnings: string[] = [...strings(record.warnings)];
+  if (unavailableMetrics.length) {
+    warnings.push(
+      `以下指标未成功计算，系统没有使用其他指标冒充：${unavailableMetrics.map(([name]) => name).join('、')}。`,
+    );
+  }
   if (number(record.progress) !== undefined && number(record.progress)! < 100) {
     warnings.push('训练尚未完成，当前结果可能不完整。');
   }
@@ -747,6 +982,14 @@ const runResults = (
         `训练状态为 ${human(record.status)}，已记录 ${artifacts.length} 个受验证产物。`,
     sections: [
       {
+        title: '验收状态',
+        lines: [
+          `执行：${human(record.executionStatus ?? record.status)}`,
+          `质量：${human(record.qualityStatus ?? '尚未评估')}`,
+          `研究目标：${human(record.researchStatus ?? '尚未评估')}`,
+        ],
+      },
+      {
         title: '结果位置',
         lines: [
           ...(resultRoot ? [`完整结果：${resultRoot}`] : []),
@@ -768,6 +1011,15 @@ const runResults = (
       },
       ...(metricLines.length
         ? [{ title: '核心指标', lines: metricLines }]
+        : []),
+      ...(Object.keys(metricObservations).length
+        ? [{
+            title: '指标来源与可用性',
+            lines: Object.entries(metricObservations).map(([name, value]) => {
+              const observation = asRecord(value) ?? {};
+              return `${name}：${observation.status === 'computed' ? '真实计算' : human(observation.status)}；方法 ${human(observation.method)}${observation.error ? `；${human(observation.error)}` : ''}`;
+            }),
+          }]
         : []),
       ...(summaryMode && topicLines.length
         ? [{ title: '主题概览', lines: topicLines }]
@@ -794,7 +1046,7 @@ const runResults = (
       ...(experiments.length > 1
         ? [
             {
-              title: `历史实验比较（${experiments.length} 次）`,
+              title: `本次基线与多随机种子比较（${experiments.length} 个实验）`,
               lines:
                 comparison.length > 0
                   ? comparison
@@ -817,10 +1069,21 @@ const runResults = (
         : []),
     ],
     ...(warnings.length ? { warnings } : {}),
-    nextActions: resolveNextActions(
+    nextActions: [
+      ...resolveNextActions(
       record.status === 'completed' ? 'Completed' : 'MonitorTraining',
       record.status,
-    ).filter((item) => !summaryMode || item.id !== 'summary'),
+      ).filter((item) => !summaryMode || item.id !== 'summary'),
+      ...(record.qualityStatus === 'failed'
+        ? [{
+            id: 'retry',
+            label: '创建新训练尝试',
+            description: '质量门失败时保留原产物，并基于同一审批链创建新的训练尝试。',
+            command: '/retry',
+            recommended: true,
+          }]
+        : []),
+    ],
     technicalDetails: raw,
   };
 };
@@ -983,6 +1246,11 @@ const text = (value: unknown): string | undefined =>
 const number = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
+const numbers = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
+    : [];
+
 const strings = (value: unknown): string[] =>
   Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
@@ -1015,6 +1283,7 @@ const fieldLabels: Readonly<Record<string, string>> = {
   timeRange: '时间范围',
   language: '数据语言',
   comparisonGroups: '比较对象',
+  comparisonIntent: '比较需求',
   topicGranularity: '主题粒度',
   knownBiases: '已知偏差',
   sensitiveData: '敏感数据',
@@ -1027,12 +1296,38 @@ const fieldLabels: Readonly<Record<string, string>> = {
   timeLimitHours: '可用时间',
   modelId: '模型',
   numTopics: '主题数',
+  maxTopics: '最大主题数',
+  topicCountMode: '主题数模式',
+  nNeighbors: 'UMAP 邻居数',
+  nComponents: 'UMAP 维度',
+  minClusterSize: '最小主题簇',
+  minSamples: '核心样本阈值',
+  topNWords: '每主题词数',
   batchSize: '批大小',
   epochs: '迭代次数',
   mode: '训练模式',
 };
 
 const fieldLabel = (value: string): string => fieldLabels[value] ?? value;
+
+const trainingStageLabel = (value: unknown): string => {
+  const stage = text(value) ?? '等待训练状态';
+  const normalized = stage.replace(/_completed$/u, '');
+  const primary = normalized.match(/^run_pipeline_primary_([a-z0-9_-]+)_s(\d+)$/u);
+  if (primary) return `训练主模型 ${primary[1]?.toUpperCase()}（随机种子 ${primary[2]}）`;
+  const baseline = normalized.match(/^run_pipeline_baseline_([a-z0-9_-]+)_s(\d+)$/u);
+  if (baseline) return `训练对照模型 ${baseline[1]?.toUpperCase()}（随机种子 ${baseline[2]}）`;
+  return ({
+    queued: '等待后台执行',
+    prepare_data: '读取并准备数据',
+    data_prepared: '数据准备完成',
+    evaluate_model: '评估模型',
+    generate_visualizations: '生成图表',
+    verify_visualizations: '验证图表',
+    bind_results: '绑定本次结果',
+    completed: '训练完成',
+  } as Readonly<Record<string, string>>)[normalized] ?? normalized;
+};
 
 const reasonLabels: Readonly<Record<string, string>> = {
   THETA_NATIVE_MODEL: '该模型由当前 THETA 训练后端原生支持。',
@@ -1053,6 +1348,8 @@ const translateReasonCodes = (codes: string[]): string[] =>
 
 const warningLabels: Readonly<Record<string, string>> = {
   SMALL_CORPUS: '样本量很小，主题和指标可能不稳定。',
+  EXPERIMENTAL_MODEL_REQUIRES_HUMAN_REVIEW:
+    '当前模型属于实验性实现；可以运行，但结果必须经过人工复核，不能按生产级模型解释。',
 };
 
 const translateWarning = (value: string): string =>
@@ -1105,7 +1402,7 @@ const interpretMetrics = (
   }
   if (npmi !== undefined || cv !== undefined) {
     lines.push(
-      `一致性指标${npmi === undefined ? '' : ` NPMI=${npmi.toFixed(3)}`}${cv === undefined ? '' : `、C_V=${cv.toFixed(3)}`} 偏低，主题内部的语义凝聚度仍然有限，符合 24 条小样本的预期风险。`,
+      `一致性指标${npmi === undefined ? '' : ` NPMI=${npmi.toFixed(3)}`}${cv === undefined ? '' : `、C_V=${cv.toFixed(3)}`} 偏低，主题内部的语义凝聚度有限；应结合主题重复度、代表文档与人工判断排查主题塌缩。`,
     );
   }
   lines.push(

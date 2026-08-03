@@ -3,6 +3,10 @@ export * from "./hypha-runner.js";
 export * from "./tool-ids.js";
 export type { ThetaDatasetDetectColumnsOutput } from "./dataset-detect-columns-tool.js";
 export type {
+  ThetaPlanProposeInput,
+  ThetaPlanProposeOutput,
+} from "./plan-propose-tool.js";
+export type {
   ThetaDatasetColumnCandidate,
   ThetaDatasetColumnProfile,
   ThetaDatasetFileInput,

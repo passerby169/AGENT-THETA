@@ -56,6 +56,7 @@ import sys
 import json
 import argparse
 import subprocess
+import random
 import numpy as np
 import scipy.sparse as sp
 from datetime import datetime
@@ -648,6 +649,7 @@ def run_baseline(model_name: str, args) -> Dict[str, Any]:
         'batch_size': args.batch_size,
         'hidden_dim': args.hidden_dim,
         'learning_rate': args.learning_rate,
+        'random_state': args.random_state,
     }
     with open(model_dir / 'config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
@@ -670,18 +672,18 @@ def run_baseline(model_name: str, args) -> Dict[str, Any]:
         # Traditional models
         try:
             if model_name == 'lda':
-                train_result = trainer.train_lda(max_iter=args.max_iter)
+                train_result = trainer.train_lda(max_iter=args.max_iter, random_state=args.random_state)
             elif model_name == 'hdp':
-                train_result = trainer.train_hdp(max_topics=args.max_topics, alpha=args.alpha)
+                train_result = trainer.train_hdp(max_topics=args.max_topics, alpha=args.alpha, random_state=args.random_state)
             elif model_name == 'stm':
                 # Use covariates loaded from workspace
                 covariates = trainer.covariates
                 covariate_names = trainer.covariate_names
                 if covariates is not None:
                     print(f"  Loaded covariates: {covariates.shape}")
-                train_result = trainer.train_stm(max_iter=args.max_iter, covariates=covariates, covariate_names=covariate_names)
+                train_result = trainer.train_stm(max_iter=args.max_iter, covariates=covariates, covariate_names=covariate_names, random_state=args.random_state)
             elif model_name == 'btm':
-                train_result = trainer.train_btm(n_iter=args.n_iter, alpha=args.alpha, beta=args.beta)
+                train_result = trainer.train_btm(n_iter=args.n_iter, alpha=args.alpha, beta=args.beta, random_state=args.random_state)
             # Neural models
             elif model_name == 'etm':
                 train_result = trainer.train_etm(epochs=args.epochs, batch_size=args.batch_size,
@@ -975,6 +977,15 @@ def print_summary(results: List[Dict]):
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    random.seed(args.random_state)
+    np.random.seed(args.random_state)
+    try:
+        import torch
+        torch.manual_seed(args.random_state)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.random_state)
+    except ImportError:
+        pass
     
     # Validate path components (user_id, dataset, task_name)
     try:
@@ -989,7 +1000,7 @@ def main():
     models = get_model_list(args.models)
     
     print(f"{'='*70}")
-    print(f"ETM Pipeline: {args.dataset}")
+    print(f"Topic Model Pipeline: {args.dataset}")
     print(f"Models: {', '.join(models)}")
     if 'theta' in models:
         print(f"Model Size: {args.model_size}")

@@ -51,7 +51,9 @@ const explicitCapabilities: Readonly<
 
 export const capabilitiesForModel = (
   model: CatalogModel,
+  override?: ModelCapabilities,
 ): ModelCapabilities => {
+  if (override) return override;
   const modelId = model.id.toLowerCase();
   const requires = model.requires.map((value) => value.toLowerCase());
   const explicit = explicitCapabilities[modelId] ?? {};
@@ -81,13 +83,13 @@ export const deriveResearchRequirements = (
     reasons.temporal_topics =
       '研究档案明确要求分析主题随时间的变化。';
   }
-  // Candidate columns describe what the dataset could support; they are not a
-  // research requirement. Only an explicit comparison intent may force a
-  // metadata-effects model such as STM.
+  // A comparison can be performed post-hoc for any model. Native metadata
+  // effects are preferred, not a hard requirement; otherwise LDA can never be
+  // retained as the baseline for an STM study.
   if ((brief?.comparisonGroups.length ?? 0) > 0) {
-    required.add('metadata_effects');
+    preferred.add('metadata_comparison');
     reasons.metadata_effects =
-      '研究档案明确要求比较分组并利用元数据解释主题差异。';
+      '研究档案要求比较分组；原生元数据效应模型优先，同时保留训练后分组基线。';
   }
   if (brief?.offlineOnly) {
     required.add('offline_execution');

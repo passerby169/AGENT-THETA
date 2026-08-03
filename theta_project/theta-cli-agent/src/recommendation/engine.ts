@@ -28,6 +28,9 @@ export interface CatalogModel {
   params: Record<string, unknown>;
   runnable?: boolean;
   experimental?: boolean;
+  autoTopics?: boolean;
+  plannerEligible?: boolean;
+  maturity?: "production" | "experimental" | "incomplete" | "unavailable";
 }
 
 export interface DeterministicRecommendationInput {
@@ -39,6 +42,7 @@ export interface DeterministicRecommendationInput {
   researchGoal?: string;
   constraints?: Record<string, unknown>;
   evidence?: EvidenceRef[];
+  capabilityOverrides?: Readonly<Record<string, ModelCapabilities>>;
 }
 
 interface ProfileSummary {
@@ -75,7 +79,10 @@ export const recommendModels = (
       continue;
     }
 
-    const capabilities = capabilitiesForModel(model);
+    const capabilities = capabilitiesForModel(
+      model,
+      input.capabilityOverrides?.[modelId],
+    );
     const unmet = unmetResearchCapabilities(
       capabilities,
       researchRequirements,
@@ -177,7 +184,7 @@ const summarizeProfile = (
       array(candidates.time).length ||
       array(profile.timeColumns).length,
     metadataColumnCount:
-      columns?.metadataColumns.length ||
+      columns?.covariateColumns?.length ||
       array(candidates.metadata).length ||
       array(profile.metadataColumns).length,
     averageTextLength:
@@ -208,6 +215,12 @@ const hardConstraintFailures = (
   const failures = new Set<string>();
   const modelId = model.id.toLowerCase();
   const requirements = model.requires.map((item) => item.toLowerCase());
+  if (model.plannerEligible === false) {
+    failures.add("PLANNER_CAPABILITY_NOT_ELIGIBLE");
+  }
+  if (model.maturity === "incomplete" || model.maturity === "unavailable") {
+    failures.add("MODEL_MATURITY_NOT_EXECUTABLE");
+  }
   if (model.runnable === false) failures.add("MODEL_NOT_RUNNABLE");
   if (constraints.forbiddenModelIds.includes(modelId)) {
     failures.add("MODEL_FORBIDDEN");
@@ -236,6 +249,13 @@ const hardConstraintFailures = (
   ) {
     failures.add("MODE_NOT_SUPPORTED");
   }
+  if (
+    constraints.mode &&
+    modelId === "theta" &&
+    !catalogChoices(model, "mode").includes(constraints.mode)
+  ) {
+    failures.add("MODE_NOT_SUPPORTED");
+  }
   if (summary.rowCount < minimumRows(model)) {
     failures.add("DATASET_BELOW_ABSOLUTE_MINIMUM");
   }
@@ -259,12 +279,18 @@ const buildRecommendation = (
   unmetRequirements: ResearchRequirements['required'],
 ): ModelRecommendation => {
   const modelId = model.id.toLowerCase();
+  const decisionEvidence = evidence.filter(isModelDecisionEvidence);
   const reasonCodes = new Set<string>(["RUNNABLE_CATALOG_MODEL"]);
   const warnings = new Set<string>();
   const goal = `${input.researchGoal ?? ""} ${
     input.researchBrief?.researchQuestion ?? ""
   }`.toLowerCase();
   let score = model.type === "traditional" ? 58 : 52;
+  if (model.maturity === "experimental" || model.experimental === true) {
+    score -= 18;
+    warnings.add("EXPERIMENTAL_MODEL_REQUIRES_HUMAN_REVIEW");
+    reasonCodes.add("EXPERIMENTAL_CAPABILITY_BOUNDARY");
+  }
 
   if (constraints.preferredModelIds.includes(modelId)) {
     score += 12;
@@ -298,8 +324,8 @@ const buildRecommendation = (
     score -= 15;
     warnings.add("NEURAL_MODEL_SMALL_CORPUS");
   }
-  if (evidence.length > 0) {
-    score += Math.min(10, Math.round(evidence[0].finalScore / 10));
+  if (decisionEvidence.length > 0) {
+    score += Math.min(10, Math.round(decisionEvidence[0].finalScore / 10));
     reasonCodes.add("EVIDENCE_SUPPORTED");
   }
 
@@ -309,17 +335,22 @@ const buildRecommendation = (
   const epochs =
     model.type === "traditional" ? 100 : summary.rowCount < 500 ? 30 : 50;
   const boundedScore = Math.max(0, Math.min(100, Math.round(score)));
-  const confidence =
-    boundedScore >= 80 && evidence.length > 0
+  const rawConfidence =
+    boundedScore >= 80 && decisionEvidence.length > 0
       ? "high"
       : boundedScore >= 60
         ? "medium"
         : "low";
+  const confidence =
+    model.maturity === "experimental" && rawConfidence === "high"
+      ? "medium"
+      : rawConfidence;
 
   return {
     rank: 1,
     modelId,
     modelName: model.name || modelId.toUpperCase(),
+    maturity: model.maturity ?? (model.experimental ? "experimental" : "production"),
     score: boundedScore,
     confidence,
     reasonCodes: [...reasonCodes],
@@ -335,20 +366,33 @@ const buildRecommendation = (
       confidence,
     }),
     resourceEstimate: estimateResources(model),
-    evidenceRefs: evidence,
+    evidenceRefs: decisionEvidence,
     capabilityAssessment: {
       ...capabilities,
       unmetResearchRequirements: unmetRequirements,
     },
-    recommendedPlanPatch: {
-      modelId,
+    recommendedPlanPatch: recommendedPlanPatch(
+      model,
       mode,
-      numTopics: topicRecommendation.firstRun,
+      topicRecommendation,
       batchSize,
       epochs,
-    },
+      constraints,
+    ),
   };
 };
+
+const isModelDecisionEvidence = (item: EvidenceRef): boolean =>
+  item.objectType === undefined ||
+  [
+    "source",
+    "model",
+    "rule",
+    "recipe",
+    "implementation_capability",
+    "project_constraint",
+    "conflict_group",
+  ].includes(item.objectType);
 
 const recommendTopics = (
   rowCount: number,
@@ -379,43 +423,128 @@ const recommendParameters = (input: {
   evidence: EvidenceRef[];
   confidence: "low" | "medium" | "high";
 }): ParameterRecommendation[] => {
-  const evidenceRefs = input.evidence.map((item) => item.evidenceId);
-  return [
+  const modelId = input.model.id.toLowerCase();
+  if (modelId === "hdp") {
+    const evidenceRefs = parameterEvidenceRefs(input.evidence, "maxTopics");
+    return [
+      {
+        name: "maxTopics",
+        recommended: catalogDefault(input.model, "max_topics", 150),
+        range: [2, 1000],
+        default: catalogDefault(input.model, "max_topics", 150),
+        reasonCodes: ["AUTO_TOPIC_UPPER_BOUND"],
+        evidenceRefs,
+        confidence: evidenceRefs.length ? input.confidence : "low",
+        effectIfHigher: "Allows HDP to retain more low-mass topics.",
+        effectIfLower: "Constrains the inferred topic space.",
+      },
+    ];
+  }
+  if (modelId === "bertopic") {
+    return ["n_neighbors", "min_cluster_size"].map((catalogName) => {
+      const camelName =
+        catalogName === "n_neighbors" ? "nNeighbors" : "minClusterSize";
+      const evidenceRefs = parameterEvidenceRefs(input.evidence, camelName);
+      return {
+        name: camelName,
+        recommended: catalogDefault(
+          input.model,
+          catalogName,
+          catalogName === "n_neighbors" ? 15 : 10,
+        ),
+        range: [2, 100] as [number, number],
+        default: catalogDefault(
+          input.model,
+          catalogName,
+          catalogName === "n_neighbors" ? 15 : 10,
+        ),
+        reasonCodes: ["BERTOPIC_CLUSTERING_DEFAULT"],
+        evidenceRefs,
+        confidence: evidenceRefs.length ? input.confidence : "low",
+        effectIfHigher:
+          catalogName === "n_neighbors"
+            ? "Preserves broader manifold structure."
+            : "Requires larger, fewer clusters.",
+        effectIfLower:
+          catalogName === "n_neighbors"
+            ? "Emphasizes local manifold structure."
+            : "Allows smaller, more granular clusters.",
+      };
+    });
+  }
+  const recommendations: ParameterRecommendation[] = [
     {
       name: "numTopics",
       recommended: input.topicRecommendation.firstRun,
       range: input.topicRecommendation.range,
       default: catalogDefault(input.model, "num_topics", 20),
       reasonCodes: ["CORPUS_SIZE_TOPIC_RANGE"],
-      evidenceRefs,
-      confidence: input.confidence,
+      evidenceRefs: parameterEvidenceRefs(input.evidence, "numTopics"),
+      confidence: parameterEvidenceRefs(input.evidence, "numTopics").length
+        ? input.confidence
+        : "low",
       effectIfHigher: "Increases topic granularity and fragmentation risk.",
       effectIfLower: "Produces broader topics and may merge distinct themes.",
     },
-    {
+  ];
+  if (
+    "batch_size" in input.model.params ||
+    ["dtm", "theta"].includes(modelId)
+  ) {
+    recommendations.push({
       name: "batchSize",
       recommended: input.batchSize,
       range: [16, 128],
       default: catalogDefault(input.model, "batch_size", 64),
       reasonCodes: ["RESOURCE_AWARE_BATCH_SIZE"],
-      evidenceRefs,
-      confidence: input.confidence,
+      evidenceRefs: parameterEvidenceRefs(input.evidence, "batchSize"),
+      confidence: parameterEvidenceRefs(input.evidence, "batchSize").length
+        ? input.confidence
+        : "low",
       effectIfHigher: "Uses more memory and may improve throughput.",
       effectIfLower: "Uses less memory with potentially noisier updates.",
-    },
-    {
+    });
+  }
+  if (
+    "epochs" in input.model.params ||
+    modelId === "btm"
+  ) {
+    recommendations.push({
       name: "epochs",
       recommended: input.epochs,
       range: [10, 100],
       default: catalogDefault(input.model, "epochs", 100),
       reasonCodes: ["MODEL_TYPE_EPOCH_BUDGET"],
-      evidenceRefs,
-      confidence: input.confidence,
+      evidenceRefs: parameterEvidenceRefs(input.evidence, "epochs"),
+      confidence: parameterEvidenceRefs(input.evidence, "epochs").length
+        ? input.confidence
+        : "low",
       effectIfHigher: "Increases runtime and overfitting risk.",
       effectIfLower: "Reduces runtime but may underfit.",
-    },
-  ];
+    });
+  }
+  return recommendations;
 };
+
+const parameterEvidenceRefs = (
+  evidence: readonly EvidenceRef[],
+  parameterId: string,
+): string[] => {
+  const wanted = normalizeIdentifier(parameterId);
+  return evidence
+    .filter(
+      (item) =>
+        (item.authority === "L1" || item.authority === "L2") &&
+        item.parameterIds?.some(
+          (candidate) => normalizeIdentifier(candidate) === wanted,
+        ),
+    )
+    .map((item) => item.evidenceId)
+    .slice(0, 3);
+};
+
+const normalizeIdentifier = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/gu, "");
 
 const catalogDefault = (
   model: CatalogModel,
@@ -449,15 +578,33 @@ const evidenceForModel = (
   model: CatalogModel,
   evidence: readonly EvidenceRef[],
 ): EvidenceRef[] => {
-  const terms = [model.id, model.name, ...model.requires].map((item) =>
-    item.toLowerCase(),
-  );
+  const modelId = model.id.toLowerCase();
+  const terms = [model.id, model.name].map((item) => item.toLowerCase());
   const matching = evidence.filter((item) => {
+    if (item.thetaSupportStatus === "unsupported") return false;
+    if (item.modelIds?.some((candidate) => candidate.toLowerCase() === modelId)) {
+      return true;
+    }
+    // Legacy code/config chunks may not have structured modelIds. Retain only
+    // exact model-name matches; runtime requirements such as "bow" or "sbert"
+    // are deliberately not model evidence.
     const text = `${item.symbol ?? ""} ${item.excerpt}`.toLowerCase();
-    return terms.some((term) => text.includes(term));
+    return terms.some((term) => exactTerm(text, term));
   });
-  return (matching.length > 0 ? matching : evidence).slice(0, 3);
+  return matching.slice(0, 3);
 };
+
+const exactTerm = (text: string, term: string): boolean => {
+  const normalized = term.trim().toLowerCase();
+  if (!normalized) return false;
+  if (/^[a-z0-9_-]+$/u.test(normalized)) {
+    return new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(normalized)}([^a-z0-9_-]|$)`, "u").test(text);
+  }
+  return text.includes(normalized);
+};
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
 const minimumRows = (model: CatalogModel): number => {
   if (model.id.toLowerCase() === "dtm") return 30;
@@ -472,12 +619,65 @@ const recommendMode = (
   if (
     modelId === "theta" &&
     requested &&
-    ["zero_shot", "finetune", "supervised", "unsupervised"].includes(requested)
+    ["zero_shot", "supervised", "unsupervised"].includes(requested)
   ) {
     return requested as ModelRecommendation["recommendedPlanPatch"]["mode"];
   }
   return modelId === "theta" ? "zero_shot" : "unsupervised";
 };
+
+const recommendedPlanPatch = (
+  model: CatalogModel,
+  mode: ModelRecommendation["recommendedPlanPatch"]["mode"],
+  topics: TopicRecommendation,
+  batchSize: number,
+  epochs: number,
+  constraints: RecommendationResult["constraintsApplied"],
+): ModelRecommendation["recommendedPlanPatch"] => {
+  const modelId = model.id.toLowerCase();
+  if (modelId === "hdp") {
+    return {
+      modelId,
+      mode: "unsupervised",
+      topicCountMode: "auto",
+      numTopics: null,
+      maxTopics:
+        constraints.maxTopics ??
+        Number(catalogDefault(model, "max_topics", 150)),
+    };
+  }
+  if (modelId === "bertopic") {
+    return {
+      modelId,
+      mode: "unsupervised",
+      topicCountMode: "auto",
+      numTopics: null,
+      nNeighbors: Number(catalogDefault(model, "n_neighbors", 15)),
+      nComponents: Number(catalogDefault(model, "n_components", 5)),
+      minClusterSize: Number(
+        catalogDefault(model, "min_cluster_size", 10),
+      ),
+      minSamples: catalogDefault(model, "min_samples", null) as number | null,
+      topNWords: Number(catalogDefault(model, "top_n_words", 10)),
+      randomState: Number(catalogDefault(model, "random_state", 42)),
+    };
+  }
+  return {
+    modelId,
+    mode,
+    topicCountMode: "fixed",
+    numTopics: topics.firstRun,
+    ...("batch_size" in model.params || ["dtm", "theta"].includes(modelId)
+      ? { batchSize }
+      : {}),
+    ...("epochs" in model.params || modelId === "btm" ? { epochs } : {}),
+  };
+};
+
+const catalogChoices = (model: CatalogModel, key: string): string[] =>
+  array(record(model.params[key]).choices)
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.toLowerCase());
 
 const array = (value: unknown): unknown[] =>
   Array.isArray(value) ? value : [];

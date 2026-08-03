@@ -67,6 +67,21 @@ export const naturalLanguageRequestSchema = z.discriminatedUnion('task', [
           metadata: z.array(z.string()).max(50),
         })
         .strict(),
+      columnProfiles: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1),
+              inferredType: z.enum(['empty', 'number', 'datetime', 'text', 'string']),
+              nonEmptySampleCount: z.number().int().nonnegative(),
+              uniqueSampleCount: z.number().int().nonnegative(),
+              avgLength: z.number().nonnegative(),
+              maxLength: z.number().int().nonnegative(),
+            })
+            .strict(),
+        )
+        .max(500)
+        .default([]),
       recentMessages: z.array(recentMessageSchema).max(12),
     })
     .strict(),

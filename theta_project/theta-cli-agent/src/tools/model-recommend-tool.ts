@@ -12,6 +12,9 @@ import {
   recommendationResultSchema,
   type RecommendationResult,
 } from "../recommendation/contracts.js";
+import { CapabilityRegistry } from "../capabilities/registry.js";
+import type { ModelCapabilityCard } from "../capabilities/contracts.js";
+import type { ModelCapabilities } from "../recommendation/model-capabilities.js";
 import { evidenceRefSchema, type EvidenceRef } from "../rag/contracts.js";
 import { callThetaBridge } from "./bridge.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
@@ -196,11 +199,35 @@ export const thetaModelRecommendHandler: ToolHandler<
   if (models.length === 0) {
     throw new Error("model.catalog returned no valid models.");
   }
+  const registry = new CapabilityRegistry();
+  const capabilityAudit = registry.auditCatalog(models);
+  if (capabilityAudit.status !== "pass") {
+    const failures = capabilityAudit.issues
+      .filter((issue) => issue.severity === "error")
+      .map((issue) => `${issue.code}:${issue.modelId ?? "registry"}`)
+      .join(", ");
+    throw new Error(
+      `Capability Registry audit failed; model recommendation is fail-closed: ${failures}.`,
+    );
+  }
+  const governedModels = models.map((model) => ({
+    ...model,
+    plannerEligible: registry.plannerEligibleModelIds().includes(model.id),
+    maturity: registry.get(model.id)?.maturity ?? (model.experimental ? "experimental" : "production"),
+    experimental:
+      registry.get(model.id)?.maturity === "experimental" || model.experimental === true,
+  }));
+  const capabilityOverrides = Object.fromEntries(
+    registry.cards.map((card) => [
+      card.modelId,
+      recommendationCapabilities(card),
+    ]),
+  );
 
   return recommendationResultSchema.parse(
     recommendModels({
       catalogSource: "theta-model-catalog",
-      models,
+      models: governedModels,
       dataProfile: normalized.dataProfile,
       ...(normalized.researchGoal
         ? { researchGoal: normalized.researchGoal }
@@ -221,6 +248,7 @@ export const thetaModelRecommendHandler: ToolHandler<
       evidence: (normalized.evidence ?? []).map((item) =>
         evidenceRefSchema.parse(item),
       ),
+      capabilityOverrides,
     }),
   );
 };
@@ -239,3 +267,14 @@ const isCatalogModel = (value: unknown): value is CatalogModel => {
     isRecord(value.params)
   );
 };
+
+const recommendationCapabilities = (
+  card: ModelCapabilityCard,
+): ModelCapabilities => ({
+  temporalTopics: card.capabilities.temporalTopics,
+  metadataEffects: card.capabilities.metadataEffects,
+  shortTextOptimized: card.capabilities.shortTextOptimized,
+  offlineExecution: card.capabilities.offlineExecution === "supported",
+  cpuExecution: card.capabilities.cpuExecution !== "unsupported",
+  nativeOutputs: [...card.capabilities.nativeOutputs],
+});

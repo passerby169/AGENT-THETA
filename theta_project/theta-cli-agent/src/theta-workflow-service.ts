@@ -33,6 +33,7 @@ import {
 } from "./agent/research-service.js";
 import {
   approvalReceiptSchema,
+  canonicalExperimentProtocolSchema,
   dryRunReceiptSchema,
   trainingPlanRecordSchema,
 } from "./planning/contracts.js";
@@ -60,13 +61,29 @@ import {
 } from "./tools/hypha-runner.js";
 import type { ThetaTrainingPlan } from "./tools/plan-validate-tool.js";
 import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
+import { recommendationResultSchema } from "./recommendation/contracts.js";
+import { planProposalResultSchema } from "./planner/contracts.js";
+import { resolvePlannerProposal } from "./planner/resolver.js";
+import { evidenceRefSchema } from "./rag/contracts.js";
+import {
+  buildEvidenceBundle,
+  planCandidateEvidenceQueries,
+  planEvidenceQueries,
+  type EvidenceQuery,
+  type EvidenceQueryExecution,
+  type PlanEvidenceQueryInput,
+} from "./rag/evidence-bundle.js";
+import type { RetrievalTrace } from "./rag/fts-index.js";
 
 const USER_ID = "local_user";
 const WORKSPACE_ID = "local_workspace";
 const AGENT_ID = "agent.theta.cli";
 const DRIVER_OWNER = "theta-cli-workflow-driver";
-const LEASE_TTL_MS = 60_000;
-const STATE_CLAIM_TTL_MS = 30_000;
+// A single RecommendModel state can include multiple local RAG searches plus one
+// bounded provider request. Keep its fenced lease/claim longer than the provider
+// timeout so a healthy, slow planning turn is not mistaken for a dead worker.
+const LEASE_TTL_MS = 5 * 60_000;
+const STATE_CLAIM_TTL_MS = 2 * 60_000;
 const MAX_STEPS = 64;
 
 export interface ThetaWorkflowInput {
@@ -77,6 +94,9 @@ export interface ThetaWorkflowInput {
   constraints?: Record<string, unknown>;
   plan?: Record<string, unknown>;
   sampleSize?: number;
+  plannerMode?: "deterministic" | "minimax";
+  recoveryOfRunId?: string;
+  recoveryReason?: string;
 }
 
 export interface ThetaWorkflowRunRequest {
@@ -169,6 +189,10 @@ export interface ThetaWorkflowPlan {
   planRecord?: RuntimeJsonValue;
   planReview?: RuntimeJsonValue;
   recommendation?: RuntimeJsonValue;
+  evidenceBundle?: RuntimeJsonValue;
+  planProposal?: RuntimeJsonValue;
+  plannerResolution?: RuntimeJsonValue;
+  validation?: RuntimeJsonValue;
   planAdjustment?: RuntimeJsonValue;
   datasetProfile?: RuntimeJsonValue;
   columnConfirmation?: RuntimeJsonValue;
@@ -373,13 +397,18 @@ export class ThetaWorkflowService {
         await terminalOutput(runtime, scope),
       );
       const variables = await hydrateVariables(runtime.events, scope);
+      const currentEvents = await runtime.events.read({ scope: streamScope(scope) });
+      const liveTrainingReceipt =
+        result.projection.pendingWait?.type === "timer"
+          ? latestTimerReceipt(currentEvents) ?? variables.trainingReceipt
+          : variables.trainingReceipt;
       return {
         ...runResult,
-        ...(variables.trainingReceipt === undefined
+        ...(liveTrainingReceipt === undefined
           ? {}
           : {
               trainingReceipt: sanitizeRuntimeValue(
-                variables.trainingReceipt,
+                liveTrainingReceipt,
               ),
             }),
       };
@@ -421,13 +450,17 @@ export class ThetaWorkflowService {
         await terminalOutput(runtime, scope),
       );
       const variables = await hydrateVariables(runtime.events, scope);
+      const liveTrainingReceipt =
+        projection.pendingWait?.type === "timer"
+          ? latestTimerReceipt(events) ?? variables.trainingReceipt
+          : variables.trainingReceipt;
       return {
         ...status,
-        ...(variables.trainingReceipt === undefined
+        ...(liveTrainingReceipt === undefined
           ? {}
           : {
               trainingReceipt: sanitizeRuntimeValue(
-                variables.trainingReceipt,
+                liveTrainingReceipt,
               ),
             }),
       };
@@ -563,6 +596,10 @@ export class ThetaWorkflowService {
         ...runtimeVariable(variables, 'planRecord'),
         ...runtimeVariable(variables, 'planReview'),
         ...runtimeVariable(variables, 'recommendation'),
+        ...runtimeVariable(variables, 'evidenceBundle'),
+        ...runtimeVariable(variables, 'planProposal'),
+        ...runtimeVariable(variables, 'plannerResolution'),
+        ...runtimeVariable(variables, 'validation'),
         ...runtimeVariable(variables, 'planAdjustment'),
         ...runtimeVariable(variables, 'datasetProfile'),
         ...runtimeVariable(variables, 'columnConfirmation'),
@@ -919,9 +956,7 @@ const executeThetaState = async (
         const input = requireRecord(variables.input, "workflow input");
         const toolInput = {
           filePath: requiredString(input.filePath, "input.filePath"),
-          ...(numberValue(input.sampleSize) === undefined
-            ? {}
-            : { sampleSize: numberValue(input.sampleSize) }),
+          sampleSize: numberValue(input.sampleSize) ?? 500,
         };
         const [inspection, columns] = await Promise.all([
           invoke(THETA_TOOL_IDS.datasetInspect, toolInput),
@@ -983,9 +1018,7 @@ const executeThetaState = async (
         const input = requireRecord(variables.input, "workflow input");
         const latestInspection = await invoke(THETA_TOOL_IDS.datasetInspect, {
           filePath: requiredString(input.filePath, "input.filePath"),
-          ...(numberValue(input.sampleSize) === undefined
-            ? {}
-            : { sampleSize: numberValue(input.sampleSize) }),
+          sampleSize: numberValue(input.sampleSize) ?? 500,
         });
         if (
           requiredString(
@@ -1006,7 +1039,7 @@ const executeThetaState = async (
           });
         }
         const draft = columnConfirmationDraftSchema.parse(submission.draft);
-        validateConfirmedColumns(draft, datasetProfile.columns);
+        validateConfirmedColumns(draft, datasetProfile);
         const confirmation = columnConfirmationSchema.parse({
           ...draft,
           schemaVersion: RESEARCH_CONTRACT_VERSION,
@@ -1034,24 +1067,69 @@ const executeThetaState = async (
           variables.columnConfirmation,
           "column confirmation",
         );
-        const [catalog, evidenceResult] = await Promise.all([
+        const evidenceInput: PlanEvidenceQueryInput = {
+          researchBrief,
+          datasetProfile,
+          columnConfirmation,
+          ...(stringValue(input.researchGoal)
+            ? { researchGoal: stringValue(input.researchGoal) }
+            : {}),
+        };
+        const baseQueries = planEvidenceQueries(evidenceInput);
+        const [catalog, ...baseEvidenceResults] = await Promise.all([
           invoke(THETA_TOOL_IDS.modelCatalog, {}),
-          invoke(THETA_TOOL_IDS.ragSearch, {
-            query: [
-              stringValue(researchBrief.researchQuestion),
-              stringValue(input.researchGoal),
-              "THETA topic model requirements parameters hardware",
-            ]
-              .filter((item): item is string => Boolean(item))
-              .join(" "),
-            limit: 10,
-          }),
+          ...baseQueries.map((query) =>
+            invoke(THETA_TOOL_IDS.ragSearch, {
+              query: query.query,
+              limit: 8,
+            }),
+          ),
         ]);
+        const baseExecutions = evidenceExecutions(
+          baseQueries,
+          baseEvidenceResults,
+        );
+        const baseBundle = buildEvidenceBundle(baseExecutions, 18);
+        const preliminaryRecommendation = await invoke(THETA_TOOL_IDS.modelRecommend, {
+          dataProfile: datasetProfile,
+          researchBrief,
+          columnConfirmation,
+          evidence: baseBundle.evidence,
+          ...(stringValue(input.researchGoal)
+            ? { researchGoal: input.researchGoal }
+            : {}),
+          ...(isRecord(input.constraints)
+            ? { constraints: input.constraints }
+            : {}),
+        });
+        const candidateModelIds = arrayValue(preliminaryRecommendation.recommendations)
+          .map((item) => stringValue(requireRecord(item, "recommendation").modelId))
+          .filter((item): item is string => Boolean(item));
+        const candidateQueries = planCandidateEvidenceQueries(
+          evidenceInput,
+          candidateModelIds,
+        );
+        const candidateEvidenceResults = await Promise.all(
+          candidateQueries.map((query) =>
+            invoke(THETA_TOOL_IDS.ragSearch, {
+              query: query.query,
+              limit: 8,
+            }),
+          ),
+        );
+        const evidenceBundle = buildEvidenceBundle(
+          [
+            ...baseExecutions,
+            ...evidenceExecutions(candidateQueries, candidateEvidenceResults),
+          ],
+          18,
+          candidateModelIds,
+        );
         const recommendation = await invoke(THETA_TOOL_IDS.modelRecommend, {
           dataProfile: datasetProfile,
           researchBrief,
           columnConfirmation,
-          evidence: arrayValue(evidenceResult.evidence),
+          evidence: evidenceBundle.evidence,
           ...(stringValue(input.researchGoal)
             ? { researchGoal: input.researchGoal }
             : {}),
@@ -1068,19 +1146,43 @@ const executeThetaState = async (
             execution.state.id,
           );
         }
+        const proposal = planProposalResultSchema.parse(
+          await invoke(THETA_TOOL_IDS.planPropose, {
+            enabled: input.plannerMode === "minimax",
+            researchBrief,
+            datasetProfile,
+            columnConfirmation,
+            recommendation,
+            evidenceBundle,
+          }),
+        );
+        const resolution = resolvePlannerProposal({
+          proposal,
+          recommendation: recommendationResultSchema.parse(recommendation),
+          workflowInput: input,
+          datasetProfile,
+          columnConfirmation,
+          evidenceBundle,
+        });
         return transition(THETA_WORKFLOW_STATES.validatePlan, {
           modelCatalog: sanitizeCatalog(catalog),
           evidence: {
-            noEvidence: evidenceResult.noEvidence === true,
-            refs: arrayValue(evidenceResult.evidence) as RuntimeJsonValue[],
+            noEvidence: evidenceBundle.noEvidence,
+            refs: evidenceBundle.evidence as unknown as RuntimeJsonValue[],
+            retrievalTrace: {
+              schemaVersion: evidenceBundle.schemaVersion,
+              bundleHash: evidenceBundle.bundleHash,
+              queryCount: evidenceBundle.queries.length,
+              coverage: evidenceBundle.coverage,
+              authorityCounts: evidenceBundle.authorityCounts,
+              uncertainties: evidenceBundle.uncertainties,
+            } as unknown as RuntimeJsonValue,
           },
+          evidenceBundle: evidenceBundle as unknown as RuntimeJsonValue,
           recommendation: sanitizeRecommendation(recommendation),
-          candidatePlan: candidatePlan(
-            input,
-            datasetProfile,
-            recommendation,
-            columnConfirmation,
-          ),
+          planProposal: proposal as unknown as RuntimeJsonValue,
+          plannerResolution: resolution as unknown as RuntimeJsonValue,
+          candidatePlan: resolution.resolvedPlan as RuntimeJsonValue,
         });
       }
       case THETA_WORKFLOW_STATES.validatePlan: {
@@ -1109,7 +1211,11 @@ const executeThetaState = async (
           ),
           validation: {
             valid: true,
+            validatorVersion:
+              stringValue(validation.validatorVersion) ?? "unknown",
+            blockingWarnings: stringArray(validation.blockingWarnings),
             warnings: stringArray(validation.warnings),
+            findings: arrayValue(validation.findings) as RuntimeJsonValue[],
             catalogSource: stringValue(validation.catalogSource) ?? "unknown",
           },
         });
@@ -1179,6 +1285,22 @@ const executeThetaState = async (
             recommendation: requireRecord(
               variables.recommendation,
               "recommendation",
+            ),
+            evidenceBundle: requireRecord(
+              variables.evidenceBundle,
+              "evidence bundle",
+            ),
+            planProposal: requireRecord(
+              variables.planProposal,
+              "plan proposal",
+            ),
+            plannerResolution: requireRecord(
+              variables.plannerResolution,
+              "planner resolution",
+            ),
+            validation: requireRecord(
+              variables.validation,
+              "validation",
             ),
             domainPack: {
               id: THETA_DOMAIN_PACK_ID,
@@ -1334,7 +1456,7 @@ const executeThetaState = async (
             training.trainingRunId,
             "trainingRunId",
           ),
-          logLimit: 20,
+          logLimit: 1,
         });
         const normalizedStatus = (
           stringValue(status.status) ?? "unknown"
@@ -1398,7 +1520,7 @@ const executeThetaState = async (
             kind: "waiting",
             wait: {
               type: "timer",
-              expiresAt: new Date(Date.now() + 1_000).toISOString(),
+              expiresAt: new Date(Date.now() + 3_000).toISOString(),
               reason:
                 "Training is still running; poll again after the durable timer fires.",
               metadata: sanitizeTrainingReceipt(receipt) as Record<
@@ -1538,7 +1660,7 @@ const columnConfirmationWait = (
       type: "human",
       pendingActionRef: THETA_APPROVAL_KEYS.columnConfirmation,
       reason:
-        "Confirm the text, time, ID, and metadata column roles for this dataset hash.",
+        "Confirm text, time, ID, training-covariate, descriptive-metadata, display-group, and evaluation-label roles for this dataset hash.",
       metadata: {
         datasetSha256: profile.datasetSha256,
         columns: profile.columns,
@@ -1561,19 +1683,86 @@ const sanitizeResearchAssessment = (
 
 const validateConfirmedColumns = (
   confirmation: ColumnConfirmationDraft,
-  columns: readonly string[],
+  profile: DatasetProfile,
 ): void => {
   const selected = [
     ...confirmation.textColumns,
     ...(confirmation.timeColumn ? [confirmation.timeColumn] : []),
     ...(confirmation.idColumn ? [confirmation.idColumn] : []),
+    ...(confirmation.covariateColumns ?? []),
     ...confirmation.metadataColumns,
+    ...(confirmation.groupingColumns ?? []),
+    ...(confirmation.evaluationLabelColumns ?? []),
   ];
-  const unknown = selected.filter((name) => !columns.includes(name));
+  const unknown = selected.filter((name) => !profile.columns.includes(name));
   if (unknown.length > 0) {
     throw new Error(
       `Column confirmation references unknown columns: ${unique(unknown).join(", ")}.`,
     );
+  }
+  const assignments = new Map<string, string[]>();
+  const assign = (name: string, role: string): void => {
+    assignments.set(name, [...(assignments.get(name) ?? []), role]);
+  };
+  confirmation.textColumns.forEach((name) => assign(name, "text"));
+  if (confirmation.timeColumn) assign(confirmation.timeColumn, "time");
+  if (confirmation.idColumn) assign(confirmation.idColumn, "id");
+  (confirmation.covariateColumns ?? []).forEach((name) => assign(name, "covariate"));
+  confirmation.metadataColumns.forEach((name) => assign(name, "metadata"));
+  (confirmation.groupingColumns ?? []).forEach((name) => assign(name, "grouping"));
+  (confirmation.evaluationLabelColumns ?? []).forEach((name) => assign(name, "evaluation_label"));
+  const overlap = [...assignments].find(([, roles]) => {
+    const uniqueRoles = new Set(roles);
+    return roles.length > 1 && !(
+      uniqueRoles.size === 2 &&
+      uniqueRoles.has("covariate") &&
+      uniqueRoles.has("grouping")
+    );
+  });
+  if (overlap) {
+    throw new Error(`Column ${overlap[0]} has conflicting roles: ${overlap[1].join(", ")}.`);
+  }
+  const profiles = new Map(profile.columnProfiles.map((item) => [item.name, item]));
+  const idLike = (name: string): boolean =>
+    /(?:^|_)(?:id|uuid|key|index|record_id)(?:$|_)/iu.test(name);
+  for (const column of confirmation.textColumns) {
+    const item = profiles.get(column);
+    if (
+      idLike(column) ||
+      item?.inferredType === "number" ||
+      item?.inferredType === "datetime" ||
+      item?.inferredType === "empty" ||
+      (item && item.avgLength < 8 && item.inferredType !== "text")
+    ) {
+      throw new Error(`Column ${column} failed the text-column type check.`);
+    }
+  }
+  if (confirmation.timeColumn) {
+    const item = profiles.get(confirmation.timeColumn);
+    if (item && item.inferredType !== "datetime") {
+      throw new Error(`Column ${confirmation.timeColumn} failed the time-column parse check.`);
+    }
+  }
+  if (confirmation.idColumn) {
+    const item = profiles.get(confirmation.idColumn);
+    const ratio = item && item.nonEmptySampleCount > 0
+      ? item.uniqueSampleCount / item.nonEmptySampleCount
+      : 0;
+    if (!idLike(confirmation.idColumn) && item && ratio < 0.8) {
+      throw new Error(`Column ${confirmation.idColumn} failed the ID uniqueness check.`);
+    }
+  }
+  for (const column of [
+    ...(confirmation.covariateColumns ?? []),
+    ...(confirmation.groupingColumns ?? []),
+  ]) {
+    const item = profiles.get(column);
+    const ratio = item && item.nonEmptySampleCount > 0
+      ? item.uniqueSampleCount / item.nonEmptySampleCount
+      : 0;
+    if (item && (item.inferredType === "text" || ratio > 0.8)) {
+      throw new Error(`Column ${column} is not a safe low-cardinality covariate/grouping column.`);
+    }
   }
 };
 
@@ -1698,6 +1887,10 @@ const runtimeVariable = (
     | 'planRecord'
     | 'planReview'
     | 'recommendation'
+    | 'evidenceBundle'
+    | 'planProposal'
+    | 'plannerResolution'
+    | 'validation'
     | 'planAdjustment'
     | 'datasetProfile'
     | 'columnConfirmation'
@@ -1715,22 +1908,39 @@ const sanitizePlanAdjustment = (
   const output: Record<string, RuntimeJsonValue> = {};
   const modelId = stringValue(value.modelId);
   const mode = stringValue(value.mode);
+  const topicCountMode = stringValue(value.topicCountMode);
   const numTopics = numberValue(value.numTopics);
+  const maxTopics = numberValue(value.maxTopics);
   const batchSize = numberValue(value.batchSize);
   const epochs = numberValue(value.epochs);
   const acceptDegradation = value.acceptDegradation === true;
+  const experimentProtocol = value.experimentProtocol;
   if (modelId) output.modelId = modelId.toLowerCase();
   if (
     mode &&
-    ["zero_shot", "finetune", "supervised", "unsupervised"].includes(mode)
+    ["zero_shot", "supervised", "unsupervised"].includes(mode)
   ) {
     output.mode = mode;
   }
-  if (numTopics !== undefined) {
+  if (
+    topicCountMode &&
+    ["fixed", "auto", "target_reduction"].includes(topicCountMode)
+  ) {
+    output.topicCountMode = topicCountMode;
+  }
+  if (value.numTopics === null) {
+    output.numTopics = null;
+  } else if (numTopics !== undefined) {
     if (!Number.isInteger(numTopics) || numTopics < 2 || numTopics > 200) {
       throw new Error("主题数必须是 2 到 200 之间的整数。");
     }
     output.numTopics = numTopics;
+  }
+  if (maxTopics !== undefined) {
+    if (!Number.isInteger(maxTopics) || maxTopics < 2 || maxTopics > 1000) {
+      throw new Error("最大主题数必须是 2 到 1000 之间的整数。");
+    }
+    output.maxTopics = maxTopics;
   }
   if (batchSize !== undefined) {
     if (!Number.isInteger(batchSize) || batchSize < 1) {
@@ -1745,6 +1955,11 @@ const sanitizePlanAdjustment = (
     output.epochs = epochs;
   }
   if (acceptDegradation) output.acceptDegradation = true;
+  if (experimentProtocol !== undefined) {
+    output.experimentProtocol = canonicalExperimentProtocolSchema.parse(
+      experimentProtocol,
+    ) as RuntimeJsonValue;
+  }
   if (Object.keys(output).length === 0) {
     throw new Error("没有识别出可调整的模型或参数。");
   }
@@ -1774,18 +1989,16 @@ const sanitizeDatasetProfile = (
             total + (numberValue(profile.missingSampleRatio) ?? 0),
           0,
         ) / profiles.length;
-  const averageTextLength =
-    profiles.length === 0
-      ? 0
-      : profiles.reduce(
-          (total, profile) => total + (numberValue(profile.avgLength) ?? 0),
-          0,
-        ) / profiles.length;
-  const maximumTextLength = profiles.reduce(
-    (maximum, profile) =>
-      Math.max(maximum, numberValue(profile.maxLength) ?? 0),
-    0,
+  const textCandidateName = arrayValue(columns.textColumns)
+    .map((candidate) =>
+      isRecord(candidate) ? stringValue(candidate.name) : undefined,
+    )
+    .find((name): name is string => Boolean(name));
+  const textProfile = profiles.find(
+    (profile) => stringValue(profile.name) === textCandidateName,
   );
+  const averageTextLength = numberValue(textProfile?.avgLength) ?? 0;
+  const maximumTextLength = numberValue(textProfile?.maxLength) ?? 0;
   return datasetProfileSchema.parse({
     schemaVersion: RESEARCH_CONTRACT_VERSION,
     datasetSha256: requiredString(inspection.datasetSha256, "datasetSha256"),
@@ -1794,9 +2007,31 @@ const sanitizeDatasetProfile = (
     format: stringValue(inspection.suffix)?.replace(/^\./, "") || "unknown",
     encoding: stringValue(inspection.encoding) ?? "unknown",
     rowCount: numberValue(inspection.rowCount) ?? 0,
+    sampledRowCount: numberValue(inspection.sampleRowCount) ?? 0,
+    profileScope:
+      (numberValue(inspection.sampleRowCount) ?? 0) >=
+      (numberValue(inspection.rowCount) ?? 0)
+        ? "full"
+        : "sample",
+    estimationWarnings:
+      (numberValue(inspection.sampleRowCount) ?? 0) <
+      (numberValue(inspection.rowCount) ?? 0)
+        ? [
+            `重复率、语言、文本长度和时间覆盖基于前 ${String(numberValue(inspection.sampleRowCount) ?? 0)} 行样本估计，不代表全量精确统计。`,
+          ]
+        : [],
     columnCount: columnNames.length,
     columns: columnNames,
-    missingRatio,
+    columnProfiles: profiles.map((profile) => ({
+      name: requiredString(profile.name, "column profile name"),
+      inferredType: stringValue(profile.inferredType) ?? "empty",
+      nonEmptySampleCount: numberValue(profile.nonEmptySampleCount) ?? 0,
+      uniqueSampleCount: numberValue(profile.uniqueSampleCount) ?? 0,
+      avgLength: numberValue(profile.avgLength) ?? 0,
+      maxLength: numberValue(profile.maxLength) ?? 0,
+    })),
+    missingRatio:
+      numberValue(textProfile?.missingSampleRatio) ?? missingRatio,
     duplicateRatio: numberValue(inspection.sampleDuplicateRatio) ?? 0,
     textLengthDistribution: {
       average: averageTextLength,
@@ -1915,8 +2150,20 @@ const candidatePlan = (
       "recommendation.modelId",
     ),
     mode: normalizedMode(patch.mode),
-    numTopics:
-      numberValue(patch.numTopics) ?? numberValue(constraints.maxTopics) ?? 10,
+    topicCountMode: normalizedTopicCountMode(
+      patch.topicCountMode,
+      requiredString(top.modelId ?? patch.modelId, "recommendation.modelId"),
+    ),
+    ...(patch.numTopics === null
+      ? { numTopics: null }
+      : numberValue(patch.numTopics) !== undefined
+        ? { numTopics: numberValue(patch.numTopics) as number }
+        : {}),
+    ...(patch.maxTopics === null
+      ? { maxTopics: null }
+      : numberValue(patch.maxTopics) !== undefined
+        ? { maxTopics: numberValue(patch.maxTopics) as number }
+        : {}),
     ...(stringArray(columnConfirmation.textColumns)[0]
       ? { textColumn: stringArray(columnConfirmation.textColumns)[0] }
       : {}),
@@ -1926,6 +2173,7 @@ const candidatePlan = (
     ...(stringValue(columnConfirmation.idColumn)
       ? { idColumn: stringValue(columnConfirmation.idColumn) as string }
       : {}),
+    covariateColumns: stringArray(columnConfirmation.covariateColumns),
     metadataColumns: stringArray(columnConfirmation.metadataColumns),
   };
 };
@@ -1933,9 +2181,21 @@ const candidatePlan = (
 const normalizedMode = (value: unknown): ThetaTrainingPlan["mode"] => {
   const mode = stringValue(value);
   return mode &&
-    ["zero_shot", "finetune", "supervised", "unsupervised"].includes(mode)
+    ["zero_shot", "supervised", "unsupervised"].includes(mode)
     ? (mode as ThetaTrainingPlan["mode"])
     : "unsupervised";
+};
+
+const normalizedTopicCountMode = (
+  value: unknown,
+  modelId: string,
+): NonNullable<ThetaTrainingPlan["topicCountMode"]> => {
+  const mode = stringValue(value);
+  return mode && ["fixed", "auto", "target_reduction"].includes(mode)
+    ? (mode as NonNullable<ThetaTrainingPlan["topicCountMode"]>)
+    : modelId === "hdp"
+      ? "auto"
+      : "fixed";
 };
 
 const sanitizeArtifact = (value: unknown): Record<string, RuntimeJsonValue> => {
@@ -1978,6 +2238,9 @@ const sanitizeTrainingReceipt = (
   ),
   dryRunHash: requiredString(receipt.dryRunHash, "dryRunHash"),
   status: stringValue(receipt.status) ?? "unknown",
+  executionStatus:
+    stringValue(receipt.executionStatus) ?? stringValue(receipt.status) ?? "unknown",
+  quality: sanitizeRuntimeValue(receipt.quality),
   progress: numberValue(receipt.progress) ?? 0,
   currentStep: stringValue(receipt.currentStep) ?? "unknown",
   logPath: stringValue(receipt.logPath) ?? null,
@@ -1985,9 +2248,10 @@ const sanitizeTrainingReceipt = (
   pythonVersion: stringValue(receipt.pythonVersion) ?? "unknown",
   condaEnvironment: stringValue(receipt.condaEnvironment) ?? null,
   analysisBindings: (isRecord(receipt.analysisBindings)
-    ? receipt.analysisBindings
-    : {
+      ? receipt.analysisBindings
+      : {
         timeColumn: null,
+        covariateColumns: [],
         metadataColumns: [],
         temporalArtifactsRequested: false,
         groupArtifactsRequested: false,
@@ -2089,7 +2353,13 @@ const terminalOutput = async (
 const invocationKey = (request: ThetaWorkflowToolRequest): string =>
   createHash("sha256")
     .update(
-      `${request.runId}:${request.stateId}:${request.stateAttempt}:${request.toolId}`,
+      canonicalJson({
+        runId: request.runId,
+        stateId: request.stateId,
+        stateAttempt: request.stateAttempt,
+        toolId: request.toolId,
+        input: request.input,
+      }),
     )
     .digest("hex");
 
@@ -2111,6 +2381,9 @@ const validateInput = (input: ThetaWorkflowInput): void => {
   if (!input || typeof input !== "object")
     throw new Error("Workflow input must be an object.");
   required(input.filePath, "input.filePath");
+  if (input.plannerMode !== undefined && input.plannerMode !== "deterministic" && input.plannerMode !== "minimax") {
+    throw new Error("input.plannerMode must be deterministic or minimax.");
+  }
   if (
     input.sampleSize !== undefined &&
     (!Number.isInteger(input.sampleSize) ||
@@ -2132,6 +2405,41 @@ const canonicalJson = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+const evidenceExecutions = (
+  queries: readonly EvidenceQuery[],
+  results: readonly Record<string, unknown>[],
+): EvidenceQueryExecution[] => {
+  if (queries.length !== results.length) {
+    throw new Error("Evidence query/result count mismatch.");
+  }
+  return queries.map((query, index) => {
+    const result = results[index] ?? {};
+    const rawTrace = isRecord(result.retrievalTrace)
+      ? result.retrievalTrace
+      : {};
+    const trace: RetrievalTrace = {
+      schemaVersion: "1.0.0",
+      subqueries: [],
+      routesUsed: stringArray(rawTrace.routesUsed).filter(
+        (item): item is RetrievalTrace["routesUsed"][number] =>
+          ["exact", "fts_raw", "fts_tokens", "fts_grams"].includes(item),
+      ),
+      candidateCount: numberValue(rawTrace.candidateCount) ?? 0,
+      selectedCount: numberValue(rawTrace.selectedCount) ?? 0,
+      sourceCap: numberValue(rawTrace.sourceCap) ?? 3,
+      coverage: stringArray(rawTrace.coverage),
+      noEvidence: rawTrace.noEvidence !== false,
+    };
+    return {
+      query,
+      evidence: arrayValue(result.evidence).map((item) =>
+        evidenceRefSchema.parse(item),
+      ),
+      trace,
+    };
+  });
+};
+
 const runtimeRecord = (
   value: Record<string, unknown>,
 ): Record<string, RuntimeJsonValue> =>
@@ -2140,6 +2448,19 @@ const runtimeRecord = (
 const sanitizeRuntimeValue = (value: unknown): RuntimeJsonValue => {
   if (value === undefined) return null;
   return JSON.parse(JSON.stringify(value)) as RuntimeJsonValue;
+};
+
+const latestTimerReceipt = (
+  events: readonly FrameworkEvent[],
+): RuntimeJsonValue | undefined => {
+  const event = [...events]
+    .reverse()
+    .find((item) => item.type === "run.waiting_timer");
+  const payload = event && isRecord(event.payload) ? event.payload : undefined;
+  const wait = payload && isRecord(payload.wait) ? payload.wait : undefined;
+  return wait?.metadata === undefined
+    ? undefined
+    : sanitizeRuntimeValue(wait.metadata);
 };
 
 const unique = <T>(values: T[]): T[] => [...new Set(values)];

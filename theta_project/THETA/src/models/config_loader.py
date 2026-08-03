@@ -200,8 +200,9 @@ class EnvConfig:
             load_dotenv(env_path, override=True)
             cls._loaded = True
         else:
-            # Warning but don't fail - some paths may have defaults
-            print(f"Warning: .env file not found at {env_path}", file=sys.stderr)
+            # .env is optional when the caller already supplied environment
+            # variables or the selected model uses local defaults.
+            cls._loaded = True
     
     @classmethod
     def get_path(cls, name: str, default: Optional[str] = None, 

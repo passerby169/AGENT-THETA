@@ -39,7 +39,7 @@ export const resolveNextActions = (
         action(
           'columns',
           '确认列角色',
-          '说明正文列、时间列、ID 列和元数据列。',
+          '分别说明正文、时间、ID、训练协变量和展示分组；系统不会在这些角色间自动转换。',
           '/columns <自然语言说明>',
           true,
         ),
@@ -80,6 +80,7 @@ export const resolveNextActions = (
         action('results', '查看训练结果', '显示指标、主题表和所有产物路径。', '/results', true),
         action('open-results', '打开结果目录', '在本机文件管理器中打开当前 Run 的结果。', '/open-results'),
         action('summary', '解释结果', '根据真实指标和主题表生成受事实约束的摘要。', '/summary'),
+        action('reevaluate', '重新评估质量', '不重新训练，按当前落盘产物再次执行质量门。', '/reevaluate'),
       ];
     case 'Failed':
       return [

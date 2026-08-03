@@ -15,6 +15,10 @@ import {
   type DryRunReceipt,
   type TrainingPlanRecord,
 } from "./contracts.js";
+import { CapabilityRegistry } from "../capabilities/registry.js";
+import { evidenceBundleSchema } from "../rag/evidence-bundle.js";
+import { planProposalResultSchema } from "../planner/contracts.js";
+import { PLAN_VALIDATOR_VERSION } from "./validator-v2.js";
 
 export interface CreateTrainingPlanRecordInput {
   validatedPlan: Record<string, unknown>;
@@ -22,6 +26,10 @@ export interface CreateTrainingPlanRecordInput {
   datasetProfile: unknown;
   columnConfirmation: unknown;
   recommendation: unknown;
+  evidenceBundle?: unknown;
+  planProposal?: unknown;
+  plannerResolution?: unknown;
+  validation?: unknown;
   domainPack: { id: string; version: string };
   createdAt: string;
 }
@@ -62,7 +70,23 @@ export const createTrainingPlanRecord = (
   const profile = datasetProfileSchema.parse(input.datasetProfile);
   const confirmation = columnConfirmationSchema.parse(input.columnConfirmation);
   const recommendation = recommendationResultSchema.parse(input.recommendation);
-  if (recommendation.recommendations.length === 0)
+  const evidenceBundle = input.evidenceBundle === undefined
+    ? undefined
+    : evidenceBundleSchema.parse(input.evidenceBundle);
+  const planProposal = input.planProposal === undefined
+    ? undefined
+    : planProposalResultSchema.parse(input.planProposal);
+  const plannerResolution = record(input.plannerResolution);
+  const validation = record(input.validation);
+  const validatorVersion = requiredString(
+    validation.validatorVersion ?? PLAN_VALIDATOR_VERSION,
+    "validation.validatorVersion",
+  );
+  const acceptedEvidenceRefs = stringArray(
+    plannerResolution.acceptedEvidenceRefs,
+  );
+  const recommendations = recommendation.recommendations;
+  if (recommendations.length === 0)
     throw new Error("TrainingPlan requires one compatible recommendation.");
   if (confirmation.datasetSha256 !== profile.datasetSha256) {
     throw new Error(
@@ -72,7 +96,7 @@ export const createTrainingPlanRecord = (
 
   const raw = input.validatedPlan;
   const modelId = requiredString(raw.modelId, "validatedPlan.modelId");
-  const selectedRecommendation = recommendation.recommendations.find(
+  const selectedRecommendation = recommendations.find(
     (candidate) => candidate.modelId === modelId,
   );
   if (!selectedRecommendation) {
@@ -80,12 +104,16 @@ export const createTrainingPlanRecord = (
       "Validated plan model does not match a compatible recommendation.",
     );
   }
-  const parameters = scalarParameters(raw, [
-    "batchSize",
-    "epochs",
-    "learningRate",
-    "modelSize",
-  ]);
+  const capabilityCard = new CapabilityRegistry().require(modelId);
+  const parameters = scalarParameters(
+    raw,
+    capabilityCard.parameters.flatMap((parameter) =>
+      parameter.planField &&
+      !["mode", "numTopics", "maxTopics"].includes(parameter.planField)
+        ? [parameter.planField]
+        : [],
+    ),
+  );
   const canonicalPlan = canonicalTrainingPlanSchema.parse({
     schemaVersion: TRAINING_PLAN_SCHEMA_VERSION,
     datasetId: requiredString(raw.datasetId, "validatedPlan.datasetId"),
@@ -93,14 +121,19 @@ export const createTrainingPlanRecord = (
     model: {
       modelId,
       mode: raw.mode,
-      numTopics: raw.numTopics,
+      topicCountMode: raw.topicCountMode,
+      numTopics: raw.numTopics ?? null,
+      maxTopics: raw.maxTopics ?? null,
       parameters,
     },
     columns: {
       textColumns: confirmation.textColumns,
       timeColumn: confirmation.timeColumn,
       idColumn: confirmation.idColumn,
+      covariateColumns: confirmation.covariateColumns ?? [],
       metadataColumns: confirmation.metadataColumns,
+      groupingColumns: confirmation.groupingColumns,
+      evaluationLabelColumns: confirmation.evaluationLabelColumns,
     },
     preprocessing: {
       trimWhitespace: true,
@@ -112,17 +145,36 @@ export const createTrainingPlanRecord = (
       memoryGb: brief.hardwareLimit.memoryGb ?? null,
       networkAllowed: !brief.offlineOnly,
     },
+    experimentProtocol:
+      Object.keys(record(raw.experimentProtocol)).length > 0
+        ? record(raw.experimentProtocol)
+        : {
+            mode: "quick",
+            primarySeeds: [42],
+            baselineModelId: null,
+            baselineSeeds: [],
+            rationale: "未批准额外比较实验，执行一次主模型快速运行。",
+            evidenceRefs: [],
+            confidence: "low",
+          },
     bindings: {
       researchBriefHash: sha256Canonical(brief),
       datasetProfileHash: sha256Canonical(profile),
       columnConfirmationHash: sha256Canonical(confirmation),
       recommendationHash: sha256Canonical(recommendation),
+      evidenceBundleHash:
+        evidenceBundle?.bundleHash ?? sha256Canonical(null),
+      planProposalHash: sha256Canonical(planProposal ?? null),
+      plannerResolutionHash: sha256Canonical(
+        input.plannerResolution ?? null,
+      ),
       domainPackId: requiredString(input.domainPack.id, "domainPack.id"),
       domainPackVersion: requiredString(
         input.domainPack.version,
         "domainPack.version",
       ),
       recommendationVersion: recommendation.recommendationVersion,
+      validatorVersion,
     },
   });
   const planHash = sha256Canonical(canonicalPlan);
@@ -144,7 +196,20 @@ export const createTrainingPlanRecord = (
         ]),
       ].sort(),
       reasonCodes: [...selectedRecommendation.reasonCodes].sort(),
-      evidence: selectedRecommendation.evidenceRefs,
+      evidence: mergedEvidence(
+        selectedRecommendation.evidenceRefs,
+        evidenceBundle?.evidence ?? [],
+        acceptedEvidenceRefs,
+      ),
+      evidenceBundleHash:
+        evidenceBundle?.bundleHash ?? sha256Canonical(null),
+      planProposalSource:
+        plannerResolution.source === "explicit_user_plan"
+          ? "explicit_user_plan"
+          : planProposal?.source ?? "deterministic",
+      plannerAcceptedEvidenceRefs: acceptedEvidenceRefs,
+      evidenceSelectionReceipts: planProposal?.evidenceSelectionReceipts ?? [],
+      validatorVersion,
     },
     createdAt: input.createdAt,
   });
@@ -244,6 +309,31 @@ const scalarParameters = (
         : [];
     }),
   );
+
+const mergedEvidence = <T extends { evidenceId: string }>(
+  recommendationEvidence: readonly T[],
+  bundleEvidence: readonly T[],
+  acceptedEvidenceRefs: readonly string[],
+): T[] => {
+  const accepted = new Set(acceptedEvidenceRefs);
+  const values = [
+    ...bundleEvidence.filter((item) => accepted.has(item.evidenceId)),
+    ...recommendationEvidence,
+  ];
+  return values.filter(
+    (item, index) =>
+      values.findIndex((candidate) => candidate.evidenceId === item.evidenceId) === index,
+  );
+};
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+const stringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
 
 const requiredString = (value: unknown, label: string): string => {
   if (typeof value !== "string" || !value.trim())

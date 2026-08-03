@@ -7,6 +7,13 @@ import {
 import type { TrainingPlanRecord } from "../planning/contracts.js";
 import type { ThetaTrainingPlan } from "./plan-validate-tool.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
+import { callThetaBridge } from "./bridge.js";
+import { validateTrainingPlanV2 } from "../planning/validator-v2.js";
+import type { CapabilityCatalogModel } from "../capabilities/contracts.js";
+import {
+  datasetProfileSchema,
+  researchBriefSchema,
+} from "../agent/research-contracts.js";
 
 export interface ThetaPlanCreateInput extends Omit<
   CreateTrainingPlanRecordInput,
@@ -31,13 +38,17 @@ const planCreateInputSchema: JsonSchema = {
   properties: {
     validatedPlan: {
       type: "object",
-      required: ["datasetId", "modelId", "mode", "numTopics"],
+      required: ["datasetId", "modelId", "mode"],
       additionalProperties: true,
     },
     researchBrief: { type: "object", additionalProperties: true },
     datasetProfile: { type: "object", additionalProperties: true },
     columnConfirmation: { type: "object", additionalProperties: true },
     recommendation: { type: "object", additionalProperties: true },
+    evidenceBundle: { type: "object", additionalProperties: true },
+    planProposal: { type: "object", additionalProperties: true },
+    plannerResolution: { type: "object", additionalProperties: true },
+    validation: { type: "object", additionalProperties: true },
     domainPack: {
       type: "object",
       required: ["id", "version"],
@@ -79,7 +90,7 @@ const planCreateOutputSchema: JsonSchema = {
 
 export const thetaPlanCreateToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.planCreate,
-  version: "2.0.0",
+  version: "2.1.0",
   displayName: "Create Training Plan",
   description:
     "Create the TypeScript-authoritative canonical THETA plan after Hypha HumanPlanReview.",
@@ -116,10 +127,48 @@ const normalizePlanCreateInput = (input: unknown): ThetaPlanCreateInput => {
 export const thetaPlanCreateHandler: ToolHandler<
   unknown,
   ThetaPlanCreateOutput
-> = async (input: unknown, _context: ToolCallContext) => {
+> = async (input: unknown, context: ToolCallContext) => {
   const value = normalizePlanCreateInput(input);
+  const response = await callThetaBridge(
+    "model.catalog",
+    {},
+    {
+      runId: context.runId,
+      stepId: `${context.stepId}.validator-v2.catalog`,
+    },
+  );
+  if (
+    response.status !== "ok" ||
+    !response.data ||
+    typeof response.data !== "object"
+  ) {
+    throw new Error(
+      response.error?.message ?? "model.catalog bridge command failed.",
+    );
+  }
+  const models = Array.isArray(
+    (response.data as Record<string, unknown>).models,
+  )
+    ? ((response.data as Record<string, unknown>)
+        .models as CapabilityCatalogModel[])
+    : [];
+  const brief = researchBriefSchema.parse(value.researchBrief);
+  const profile = datasetProfileSchema.parse(value.datasetProfile);
+  const validation = validateTrainingPlanV2({
+    plan: value.validatedPlan,
+    models,
+    dataProfile: profile,
+    offlineOnly: brief.offlineOnly,
+    device: brief.hardwareLimit.device,
+  });
+  if (!validation.valid) {
+    throw new Error(
+      `Validator V2 rejected plan.create: ${validation.errors.join("; ")}`,
+    );
+  }
   return createTrainingPlanRecord({
     ...value,
+    validatedPlan: validation.normalizedPlan,
     createdAt: value.createdAt ?? new Date().toISOString(),
   });
 };

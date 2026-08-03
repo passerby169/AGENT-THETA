@@ -56,6 +56,25 @@ export const trainingFailureSchema = z
   })
   .strict();
 
+export const trainingQualitySchema = z
+  .object({
+    modelId: z.string().min(1).optional(),
+    profileVersion: z.string().min(1).optional(),
+    status: z.enum(["passed", "warning", "failed"]),
+    checks: z.array(
+      z
+        .object({
+          code: z.string().min(1),
+          status: z.enum(["pass", "warn", "fail"]),
+          detail: z.string().min(1),
+          value: z.number().optional(),
+        })
+        .strict(),
+    ),
+    assessedAt: z.string().datetime(),
+  })
+  .strict();
+
 export const trainingReceiptSchema = z
   .object({
     schemaVersion: z.literal(TRAINING_RUNTIME_SCHEMA_VERSION),
@@ -72,6 +91,8 @@ export const trainingReceiptSchema = z
     trainingReviewApprovalId: z.string().regex(/^approval_[a-f0-9]{20}$/),
     dryRunHash: z.string().regex(/^[a-f0-9]{64}$/),
     status: trainingRunStatusSchema,
+    executionStatus: trainingRunStatusSchema.optional(),
+    quality: trainingQualitySchema.or(z.object({}).strict()).default({}),
     progress: z.number().min(0).max(100),
     processStarted: z.boolean(),
     pid: z.number().int().positive().nullable(),
@@ -86,6 +107,7 @@ export const trainingReceiptSchema = z
     analysisBindings: z
       .object({
         timeColumn: z.string().min(1).nullable(),
+        covariateColumns: z.array(z.string().min(1)).default([]),
         metadataColumns: z.array(z.string().min(1)),
         temporalArtifactsRequested: z.boolean(),
         groupArtifactsRequested: z.boolean(),
@@ -93,6 +115,7 @@ export const trainingReceiptSchema = z
       .strict()
       .default({
         timeColumn: null,
+        covariateColumns: [],
         metadataColumns: [],
         temporalArtifactsRequested: false,
         groupArtifactsRequested: false,
@@ -143,6 +166,7 @@ export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
       status: z.literal("not_found"),
       logs: z.array(z.string()),
       events: z.array(trainingLifecycleEventSchema),
+      reassessed: z.boolean().optional(),
     })
     .strict(),
   z
@@ -153,6 +177,7 @@ export const trainingStatusOutputSchema = z.discriminatedUnion("found", [
       status: trainingRunStatusSchema,
       logs: z.array(z.string()),
       events: z.array(trainingLifecycleEventSchema),
+      reassessed: z.boolean().optional(),
     })
     .strict(),
 ]);

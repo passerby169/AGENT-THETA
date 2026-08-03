@@ -90,6 +90,9 @@ export const guardCriticalResearchPatch = (
         correctedFields.push('comparisonGroups');
       }
       patch.comparisonGroups = [];
+      patch.comparisonIntent = 'none';
+    } else if ((patch.comparisonGroups?.length ?? 0) > 0) {
+      patch.comparisonIntent = 'groups';
     }
   }
 
