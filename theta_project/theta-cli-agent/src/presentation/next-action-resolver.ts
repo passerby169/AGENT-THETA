@@ -19,7 +19,21 @@ const action = (
 export const resolveNextActions = (
   state: unknown,
   status?: unknown,
+  hasActiveRun = true,
 ): HumanNextAction[] => {
+  if (!hasActiveRun) {
+    return [
+      action(
+        'start',
+        '创建分析任务',
+        '选择一个本地数据文件，开始研究设置。',
+        '/start <数据文件>',
+        true,
+      ),
+      action('runs', '查看本地任务', '查看并连接已有的持久化任务。', '/runs'),
+      action('help', '查看可用命令', '显示当前可用的交互命令。', '/help'),
+    ];
+  }
   const current = typeof state === 'string' ? state : '';
   switch (current) {
     case 'ResearchClarification':

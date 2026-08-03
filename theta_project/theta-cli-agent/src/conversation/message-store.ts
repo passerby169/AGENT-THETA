@@ -39,6 +39,16 @@ export interface ResearchBriefRevision {
   brief: ResearchBrief;
   briefHash: string;
   interpretationHash?: string;
+  fieldEvidence?: Readonly<
+    Record<
+      string,
+      {
+        sourceText: string;
+        confidence: number;
+        evidenceSpans: string[];
+      }
+    >
+  >;
   createdAt: string;
 }
 

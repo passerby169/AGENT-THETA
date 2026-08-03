@@ -8,6 +8,10 @@ import {
   type ThetaWorkflowStatus,
 } from '../theta-workflow-service.js';
 import type { ConversationCommand } from './contracts.js';
+import {
+  commandNeedsActiveRun,
+  noActiveRunResult,
+} from './no-active-run.js';
 
 export interface ConversationExecutionContext {
   activeRunId?: string;
@@ -36,6 +40,9 @@ export class ThetaConversationWorkflowExecutor {
         ...(context.runtimeDb ? { runtimeDb: context.runtimeDb } : {}),
       });
       return withRun(result);
+    }
+    if (commandNeedsActiveRun(command, context.activeRunId)) {
+      return { value: noActiveRunResult(command.kind) };
     }
     if (command.kind === 'status') {
       const runId = resolveRunId(command.runId, context.activeRunId);

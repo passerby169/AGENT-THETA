@@ -21,6 +21,7 @@ const checks = [
   "smoke:hypha-training-controls",
   "smoke:training-runtime",
   "smoke:operator-commands",
+  "smoke:conversation-ux",
   "smoke:rag-governance",
   "smoke:language-governance",
   "smoke:cli",

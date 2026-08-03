@@ -38,6 +38,7 @@
     "smoke:training-runtime": "node dist/training-runtime-smoke.js",
     "smoke:agent-cli": "node dist/agent-cli-smoke.js",
     "smoke:operator-commands": "node dist/operator-command-smoke.js",
+    "smoke:conversation-ux": "node dist/conversation-ux-smoke.js",
     "smoke:rag-governance": "node dist/rag-governance-smoke.js",
     "smoke:language-governance": "node dist/language-governance-smoke.js",
     "test:contracts": "node dist/contract-suite-smoke.js",

@@ -122,11 +122,13 @@ const shape = (request: NaturalLanguageRequest): string => {
   switch (request.task) {
     case 'interpret_research_answer':
       return [
-        `Interpret only the authoritative field ${JSON.stringify(request.field.split(',')[0] ?? request.field)}.`,
+        `The currently asked field is ${JSON.stringify(request.field.split(',')[0] ?? request.field)}, but extract every ResearchBrief field explicitly supported by this answer in one patch.`,
         researchFieldValueRule(request.field.split(',')[0] ?? request.field),
-        'Return exactly: {"task":"interpret_research_answer","patch":{"FIELD":VALUE},"answeredFields":["FIELD"],"unresolvedFields":[],"confidenceByField":{"FIELD":0.0},"needsConfirmation":false,"explanation":"简短中文说明","questionSuggestions":[{"gapId":"candidate gapId","field":"candidate field","question":"自然的中文追问","examples":[],"answerHint":"如何回答"}]}.',
-        'Replace FIELD with the supplied authoritative field. answeredFields must exactly equal the keys in patch and confidence values must be numbers from 0 to 1.',
-        'If the answer cannot resolve that field, use an empty patch and answeredFields, put FIELD in unresolvedFields, and set needsConfirmation to true. Do not add any other key to patch.',
+        'Allowed patch keys are researchQuestion, collectionMethod, analysisUnit, timeRange, language, comparisonGroups, comparisonIntent, topicGranularity, knownBiases, sensitiveData, successCriteria, hardwareLimit, textFieldIntent, trendAnalysis, offlineOnly, requestedEmbedding, and timeLimitHours.',
+        'Return exactly: {"task":"interpret_research_answer","patch":{"FIELD":VALUE},"answeredFields":["FIELD"],"unresolvedFields":[],"confidenceByField":{"FIELD":0.0},"evidenceSpans":{"FIELD":["exact quote from answer"]},"remainingQuestions":[],"needsConfirmation":false,"explanation":"简短中文说明","questionSuggestions":[{"gapId":"candidate gapId","field":"candidate field","question":"自然的中文追问","examples":[],"answerHint":"如何回答"}]}.',
+        'answeredFields, confidenceByField, and evidenceSpans must use exactly the keys present in patch. Every evidence span must be an exact substring of the answer.',
+        'If the answer cannot resolve the currently asked field, include that field in unresolvedFields and set needsConfirmation to true, but retain other explicitly supported high-confidence fields in patch.',
+        'Never infer sensitiveData from silence, politeness, a research objective, or unrelated wording. Only return sensitiveData when the answer explicitly says whether sensitive or confidential data exists.',
         'For each supplied nextGapCandidates item, you may provide one bounded questionSuggestion. Never change its gapId or field. These are candidate phrasings only; the FSM decides which one is actually next.',
       ].join(' ');
     case 'generate_grilling_question':
@@ -154,8 +156,13 @@ const validateOutput = (
     output.task === 'interpret_research_answer'
   ) {
     const patchedFields = new Set(Object.keys(output.patch));
+    const answeredFields = new Set(output.answeredFields);
+    const confidenceFields = new Set(Object.keys(output.confidenceByField));
+    const evidenceFields = new Set(Object.keys(output.evidenceSpans));
     if (
-      output.answeredFields.some((field) => !patchedFields.has(field)) ||
+      !sameSet(patchedFields, answeredFields) ||
+      !sameSet(patchedFields, confidenceFields) ||
+      !sameSet(patchedFields, evidenceFields) ||
       (patchedFields.size === 0 &&
         !output.needsConfirmation &&
         output.unresolvedFields.length === 0)
@@ -163,6 +170,13 @@ const validateOutput = (
       throw new Error(
         'Provider answer metadata is inconsistent with its ResearchBriefPatch.',
       );
+    }
+    if (
+      Object.values(output.evidenceSpans)
+        .flat()
+        .some((span) => !request.answer.includes(span))
+    ) {
+      throw new Error('Provider research evidence is not an exact answer span.');
     }
     const allowedSuggestions = new Map(
       (request.nextGapCandidates ?? []).map((candidate) => [
@@ -277,9 +291,46 @@ const deterministicResearchAnswer = (
 ): NaturalLanguageProviderOutput => {
   const answer = request.answer.trim();
   const field = request.field.split(',')[0] ?? request.field;
+  const patch = deterministicResearchPatch(answer, field);
+  const evidenceSpans: Record<string, string[]> = Object.fromEntries(
+    Object.keys(patch).map((name) => [name, [evidenceForField(answer, name)]]),
+  );
+  const answered = Object.keys(patch);
+  const resolvedActiveField = answered.includes(field);
+  return {
+    task: request.task,
+    patch,
+    answeredFields: answered,
+    unresolvedFields: resolvedActiveField ? [] : [field],
+    confidenceByField: Object.fromEntries(
+      answered.map((name) => [name, name === field ? 0.72 : 0.84]),
+    ),
+    evidenceSpans,
+    remainingQuestions: resolvedActiveField ? [] : [request.question],
+    needsConfirmation: !resolvedActiveField,
+    explanation:
+      answered.length === 0
+        ? '确定性回退无法安全映射这段回答，需要进一步确认。'
+        : `已从本轮回答中识别 ${answered.length} 项研究信息。`,
+    questionSuggestions: (request.nextGapCandidates ?? []).map((candidate) => ({
+      gapId: candidate.gapId,
+      field: candidate.field,
+      question: normalizeQuestion(candidate.draftQuestion),
+      examples: deterministicExamples(candidate.field),
+      answerHint: '请直接用自然语言回答；如果不确定，也可以说明“不知道”。',
+    })),
+  };
+};
+
+const deterministicResearchPatch = (
+  answer: string,
+  field: string,
+): Record<string, unknown> => {
   const patch: Record<string, unknown> = {};
   if (field === 'trendAnalysis') {
-    patch.trendAnalysis = !/(不|否|no|不要|无需)/iu.test(answer);
+    if (/(时间|趋势|变化|temporal|trend)/iu.test(answer)) {
+      patch.trendAnalysis = !/(不|否|no|不要|无需)/iu.test(answer);
+    }
   } else if (field === 'offlineOnly') {
     patch.offlineOnly = !/(联网|远程|online|remote)/iu.test(answer);
   } else if (field === 'topicGranularity') {
@@ -297,15 +348,10 @@ const deterministicResearchAnswer = (
       };
     }
   } else if (field === 'sensitiveData') {
-    patch.sensitiveData = {
-      status:
-        /(不包含|不含|不存在|没有|完全.{0,8}模拟|人工.{0,8}模拟|无|否|\bno\b)/iu.test(
-          answer,
-        )
-          ? 'no'
-          : 'yes',
-      categories: [],
-    };
+    const sensitiveStatus = explicitSensitiveStatus(answer, true);
+    if (sensitiveStatus) {
+      patch.sensitiveData = { status: sensitiveStatus, categories: [] };
+    }
   } else if (field === 'hardwareLimit') {
     const memory = answer.match(/(\d+(?:\.\d+)?)\s*(?:GB|G)/iu);
     patch.hardwareLimit = {
@@ -339,29 +385,99 @@ const deterministicResearchAnswer = (
   ) {
     patch[field] = answer;
   }
-  const answered = Object.keys(patch);
-  return {
-    task: request.task,
-    patch,
-    answeredFields: answered,
-    unresolvedFields: answered.length === 0 ? [request.field] : [],
-    confidenceByField: Object.fromEntries(
-      answered.map((name) => [name, 0.55]),
-    ),
-    needsConfirmation: answered.length === 0,
-    explanation:
-      answered.length === 0
-        ? '确定性回退无法安全映射这段回答，需要进一步确认。'
-        : `已将回答映射到 ${answered.join('、')}。`,
-    questionSuggestions: (request.nextGapCandidates ?? []).map((candidate) => ({
-      gapId: candidate.gapId,
-      field: candidate.field,
-      question: normalizeQuestion(candidate.draftQuestion),
-      examples: deterministicExamples(candidate.field),
-      answerHint: '请直接用自然语言回答；如果不确定，也可以说明“不知道”。',
-    })),
-  };
+
+  const researchQuestion = clauseMatching(
+    answer,
+    /(?:研究问题|研究目标|分析目标)\s*(?:是|为|：|:)|(?:我希望|希望)\s*(?:识别|分析|比较|探索|研究)/iu,
+  );
+  if (researchQuestion) patch.researchQuestion = researchQuestion;
+
+  const analysisUnit = clauseMatching(
+    answer,
+    /(?:每一|每)\s*(?:行|条|篇|个).{0,16}(?:代表|作为|是)|分析单位\s*(?:是|为|：|:)/iu,
+  );
+  if (analysisUnit) patch.analysisUnit = analysisUnit;
+
+  const textIntent = clauseMatching(
+    answer,
+    /(?:正文|文本内容|自然语言内容|待分析文本)\s*(?:列|是|为|：|:|用于)/iu,
+  );
+  if (textIntent) patch.textFieldIntent = textIntent;
+
+  const sensitiveStatus = explicitSensitiveStatus(answer);
+  if (sensitiveStatus) {
+    patch.sensitiveData = { status: sensitiveStatus, categories: [] };
+  }
+
+  if (/(?:CPU|GPU|显卡|CUDA|\d+(?:\.\d+)?\s*(?:GB|G)\b)/iu.test(answer)) {
+    const memory = answer.match(/(\d+(?:\.\d+)?)\s*(?:GB|G)\b/iu);
+    patch.hardwareLimit = {
+      device: /(?:不|不要|不用|禁止|无法|没有|无)\s*(?:使用|可用|支持)?\s*(?:GPU|显卡|CUDA)/iu.test(answer)
+        ? 'cpu'
+        : /(?:GPU|显卡|CUDA)/iu.test(answer)
+          ? 'gpu'
+          : /CPU/iu.test(answer)
+            ? 'cpu'
+            : 'unknown',
+      ...(memory ? { memoryGb: Number(memory[1]) } : {}),
+    };
+  }
+
+  const success = clauseMatching(answer, /(?:成功标准|验收标准|结果需要|希望结果)\s*(?:是|为|包括|：|:)?/iu);
+  if (success) patch.successCriteria = [success];
+
+  const biases = clauseMatching(answer, /(?:偏差|局限|限制)\s*(?:是|为|包括|：|:)?/iu);
+  if (biases) patch.knownBiases = [biases];
+
+  if (/(?:离线|不联网|无需联网|offline)/iu.test(answer)) patch.offlineOnly = true;
+  if (/(?:时间|日期).{0,12}(?:趋势|变化)|(?:趋势|变化).{0,12}(?:时间|日期)/iu.test(answer)) {
+    patch.trendAnalysis = true;
+  }
+  return patch;
 };
+
+const explicitSensitiveStatus = (
+  answer: string,
+  allowShortAnswer = false,
+): 'yes' | 'no' | undefined => {
+  const shortNo =
+    allowShortAnswer && /^(?:否|no|不包含|不含|没有|无|不存在)[。.]?$/iu.test(answer.trim());
+  const shortYes =
+    allowShortAnswer && /^(?:是|有|包含|yes)[。.]?$/iu.test(answer.trim());
+  const explicitNo =
+    shortNo ||
+    /(?:不包含|不含|不存在|没有|无).{0,16}(?:个人|隐私|机密|敏感|医疗|商业)(?:信息|内容|数据)?|(?:个人|隐私|机密|敏感|医疗|商业)(?:信息|内容|数据)?.{0,16}(?:不包含|不含|不存在|没有|无)|无敏感|非敏感|合成数据|模拟数据/iu.test(answer);
+  if (explicitNo) return 'no';
+  return shortYes ||
+    /(包含|含有|存在|涉及).{0,12}(个人|隐私|机密|敏感|医疗|商业)|\byes\b.{0,12}(sensitive|personal|confidential)/iu.test(answer)
+    ? 'yes'
+    : undefined;
+};
+
+const clauseMatching = (answer: string, pattern: RegExp): string | undefined =>
+  answer
+    .split(/[。！？!?；;\n]/u)
+    .map((value) => value.trim())
+    .find((value) => pattern.test(value));
+
+const evidenceForField = (answer: string, field: string): string =>
+  clauseMatching(answer, fieldEvidencePattern(field)) ?? answer;
+
+const fieldEvidencePattern = (field: string): RegExp =>
+  ({
+    researchQuestion: /研究|目标|识别|分析|比较|探索/iu,
+    analysisUnit: /每一|每行|每条|每篇|分析单位/iu,
+    textFieldIntent: /正文|文本内容|自然语言内容/iu,
+    sensitiveData: /个人|隐私|机密|敏感|合成|模拟/iu,
+    hardwareLimit: /CPU|GPU|显卡|CUDA|GB/iu,
+    successCriteria: /成功|验收|结果/iu,
+    knownBiases: /偏差|局限|限制/iu,
+    trendAnalysis: /时间|趋势|变化/iu,
+    offlineOnly: /离线|联网|offline/iu,
+  } as Readonly<Record<string, RegExp>>)[field] ?? /[\s\S]+/u;
+
+const sameSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean =>
+  left.size === right.size && [...left].every((value) => right.has(value));
 
 const deterministicExamples = (field: string): string[] => {
   const examples: Readonly<Record<string, string>> = {

@@ -1,5 +1,9 @@
 import { createInterface } from 'node:readline';
 import { ConversationService } from './conversation/conversation-service.js';
+import {
+  commandNeedsActiveRun,
+  noActiveRunResult,
+} from './conversation/no-active-run.js';
 import { SQLiteConversationStore } from './storage/sqlite-conversation-store.js';
 import { ThetaTurnOrchestrator } from './conversation/turn-orchestrator.js';
 import { ThetaConversationWorkflowExecutor } from './conversation/workflow-executor.js';
@@ -219,6 +223,12 @@ export const runRepl = async (
       try {
         const command = conversation.parseReplLine(line);
         if (command.kind === 'exit') break;
+        if (commandNeedsActiveRun(command, activeRunId)) {
+          lastRawValue = noActiveRunResult(command.kind);
+          output.write(renderValue(lastRawValue));
+          if (readline.terminal) readline.prompt();
+          continue;
+        }
         if (command.kind === 'details') {
           output.write(
             lastRawValue === undefined
@@ -248,9 +258,7 @@ export const runRepl = async (
           command.kind === 'logs' ||
           command.kind === 'cancel'
         ) {
-          if (!activeRunId) {
-            throw new Error('No active Run. Use /start <dataset> first.');
-          }
+          if (!activeRunId) throw new Error('Unreachable no-Run command.');
           lastRawValue =
             command.kind === 'logs'
               ? await results.logs(activeRunId, runtimeDb)
@@ -274,9 +282,7 @@ export const runRepl = async (
           continue;
         }
         if (command.kind === 'follow') {
-          if (!activeRunId) {
-            throw new Error('No active Run. Use /start <dataset> first.');
-          }
+          if (!activeRunId) throw new Error('Unreachable no-Run command.');
           lastRawValue = await followTraining(
             activeRunId,
             runtimeDb,
@@ -287,9 +293,7 @@ export const runRepl = async (
           continue;
         }
         if (command.kind === 'retry' || command.kind === 'reevaluate') {
-          if (!activeRunId) {
-            throw new Error('No active Run. Use /start <dataset> first.');
-          }
+          if (!activeRunId) throw new Error('Unreachable no-Run command.');
           lastRawValue = command.kind === 'retry'
             ? await results.retry(activeRunId, runtimeDb)
             : await results.reassess(activeRunId, runtimeDb);

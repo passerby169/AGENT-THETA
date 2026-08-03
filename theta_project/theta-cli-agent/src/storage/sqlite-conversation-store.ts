@@ -143,8 +143,8 @@ export class SQLiteConversationStore implements ConversationStore {
         `INSERT OR IGNORE INTO theta_research_brief_revisions
          (revision_id, run_id, session_id, parent_revision_id,
           source_message_id, patch_json, brief_snapshot_json, brief_hash,
-          interpretation_hash, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          interpretation_hash, field_evidence_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         revision.revisionId,
@@ -156,6 +156,9 @@ export class SQLiteConversationStore implements ConversationStore {
         JSON.stringify(revision.brief),
         revision.briefHash,
         revision.interpretationHash ?? null,
+        revision.fieldEvidence === undefined
+          ? null
+          : JSON.stringify(revision.fieldEvidence),
         revision.createdAt,
       );
   }
@@ -307,6 +310,7 @@ export class SQLiteConversationStore implements ConversationStore {
         brief_snapshot_json TEXT NOT NULL,
         brief_hash TEXT NOT NULL,
         interpretation_hash TEXT,
+        field_evidence_json TEXT,
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS theta_brief_run
@@ -339,6 +343,20 @@ export class SQLiteConversationStore implements ConversationStore {
       INSERT OR IGNORE INTO theta_conversation_migrations(version, applied_at)
       VALUES (1, datetime('now'));
     `);
+    const revisionColumns = this.database
+      .prepare('PRAGMA table_info(theta_research_brief_revisions)')
+      .all() as Row[];
+    if (!revisionColumns.some((column) => column.name === 'field_evidence_json')) {
+      this.database.exec(
+        'ALTER TABLE theta_research_brief_revisions ADD COLUMN field_evidence_json TEXT',
+      );
+    }
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO theta_conversation_migrations(version, applied_at)
+         VALUES (2, datetime('now'))`,
+      )
+      .run();
   }
 }
 
@@ -382,6 +400,9 @@ const revision = (row: Row): ResearchBriefRevision => ({
   briefHash: string(row.brief_hash),
   ...(nullableString(row.interpretation_hash)
     ? { interpretationHash: nullableString(row.interpretation_hash) }
+    : {}),
+  ...(nullableString(row.field_evidence_json)
+    ? { fieldEvidence: JSON.parse(string(row.field_evidence_json)) }
     : {}),
   createdAt: string(row.created_at),
 });

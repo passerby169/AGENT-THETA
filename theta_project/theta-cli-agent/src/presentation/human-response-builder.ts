@@ -16,6 +16,7 @@ export const buildHumanResponse = (value: unknown): HumanFacingResponse => {
 
   const kind = text(record.kind) ?? 'workflow';
   if (kind === 'language.consent') return languageConsent(record, value);
+  if (kind === 'run.required') return runRequired(record, value);
   if (kind === 'research.brief') return researchBrief(record, value);
   if (kind === 'conversation.history') return history(record, value);
   if (kind === 'run.explanation') return runExplanation(record, value);
@@ -804,14 +805,17 @@ const recommendation = (
 const conversation = (
   record: Record<string, unknown>,
   raw: unknown,
-): HumanFacingResponse =>
-  response(
-    'conversation.turn',
-    'THETA 助手',
-    text(record.response) ?? '已完成本轮只读查询。',
+): HumanFacingResponse => ({
+  kind: 'conversation.turn',
+  title: 'THETA 助手',
+  summary: text(record.response) ?? '已完成本轮只读查询。',
+  nextActions: resolveNextActions(
     undefined,
-    raw,
-  );
+    undefined,
+    record.hasActiveRun === true,
+  ),
+  technicalDetails: raw,
+});
 
 const languageConsent = (
   record: Record<string, unknown>,
@@ -832,15 +836,33 @@ const languageConsent = (
       ],
     },
   ],
-  nextActions: [
+  nextActions: resolveNextActions(
+    undefined,
+    undefined,
+    record.hasActiveRun === true,
+  ),
+  technicalDetails: raw,
+});
+
+const runRequired = (
+  record: Record<string, unknown>,
+  raw: unknown,
+): HumanFacingResponse => ({
+  kind: 'run.required',
+  title: '需要先创建分析任务',
+  summary:
+    text(record.message) ??
+    '当前还没有分析任务。请先选择一个本地数据文件创建任务。',
+  sections: [
     {
-      id: 'status',
-      label: '继续当前任务',
-      description: '查看当前步骤或直接回答正在等待的问题。',
-      command: '/status',
-      recommended: true,
+      title: '刚才的命令没有执行',
+      lines: [
+        `请求：/${text(record.requestedCommand) ?? 'status'}`,
+        '系统没有创建隐藏任务，也没有改变任何训练状态。',
+      ],
     },
   ],
+  nextActions: resolveNextActions(undefined, undefined, false),
   technicalDetails: raw,
 });
 
@@ -868,7 +890,11 @@ const history = (
         }),
       },
     ],
-    nextActions: resolveNextActions(undefined),
+    nextActions: resolveNextActions(
+      undefined,
+      undefined,
+      record.hasActiveRun === true,
+    ),
     technicalDetails: raw,
   };
 };

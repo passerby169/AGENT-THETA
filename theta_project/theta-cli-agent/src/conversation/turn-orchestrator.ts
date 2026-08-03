@@ -33,6 +33,10 @@ import {
   runThetaRagSearch,
 } from '../tools/hypha-runner.js';
 import { ThetaConversationWorkflowExecutor } from './workflow-executor.js';
+import {
+  commandNeedsActiveRun,
+  noActiveRunResult,
+} from './no-active-run.js';
 
 export interface TurnContext {
   sessionId: string;
@@ -86,6 +90,7 @@ export class ThetaTurnOrchestrator {
             'draft_training_plan',
           ],
           trainingApprovalGranted: false,
+          hasActiveRun: Boolean(activeRunId),
         },
         activeRunId,
       };
@@ -103,9 +108,13 @@ export class ThetaTurnOrchestrator {
           recoverableTurns: activeRunId
             ? recoverableTurns.filter((turn) => turn.runId === activeRunId)
             : recoverableTurns,
+          hasActiveRun: Boolean(activeRunId),
         },
         activeRunId,
       };
+    }
+    if (commandNeedsActiveRun(command, activeRunId)) {
+      return { value: noActiveRunResult(command.kind) };
     }
     if (command.kind === 'brief') {
       const runId = requiredRun(activeRunId);
@@ -217,17 +226,19 @@ export class ThetaTurnOrchestrator {
         message.messageId,
       );
       this.store.updateTurn(turn.turnId, 'interpreted');
-      if (language.output.task !== 'interpret_research_answer') {
+      const interpretation = language.output;
+      if (interpretation.task !== 'interpret_research_answer') {
         throw new Error('Unexpected language result for research answer.');
       }
       const guarded = guardCriticalResearchPatch(
         gap.field,
         text,
-        language.output.patch,
+        interpretation.patch,
+        interpretation.confidenceByField,
       );
       const merged = this.merger.merge(brief, guarded.patch);
       if (merged.changedFields.length === 0) {
-        const response = `${language.output.explanation} 请补充回答：${question.question}`;
+        const response = `${interpretation.explanation} 请补充回答：${question.question}`;
         this.assistantMessage(
           context,
           runId,
@@ -238,7 +249,7 @@ export class ThetaTurnOrchestrator {
         return {
           value: {
             kind: 'research.answer.unresolved',
-            explanation: language.output.explanation,
+            explanation: interpretation.explanation,
             activeQuestion: question.question,
           },
           activeRunId: runId,
@@ -255,6 +266,20 @@ export class ThetaTurnOrchestrator {
         brief: merged.brief,
         briefHash: merged.briefHash,
         interpretationHash: language.factsHash,
+        fieldEvidence: Object.fromEntries(
+          merged.changedFields.map((field) => [
+            field,
+            {
+              sourceText: message.content,
+              confidence:
+                guarded.correctedFields.includes(field)
+                  ? 1
+                  : (interpretation.confidenceByField[field] ?? 0),
+              evidenceSpans:
+                interpretation.evidenceSpans[field] ?? [message.content],
+            },
+          ]),
+        ),
         createdAt: new Date().toISOString(),
       });
       this.store.updateTurn(turn.turnId, 'brief_applied');
@@ -271,7 +296,7 @@ export class ThetaTurnOrchestrator {
       );
       const nextQuestion = this.questionAfterAnswer(
         next,
-        language.output.questionSuggestions,
+        interpretation.questionSuggestions,
       );
       const response = [
         `已记录：${merged.changedFields.map(researchFieldLabel).join('、')}。`,
@@ -282,6 +307,11 @@ export class ThetaTurnOrchestrator {
           : '',
         merged.conflictingFields.length > 0
           ? `本次回答更新了之前的${merged.conflictingFields
+              .map(researchFieldLabel)
+              .join('、')}。`
+          : '',
+        guarded.confirmationFields.length > 0
+          ? `仍需明确确认：${guarded.confirmationFields
               .map(researchFieldLabel)
               .join('、')}。`
           : '',
@@ -619,6 +649,7 @@ export class ThetaTurnOrchestrator {
         proposal: proposal.output,
         result: toolResult,
         response,
+        hasActiveRun: Boolean(runId),
         evidenceRefs:
           composed.output.task === 'compose_grounded_response'
             ? composed.output.evidenceIds

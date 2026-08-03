@@ -141,6 +141,10 @@ const researchAnswerOutputSchema = z
     answeredFields: z.array(z.string().trim().min(1).max(160)).max(30),
     unresolvedFields: z.array(z.string().trim().min(1).max(160)).max(30),
     confidenceByField: z.record(z.number().min(0).max(1)),
+    evidenceSpans: z
+      .record(z.array(z.string().trim().min(1).max(1000)).max(5))
+      .default({}),
+    remainingQuestions: z.array(boundedText).max(8).default([]),
     needsConfirmation: z.boolean(),
     explanation: boundedText,
     questionSuggestions: z
