@@ -37,6 +37,13 @@ import {
   commandNeedsActiveRun,
   noActiveRunResult,
 } from './no-active-run.js';
+import {
+  parsePlanAdjustmentRequest,
+  type CurrentPlanAdjustmentValues,
+  type PlanAdjustmentIntent,
+} from './plan-adjustment.js';
+
+export { parsePlanAdjustment } from './plan-adjustment.js';
 
 export interface TurnContext {
   sessionId: string;
@@ -423,31 +430,58 @@ export class ThetaTurnOrchestrator {
     if (current.pendingActionRef !== THETA_APPROVAL_KEYS.planReview) {
       throw new Error('只有在训练方案审批阶段才能调整模型或参数。');
     }
-    const adjustment = parsePlanAdjustment(text);
+    const plan = await this.workflow.plan(runId, context.runtimeDb);
+    const currentValues = currentPlanAdjustmentValues(plan);
+    const parsed = parsePlanAdjustmentRequest(text, currentValues);
     const message = this.userMessage(
       context,
       runId,
       'plan.adjustment',
       text,
     );
+    if (parsed.clarificationReasons.length > 0) {
+      const response = [
+        '方案尚未修改，因为调整语句需要确认。',
+        '',
+        ...parsed.clarificationReasons.map((reason) => `- ${reason}`),
+        '',
+        '请重新输入明确的最终值，例如：`/adjust 主题数改为 8`。',
+      ].join('\n');
+      this.assistantMessage(
+        context,
+        runId,
+        'plan.adjustment.clarification_required',
+        response,
+      );
+      return {
+        value: {
+          kind: 'plan.adjustment.clarification_required',
+          intents: parsed.intents,
+          reasons: parsed.clarificationReasons,
+          sourceMessageId: message.messageId,
+          response,
+        },
+        activeRunId: runId,
+      };
+    }
+    const adjustment = parsed.patch;
     const resumed = await this.workflow.resume({
       runId,
       runtimeDb: context.runtimeDb,
       planAdjustment: adjustment,
     });
-    const changed = Object.entries(adjustment)
-      .map(([field, value]) =>
-        field === 'experimentProtocol'
-          ? experimentProtocolAdjustmentLabel(asRecord(value) ?? {})
-          : `${planFieldLabel(field)}=${String(value)}`,
-      )
-      .join('，');
+    const changed = planAdjustmentSummary(
+      parsed.intents,
+      adjustment,
+      currentValues,
+    );
     const response = `已应用方案调整：${changed}。系统已重新验证候选计划，旧的待审批方案不会被直接复用。`;
     this.assistantMessage(context, runId, 'plan.adjusted', response);
     return {
       value: {
         kind: 'plan.adjusted',
         adjustment,
+        intents: parsed.intents,
         sourceMessageId: message.messageId,
         workflow: resumed,
         response,
@@ -992,114 +1026,129 @@ const requiredRun = (runId: string | undefined): string => {
   return runId;
 };
 
-export const parsePlanAdjustment = (input: string): Record<string, unknown> => {
-  const text = input.trim();
-  const patch: Record<string, unknown> = {};
-  const baselineModelMatch =
-    text.match(
-      /(?:用|以)?\s*\b(BTM|LDA|HDP|DTM|STM|CTM|BERTopic|THETA)\b\s*(?:作为|做|当)?\s*(?:基线|对照)/iu,
-    ) ??
-    text.match(
-      /(?:基线|对照)(?:模型)?[^a-z0-9]{0,8}\b(BTM|LDA|HDP|DTM|STM|CTM|BERTopic|THETA)\b/iu,
-    );
-  const baselineModel = baselineModelMatch?.[1]?.toLowerCase();
-  const topicMatch = text.match(
-    /(?:主题(?:数|数量)?|topics?)[^\d]{0,12}(\d{1,3})/iu,
-  );
-  const maxTopicMatch = text.match(
-    /(?:最大主题数|主题上限|max(?:imum)?\s*topics?)[^\d]{0,12}(\d{1,4})/iu,
-  );
-  const targetTopicMatch = text.match(
-    /(?:缩减|归并|reduce)[^\d]{0,16}(\d{1,3})/iu,
-  );
-  const epochMatch = text.match(
-    /(?:迭代(?:次数)?|训练轮次|epochs?)[^\d]{0,12}(\d{1,6})/iu,
-  );
-  const batchMatch = text.match(
-    /(?:批大小|batch(?:\s*size)?)[^\d]{0,12}(\d{1,6})/iu,
-  );
-  const modelMatch = text.match(
-    /\b(BERTopic|BTM|CTM|DTM|ETM|GSM|HDP|LDA|NVDM|ProdLDA|STM|THETA|Top2Vec|TopicBERT)\b/iu,
-  );
-  const selectedModel = baselineModel ? undefined : modelMatch?.[1].toLowerCase();
-  if (
-    /(?:自动主题|自动决定主题|auto(?:matic)?\s*topics?)/iu.test(text) ||
-    selectedModel === 'hdp'
-  ) {
-    patch.topicCountMode = 'auto';
-    patch.numTopics = null;
-  }
-  if (selectedModel === 'bertopic' && !targetTopicMatch) {
-    patch.topicCountMode = 'auto';
-    patch.numTopics = null;
-  }
-  if (targetTopicMatch) {
-    patch.topicCountMode = 'target_reduction';
-    patch.numTopics = Number(targetTopicMatch[1]);
-  } else if (topicMatch && !maxTopicMatch && patch.topicCountMode !== 'auto') {
-    patch.topicCountMode = 'fixed';
-    patch.numTopics = Number(topicMatch[1]);
-  }
-  if (maxTopicMatch) patch.maxTopics = Number(maxTopicMatch[1]);
-  if (epochMatch) patch.epochs = Number(epochMatch[1]);
-  if (batchMatch) patch.batchSize = Number(batchMatch[1]);
-  if (selectedModel) patch.modelId = selectedModel;
-  const seedValues = [
-    ...text.matchAll(/(?:随机种子|种子|seeds?)[^\d]{0,8}([\d、，,\s/]+)/giu),
-  ]
-    .flatMap((match) => (match[1]?.match(/\d+/gu) ?? []).map(Number))
-    .filter((value, index, values) =>
-      Number.isInteger(value) &&
-      value >= 0 &&
-      value <= 2_147_483_647 &&
-      values.indexOf(value) === index,
-    );
-  const quickRequested =
-    /(?:只|仅)?(?:运行|训练)?一次|单次(?:快速)?运行|quick\s*run|取消基线|移除基线|不要基线/iu.test(text);
-  const stabilityRequested = /稳定性|复验|多(?:随机)?种子|stability/iu.test(text);
-  if (quickRequested) {
-    patch.experimentProtocol = {
-      mode: 'quick',
-      primarySeeds: [seedValues[0] ?? 42],
-      baselineModelId: null,
-      baselineSeeds: [],
-      rationale: '用户要求先执行一次主模型快速运行。',
-      evidenceRefs: [],
-      confidence: 'high',
-    };
-  } else if (baselineModel) {
-    patch.experimentProtocol = {
-      mode: 'comparative',
-      primarySeeds: [seedValues[0] ?? 42],
-      baselineModelId: baselineModel,
-      baselineSeeds: [seedValues[1] ?? seedValues[0] ?? 42],
-      rationale: `用户要求将 ${baselineModel.toUpperCase()} 作为对照模型。`,
-      evidenceRefs: [],
-      confidence: 'high',
-    };
-  } else if (stabilityRequested) {
-    patch.experimentProtocol = {
-      mode: 'stability',
-      primarySeeds: seedValues.length >= 3 ? seedValues.slice(0, 5) : [17, 42, 73],
-      baselineModelId: null,
-      baselineSeeds: [],
-      rationale: '用户要求使用多个随机种子复验主模型稳定性。',
-      evidenceRefs: [],
-      confidence: 'high',
-    };
-  }
-  if (/监督/iu.test(text) && !/无监督/iu.test(text)) {
-    patch.mode = 'supervised';
-  } else if (/无监督/iu.test(text)) {
-    patch.mode = 'unsupervised';
-  }
-  if (Object.keys(patch).length === 0) {
-    throw new Error(
-      '没有识别出可调整项。请明确说明模型、主题数、实验次数或基线，例如“只运行一次，种子 42”“用 LDA 做对照”或“做三种子稳定性复验”。',
-    );
-  }
-  return patch;
+const currentPlanAdjustmentValues = (
+  plan: {
+    validatedPlan?: unknown;
+    candidatePlan?: unknown;
+    planRecord?: unknown;
+  },
+): CurrentPlanAdjustmentValues => {
+  const candidate =
+    asRecord(plan.validatedPlan) ??
+    asRecord(plan.candidatePlan) ??
+    asRecord(asRecord(plan.planRecord)?.canonicalPlan) ??
+    {};
+  const model = asRecord(candidate.model) ?? candidate;
+  const parameters =
+    asRecord(model.parameters) ?? asRecord(candidate.parameters) ?? {};
+  const protocol =
+    asRecord(candidate.experimentProtocol) ??
+    asRecord(model.experimentProtocol);
+  const primarySeeds = Array.isArray(protocol?.primarySeeds)
+    ? protocol.primarySeeds
+    : [];
+  return {
+    numTopics:
+      finiteNumber(model.numTopics) ??
+      finiteNumber(parameters.numTopics) ??
+      finiteNumber(candidate.numTopics) ??
+      (model.numTopics === null || candidate.numTopics === null
+        ? null
+        : undefined),
+    model:
+      typeof model.modelId === 'string'
+        ? model.modelId
+        : typeof candidate.modelId === 'string'
+          ? candidate.modelId
+          : undefined,
+    seed: finiteNumber(primarySeeds[0]),
+    iterations:
+      finiteNumber(candidate.epochs) ??
+      finiteNumber(parameters.epochs) ??
+      finiteNumber(model.epochs),
+    covariates: stringValues(
+      candidate.covariateColumns ??
+        asRecord(candidate.columns)?.covariateColumns,
+    ),
+    ...(protocol ? { experimentProtocol: protocol } : {}),
+  };
 };
+
+const planAdjustmentSummary = (
+  intents: PlanAdjustmentIntent[],
+  adjustment: Record<string, unknown>,
+  current: CurrentPlanAdjustmentValues,
+): string => {
+  const intentFields = new Set<string>();
+  const summaries = intents.map((intent) => {
+    const field =
+      intent.parameter === 'model'
+        ? 'modelId'
+        : intent.parameter === 'iterations'
+          ? 'epochs'
+          : intent.parameter === 'seed'
+            ? 'experimentProtocol'
+            : intent.parameter === 'covariates'
+              ? 'covariateColumns'
+              : intent.parameter;
+    intentFields.add(field);
+    if (intent.parameter === 'model') {
+      return valueTransition(
+        '模型',
+        intent.oldValue ?? current.model,
+        intent.newValue,
+      );
+    }
+    if (intent.parameter === 'numTopics') {
+      return valueTransition(
+        '主题数',
+        intent.oldValue ?? current.numTopics,
+        intent.newValue,
+      );
+    }
+    if (intent.parameter === 'iterations') {
+      return valueTransition(
+        '迭代次数',
+        intent.oldValue ?? current.iterations,
+        intent.newValue,
+      );
+    }
+    if (intent.parameter === 'seed') {
+      return valueTransition(
+        '主运行种子',
+        intent.oldValue ?? current.seed,
+        intent.newValue,
+      );
+    }
+    return `协变量：${stringValues(intent.newValue).join('、')}`;
+  });
+  for (const [field, value] of Object.entries(adjustment)) {
+    if (intentFields.has(field) || field === 'topicCountMode') continue;
+    summaries.push(
+      field === 'experimentProtocol'
+        ? experimentProtocolAdjustmentLabel(asRecord(value) ?? {})
+        : `${planFieldLabel(field)}=${String(value)}`,
+    );
+  }
+  return [...new Set(summaries)].join('；');
+};
+
+const valueTransition = (
+  label: string,
+  oldValue: unknown,
+  newValue: unknown,
+): string =>
+  oldValue === undefined || oldValue === null
+    ? `${label}：设为 ${String(newValue)}`
+    : `${label}：${String(oldValue)} → ${String(newValue)}`;
+
+const finiteNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const stringValues = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 
 const planFieldLabel = (field: string): string =>
   ({
@@ -1109,6 +1158,7 @@ const planFieldLabel = (field: string): string =>
     topicCountMode: '主题数模式',
     epochs: '迭代次数',
     batchSize: '批大小',
+    covariateColumns: '协变量',
     mode: '训练模式',
     experimentProtocol: '实验设计',
   })[field] ?? field;

@@ -1914,6 +1914,7 @@ const sanitizePlanAdjustment = (
   const maxTopics = numberValue(value.maxTopics);
   const batchSize = numberValue(value.batchSize);
   const epochs = numberValue(value.epochs);
+  const covariateColumns = stringArray(value.covariateColumns);
   const acceptDegradation = value.acceptDegradation === true;
   const experimentProtocol = value.experimentProtocol;
   if (modelId) output.modelId = modelId.toLowerCase();
@@ -1954,6 +1955,12 @@ const sanitizePlanAdjustment = (
       throw new Error("迭代次数必须是正整数。");
     }
     output.epochs = epochs;
+  }
+  if (value.covariateColumns !== undefined) {
+    if (!Array.isArray(value.covariateColumns)) {
+      throw new Error("协变量必须是列名数组。");
+    }
+    output.covariateColumns = [...new Set(covariateColumns)];
   }
   if (acceptDegradation) output.acceptDegradation = true;
   if (experimentProtocol !== undefined) {

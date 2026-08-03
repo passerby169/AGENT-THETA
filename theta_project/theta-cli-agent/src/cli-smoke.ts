@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path, { resolve } from "node:path";
 import { parsePlanAdjustment } from "./conversation/turn-orchestrator.js";
+import { parsePlanAdjustmentRequest } from "./conversation/plan-adjustment.js";
 
 interface CommandCase {
   args: string[];
@@ -34,6 +35,65 @@ for (const modelId of adjustableModels) {
   if (adjustment.modelId !== modelId) {
     throw new Error(`Plan adjustment did not recognize model ${modelId}.`);
   }
+}
+
+const adjustmentCases = [
+  ["主题数从 10 改为 8", { numTopics: 10 }, "numTopics", 8],
+  ["把 10 个主题减少到 6 个", { numTopics: 10 }, "numTopics", 6],
+  ["主题数改为 8", { numTopics: 10 }, "numTopics", 8],
+  ["增加 2 个主题", { numTopics: 10 }, "numTopics", 12],
+  ["迭代次数从1000改到1500", { iterations: 1000 }, "epochs", 1500],
+] as const;
+
+for (const [input, current, field, expected] of adjustmentCases) {
+  const adjustment = parsePlanAdjustment(input, current);
+  if (adjustment[field] !== expected) {
+    throw new Error(
+      `${input}: expected ${field}=${String(expected)}, got ${String(adjustment[field])}.`,
+    );
+  }
+}
+
+const staleOldValue = parsePlanAdjustmentRequest(
+  "主题数从 10 改为 8",
+  { numTopics: 7 },
+);
+if (
+  Object.keys(staleOldValue.patch).length !== 0 ||
+  staleOldValue.clarificationReasons.length !== 1
+) {
+  throw new Error("A stale old value must require clarification.");
+}
+
+const ambiguousAdjustment = parsePlanAdjustmentRequest(
+  "主题数 10 还是 8",
+  { numTopics: 10 },
+);
+if (
+  Object.keys(ambiguousAdjustment.patch).length !== 0 ||
+  ambiguousAdjustment.clarificationReasons.length !== 1
+) {
+  throw new Error("Ambiguous numeric input must not create an executable patch.");
+}
+
+const covariateAdjustment = parsePlanAdjustment(
+  "协变量改为 source, region",
+);
+if (
+  JSON.stringify(covariateAdjustment.covariateColumns) !==
+  JSON.stringify(["source", "region"])
+) {
+  throw new Error("Covariate adjustment was not parsed deterministically.");
+}
+
+const compatibilityAdjustment = parsePlanAdjustment(
+  "批大小改为 16，最大主题数改为 120",
+);
+if (
+  compatibilityAdjustment.batchSize !== 16 ||
+  compatibilityAdjustment.maxTopics !== 120
+) {
+  throw new Error("Existing batch-size and max-topic adjustments regressed.");
 }
 
 const runJsonCommand = (commandCase: CommandCase): void => {
