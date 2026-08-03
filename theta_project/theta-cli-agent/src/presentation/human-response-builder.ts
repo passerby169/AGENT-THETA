@@ -1456,7 +1456,15 @@ const reasonLabels: Readonly<Record<string, string>> = {
   TIME_AWARE: '支持当前研究所需的时间分析。',
   METADATA_AWARE: '能够利用已确认的元数据。',
   RUNNABLE_CATALOG_MODEL: '该模型已在当前本地 THETA 环境中注册并可运行。',
+  SHORT_TEXT_BTM: 'BTM 与当前已确认的短文本特征相匹配。',
+  COVARIATE_ANALYSIS_STM: 'STM 将使用已明确确认的训练协变量。',
+  UNKNOWN_TOPIC_COUNT_HDP: 'HDP 适合当前主题数量未知的探索目标。',
+  BASELINE_CLASSICAL_LDA: 'LDA 与经典词袋主题模型基线目标匹配。',
+  SEMANTIC_CLUSTERING_BERTOPIC: 'BERTopic 与语义聚类目标和本地嵌入约束匹配。',
   SHORT_TEXT_MATCH: '模型设计与当前短文本数据特征相匹配。',
+  COVARIATE_MATCH: '模型可使用当时确认的元数据列。',
+  AUTO_TOPIC_COUNT_MATCH: '模型支持自动探索主题数量。',
+  BASELINE_GOAL_MATCH: '模型与当时的基线目标匹配。',
 };
 
 const translateReasonCodes = (codes: string[]): string[] =>
@@ -1468,6 +1476,8 @@ const warningLabels: Readonly<Record<string, string>> = {
   SMALL_CORPUS: '样本量很小，主题和指标可能不稳定。',
   EXPERIMENTAL_MODEL_REQUIRES_HUMAN_REVIEW:
     '当前模型属于实验性实现；可以运行，但结果必须经过人工复核，不能按生产级模型解释。',
+  LOCAL_EMBEDDING_DRY_RUN_REQUIRED:
+    'BERTopic 依赖本地嵌入资源；启动训练前必须由 Dry Run 验证模型路径和依赖。',
 };
 
 const translateWarning = (value: string): string =>

@@ -125,8 +125,8 @@ Commands:
   models
       List models exposed by THETA through Hypha governance.
 
-  recommend --profile <file> [--goal <text>] [--max-topics <number>]
-      Recommend models from a normalized dataset profile.
+  recommend --profile <file> --columns <confirmation-file> [--goal <text>] [--max-topics <number>]
+      Recommend models from a normalized profile and confirmed column roles.
 
   plan validate --file <file>
       Validate a training plan without writing local state.
@@ -169,7 +169,7 @@ Examples:
   npm run cli -- dataset inspect --file fixtures/sample.jsonl
   npm run cli -- dataset detect-columns --file fixtures/sample.jsonl
   npm run cli -- models
-  npm run cli -- recommend --profile fixtures/data-profile.json
+  npm run cli -- recommend --profile fixtures/data-profile.json --columns fixtures/model-recommend-columns.json
   npm run cli -- plan validate --file fixtures/training-plan.json
   npm run cli -- plan create --file fixtures/training-plan.json
   npm run cli -- plan create --file fixtures/training-plan.json --approve
@@ -381,11 +381,14 @@ const recommendCommand = async (
   output: CliOutput,
 ): Promise<void> => {
   const profileFile = requiredStringFlag(parsed, "profile");
+  const columnsFile = requiredStringFlag(parsed, "columns");
   const dataProfile = await readJsonObject(profileFile);
+  const columnConfirmation = await readJsonObject(columnsFile);
   const maxTopics = integerFlag(parsed, "max-topics");
   const researchGoal = stringFlag(parsed, "goal");
   const input: ThetaModelRecommendInput = {
     dataProfile,
+    columnConfirmation,
     ...(researchGoal === undefined ? {} : { researchGoal }),
     ...(maxTopics === undefined ? {} : { constraints: { maxTopics } }),
   };
@@ -744,6 +747,20 @@ const demoProfile: Record<string, unknown> = {
   columnProfiles: [{ name: "content", avgLength: 92 }],
 };
 
+const demoColumnConfirmation: Record<string, unknown> = {
+  schemaVersion: "1.0.0",
+  datasetSha256: "a".repeat(64),
+  textColumns: ["content"],
+  timeColumn: "created_at",
+  idColumn: null,
+  covariateColumns: [],
+  metadataColumns: ["source"],
+  groupingColumns: ["source"],
+  evaluationLabelColumns: [],
+  confirmedBy: "theta-demo",
+  confirmedAt: "2026-08-04T00:00:00.000Z",
+};
+
 const demoPlan: ThetaPlanCreateInput = createPlanningFixture();
 
 const demoCommand = async (
@@ -757,6 +774,7 @@ const demoCommand = async (
   const recommendation = requireCompleted(
     await runThetaModelRecommend({
       dataProfile: demoProfile,
+      columnConfirmation: demoColumnConfirmation,
       researchGoal: "time trend topic modeling",
       constraints: { maxTopics: 12 },
     }),

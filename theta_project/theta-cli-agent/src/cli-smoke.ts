@@ -227,7 +227,13 @@ const cases: CommandCase[] = [
     },
   },
   {
-    args: ["recommend", "--profile", "fixtures/data-profile.json"],
+    args: [
+      "recommend",
+      "--profile",
+      "fixtures/data-profile.json",
+      "--columns",
+      "fixtures/model-recommend-columns.json",
+    ],
     verify: (output) => {
       const recommendation = asRecord(output);
       if (

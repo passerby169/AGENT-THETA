@@ -77,11 +77,14 @@ try {
   };
   const models: CatalogModel[] = [
     model("lda", "LDA", "traditional", ["bow"]),
+    model("btm", "Biterm Topic Model", "traditional", ["bow"]),
+    model("hdp", "Hierarchical Dirichlet Process", "traditional", ["bow"]),
     model("dtm", "Dynamic Topic Model", "neural", ["bow", "sbert", "time"]),
     model("stm", "Structural Topic Model", "traditional", [
       "bow",
       "covariates",
     ]),
+    model("bertopic", "BERTopic", "neural", ["sbert", "text"]),
     model("theta", "THETA", "neural", ["bow", "qwen"]),
   ];
   const base = {
@@ -145,6 +148,150 @@ try {
     ),
   );
 
+  const staticBrief = {
+    ...brief,
+    trendAnalysis: false,
+    requestedEmbedding: "none" as const,
+    comparisonGroups: [],
+  };
+  const confirmedWithoutCovariates: ColumnConfirmation = {
+    ...columns,
+    covariateColumns: [],
+    metadataColumns: ["industry"],
+    groupingColumns: ["industry"],
+  };
+  const staticBase = {
+    ...base,
+    evidence: [],
+    researchBrief: staticBrief,
+    columnConfirmation: confirmedWithoutCovariates,
+    dataProfile: {
+      ...base.dataProfile,
+      textLengthDistribution: { average: 120, maximum: 1000 },
+      columnCandidates: {
+        text: [{ name: "text" }],
+        time: [{ name: "created_at" }],
+        metadata: [{ name: "industry" }],
+      },
+    },
+  };
+
+  const classicalBaseline = recommendModels({
+    ...staticBase,
+    researchGoal: "我要经典词袋基线",
+  });
+  assert.equal(classicalBaseline.recommendations[0]?.modelId, "lda");
+  assert.ok(
+    classicalBaseline.recommendations[0]?.reasonCodes.includes(
+      "BASELINE_CLASSICAL_LDA",
+    ),
+  );
+  assert.ok(
+    classicalBaseline.skipped.some(
+      (item) =>
+        item.modelId === "bertopic" &&
+        item.reasonCodes.includes("SEMANTIC_CLUSTERING_GOAL_REQUIRED") &&
+        item.reasonCodes.includes("LOCAL_EMBEDDING_REQUIRED"),
+    ),
+  );
+
+  const shortText = recommendModels({
+    ...staticBase,
+    researchGoal: "分析每条约 20 字的短评论",
+    dataProfile: {
+      ...staticBase.dataProfile,
+      textLengthDistribution: { average: 20, maximum: 60 },
+    },
+  });
+  assert.equal(shortText.recommendations[0]?.modelId, "btm");
+  assert.ok(
+    shortText.recommendations[0]?.reasonCodes.includes("SHORT_TEXT_BTM"),
+  );
+
+  const unknownTopicCount = recommendModels({
+    ...staticBase,
+    researchGoal: "不知道主题数量，希望自动探索主题数",
+  });
+  assert.equal(unknownTopicCount.recommendations[0]?.modelId, "hdp");
+  assert.ok(
+    unknownTopicCount.recommendations[0]?.reasonCodes.includes(
+      "UNKNOWN_TOPIC_COUNT_HDP",
+    ),
+  );
+
+  const covariateAnalysis = recommendModels({
+    ...staticBase,
+    researchGoal: "比较不同行业的主题差异",
+    researchBrief: {
+      ...staticBrief,
+      comparisonGroups: ["industry"],
+    },
+    columnConfirmation: {
+      ...confirmedWithoutCovariates,
+      covariateColumns: ["industry"],
+      groupingColumns: [],
+    },
+  });
+  assert.equal(covariateAnalysis.recommendations[0]?.modelId, "stm");
+  assert.ok(
+    covariateAnalysis.recommendations[0]?.reasonCodes.includes(
+      "COVARIATE_ANALYSIS_STM",
+    ),
+  );
+
+  const groupingOnly = recommendModels({
+    ...staticBase,
+    researchGoal: "industry 只用于展示分组",
+  });
+  assert.ok(
+    groupingOnly.skipped.some(
+      (item) =>
+        item.modelId === "stm" &&
+        item.reasonCodes.includes("COVARIATE_COLUMN_REQUIRED"),
+    ),
+  );
+
+  const semanticClustering = recommendModels({
+    ...staticBase,
+    researchGoal: "使用本地嵌入进行语义聚类分析",
+    researchBrief: {
+      ...staticBrief,
+      requestedEmbedding: "local",
+    },
+  });
+  assert.equal(semanticClustering.recommendations[0]?.modelId, "bertopic");
+  assert.ok(
+    semanticClustering.recommendations[0]?.reasonCodes.includes(
+      "SEMANTIC_CLUSTERING_BERTOPIC",
+    ),
+  );
+  const semanticWithoutLocalEmbedding = recommendModels({
+    ...staticBase,
+    researchGoal: "执行语义聚类分析",
+    researchBrief: {
+      ...staticBrief,
+      requestedEmbedding: "unknown",
+    },
+  });
+  assert.ok(
+    semanticWithoutLocalEmbedding.skipped.some(
+      (item) =>
+        item.modelId === "bertopic" &&
+        item.reasonCodes.includes("LOCAL_EMBEDDING_REQUIRED"),
+    ),
+  );
+
+  const unconfirmedColumns = recommendModels({
+    ...staticBase,
+    columnConfirmation: undefined,
+  });
+  assert.equal(unconfirmedColumns.recommendations.length, 0);
+  assert.ok(
+    unconfirmedColumns.skipped.every((item) =>
+      item.reasonCodes.includes("COLUMN_CONFIRMATION_REQUIRED"),
+    ),
+  );
+
   console.log(
     JSON.stringify({
       status: "ok",
@@ -152,7 +299,8 @@ try {
       indexedChunks: firstBuild.indexedChunks,
       evidenceCount: evidence.length,
       topModelId: result.recommendations[0]?.modelId,
-      hardConstraintCases: 2,
+      hardConstraintCases: 5,
+      recommendationBoundaryCases: 8,
       deterministic: true,
     }),
   );

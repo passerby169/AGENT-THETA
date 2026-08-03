@@ -50,7 +50,17 @@ interface ProfileSummary {
   textColumnCount: number;
   timeColumnCount: number;
   metadataColumnCount: number;
+  covariateColumnCount: number;
+  columnRolesConfirmed: boolean;
   averageTextLength: number;
+}
+
+interface RecommendationSignals {
+  classicalBaseline: boolean;
+  shortText: boolean;
+  unknownTopicCount: boolean;
+  semanticClustering: boolean;
+  localEmbeddingReady: boolean;
 }
 
 export const recommendModels = (
@@ -63,6 +73,7 @@ export const recommendModels = (
   const degradedRecommendations: ModelRecommendation[] = [];
   const skipped: RecommendationResult["skipped"] = [];
   const researchRequirements = deriveResearchRequirements(input.researchBrief);
+  const signals = recommendationSignals(input, summary, constraints);
 
   for (const model of [...input.models].sort((a, b) =>
     a.id.localeCompare(b.id),
@@ -73,16 +84,21 @@ export const recommendModels = (
       summary,
       input,
       constraints,
+      signals,
     );
     if (hardFailures.length > 0) {
       skipped.push({ modelId, reasonCodes: hardFailures });
       continue;
     }
 
-    const capabilities = capabilitiesForModel(
+    const catalogCapabilities = capabilitiesForModel(
       model,
       input.capabilityOverrides?.[modelId],
     );
+    const capabilities =
+      modelId === "bertopic" && signals.localEmbeddingReady
+        ? { ...catalogCapabilities, offlineExecution: true }
+        : catalogCapabilities;
     const unmet = unmetResearchCapabilities(
       capabilities,
       researchRequirements,
@@ -95,6 +111,7 @@ export const recommendModels = (
       evidenceForModel(model, evidence),
       capabilities,
       unmet,
+      signals,
     );
     if (unmet.length === 0) {
       recommendations.push(built);
@@ -139,7 +156,13 @@ export const recommendModels = (
     deterministic: true,
     recommendationVersion: RECOMMENDATION_VERSION,
     catalogSource: input.catalogSource || "theta-model-catalog",
-    dataProfileSummary: summary,
+    dataProfileSummary: {
+      rowCount: summary.rowCount,
+      textColumnCount: summary.textColumnCount,
+      timeColumnCount: summary.timeColumnCount,
+      metadataColumnCount: summary.metadataColumnCount,
+      averageTextLength: summary.averageTextLength,
+    },
     recommendations: ranked,
     skipped,
     warnings: [...warnings],
@@ -180,13 +203,19 @@ const summarizeProfile = (
       array(candidates.text).length ||
       array(profile.textColumns).length,
     timeColumnCount:
-      (columns?.timeColumn ? 1 : 0) ||
-      array(candidates.time).length ||
-      array(profile.timeColumns).length,
+      columns !== undefined
+        ? columns.timeColumn
+          ? 1
+          : 0
+        : array(candidates.time).length ||
+          array(profile.timeColumns).length,
     metadataColumnCount:
-      columns?.covariateColumns?.length ||
-      array(candidates.metadata).length ||
-      array(profile.metadataColumns).length,
+      columns !== undefined
+        ? columns.metadataColumns.length
+        : array(candidates.metadata).length ||
+          array(profile.metadataColumns).length,
+    covariateColumnCount: columns?.covariateColumns?.length ?? 0,
+    columnRolesConfirmed: columns !== undefined,
     averageTextLength:
       number(matchingProfile?.avgLength) ||
       number(record(profile.textLengthDistribution).average),
@@ -211,6 +240,7 @@ const hardConstraintFailures = (
   summary: ProfileSummary,
   input: DeterministicRecommendationInput,
   constraints: RecommendationResult["constraintsApplied"],
+  signals: RecommendationSignals,
 ): string[] => {
   const failures = new Set<string>();
   const modelId = model.id.toLowerCase();
@@ -225,15 +255,25 @@ const hardConstraintFailures = (
   if (constraints.forbiddenModelIds.includes(modelId)) {
     failures.add("MODEL_FORBIDDEN");
   }
-  if (summary.textColumnCount === 0) failures.add("TEXT_COLUMN_REQUIRED");
-  if (requirements.includes("time") && summary.timeColumnCount === 0) {
-    failures.add("TIME_COLUMN_REQUIRED");
+  if (!summary.columnRolesConfirmed) {
+    failures.add("COLUMN_CONFIRMATION_REQUIRED");
+  } else {
+    if (summary.textColumnCount === 0) failures.add("TEXT_COLUMN_REQUIRED");
+    if (requirements.includes("time") && summary.timeColumnCount === 0) {
+      failures.add("TIME_COLUMN_REQUIRED");
+    }
+    if (
+      requirements.includes("covariates") &&
+      summary.covariateColumnCount === 0
+    ) {
+      failures.add("COVARIATE_COLUMN_REQUIRED");
+    }
   }
-  if (
-    requirements.includes("covariates") &&
-    summary.metadataColumnCount === 0
-  ) {
-    failures.add("COVARIATE_COLUMN_REQUIRED");
+  if (modelId === "bertopic" && !signals.semanticClustering) {
+    failures.add("SEMANTIC_CLUSTERING_GOAL_REQUIRED");
+  }
+  if (modelId === "bertopic" && !signals.localEmbeddingReady) {
+    failures.add("LOCAL_EMBEDDING_REQUIRED");
   }
   if (
     requirements.some((requirement) =>
@@ -277,14 +317,12 @@ const buildRecommendation = (
   evidence: EvidenceRef[],
   capabilities: ModelCapabilities,
   unmetRequirements: ResearchRequirements['required'],
+  signals: RecommendationSignals,
 ): ModelRecommendation => {
   const modelId = model.id.toLowerCase();
   const decisionEvidence = evidence.filter(isModelDecisionEvidence);
   const reasonCodes = new Set<string>(["RUNNABLE_CATALOG_MODEL"]);
   const warnings = new Set<string>();
-  const goal = `${input.researchGoal ?? ""} ${
-    input.researchBrief?.researchQuestion ?? ""
-  }`.toLowerCase();
   let score = model.type === "traditional" ? 58 : 52;
   if (model.maturity === "experimental" || model.experimental === true) {
     score -= 18;
@@ -300,21 +338,26 @@ const buildRecommendation = (
     score += 24;
     reasonCodes.add("TREND_ANALYSIS_MATCH");
   }
-  if (modelId === "btm" && summary.averageTextLength < 80) {
+  if (modelId === "btm" && signals.shortText) {
     score += 18;
-    reasonCodes.add("SHORT_TEXT_MATCH");
+    reasonCodes.add("SHORT_TEXT_BTM");
   }
-  if (modelId === "stm" && summary.metadataColumnCount > 0) {
+  if (modelId === "stm" && summary.covariateColumnCount > 0) {
     score += 14;
-    reasonCodes.add("COVARIATE_MATCH");
+    reasonCodes.add("COVARIATE_ANALYSIS_STM");
   }
-  if (modelId === "hdp" && /auto|自动|unknown topic/.test(goal)) {
+  if (modelId === "hdp" && signals.unknownTopicCount) {
     score += 12;
-    reasonCodes.add("AUTO_TOPIC_COUNT_MATCH");
+    reasonCodes.add("UNKNOWN_TOPIC_COUNT_HDP");
   }
-  if (["lda", "btm"].includes(modelId) && /baseline|基线/.test(goal)) {
-    score += 14;
-    reasonCodes.add("BASELINE_GOAL_MATCH");
+  if (modelId === "lda" && signals.classicalBaseline) {
+    score += 24;
+    reasonCodes.add("BASELINE_CLASSICAL_LDA");
+  }
+  if (modelId === "bertopic" && signals.semanticClustering) {
+    score += 22;
+    reasonCodes.add("SEMANTIC_CLUSTERING_BERTOPIC");
+    warnings.add("LOCAL_EMBEDDING_DRY_RUN_REQUIRED");
   }
   if (modelId === "theta") {
     score += 10;
@@ -379,6 +422,43 @@ const buildRecommendation = (
       epochs,
       constraints,
     ),
+  };
+};
+
+const recommendationSignals = (
+  input: DeterministicRecommendationInput,
+  summary: ProfileSummary,
+  constraints: RecommendationResult["constraintsApplied"],
+): RecommendationSignals => {
+  const goal = `${input.researchGoal ?? ""} ${
+    input.researchBrief?.researchQuestion ?? ""
+  }`.toLowerCase();
+  const unavailable = new Set(constraints.unavailableRequirements);
+  return {
+    classicalBaseline:
+      /(?:经典|传统(?:主题模型)?|词袋).{0,10}(?:基线|对照)|(?:基线|对照).{0,10}(?:经典|传统(?:主题模型)?|词袋)/u.test(
+        goal,
+      ) ||
+      /(?:classical|traditional|bag[- ]?of[- ]?words|bow).{0,24}(?:baseline|benchmark)|(?:baseline|benchmark).{0,24}(?:classical|traditional|bag[- ]?of[- ]?words|bow)/u.test(
+        goal,
+      ),
+    shortText:
+      (summary.averageTextLength > 0 && summary.averageTextLength < 80) ||
+      /短文本|短评(?:论)?|标题|微博|tweet|short[- ]?text|short comments?/u.test(
+        goal,
+      ),
+    unknownTopicCount:
+      /(?:不知道|未知|不确定|自动探索|自动发现).{0,12}(?:主题数|主题数量|多少个?主题)|(?:主题数|主题数量).{0,12}(?:不知道|未知|不确定|自动探索|自动发现)|unknown topic count|infer(?:red)? topic count|discover.{0,12}topic count/u.test(
+        goal,
+      ),
+    semanticClustering:
+      /语义(?:聚类|分析|主题)|嵌入(?:聚类|主题)|semantic(?: clustering| analysis| topics?)|embedding(?: clustering| topics?)/u.test(
+        goal,
+      ),
+    localEmbeddingReady:
+      input.researchBrief?.requestedEmbedding === "local" &&
+      !unavailable.has("sbert") &&
+      !unavailable.has("transformer"),
   };
 };
 
