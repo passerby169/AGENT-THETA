@@ -23,6 +23,7 @@ const checks = [
   "smoke:operator-commands",
   "smoke:conversation-ux",
   "smoke:ux-recovery",
+  "smoke:web-api",
   "smoke:rag-governance",
   "smoke:language-governance",
   "smoke:cli",
