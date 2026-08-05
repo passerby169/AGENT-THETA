@@ -92,9 +92,30 @@ const routeRequest = async (
 
   if (url.pathname === '/api/v2/runs') {
     const limit = boundedLimit(url.searchParams.get('limit'));
+    const catalog = listLocalRuns(options.runtimeDb, limit);
+    const runs = await Promise.all(
+      catalog.map(async (run) => {
+        try {
+          const status = await workflow.status(run.runId, options.runtimeDb);
+          return {
+            ...run,
+            status: status.status,
+            currentState: status.currentState,
+            pendingReason: status.pendingReason,
+            lastEventType: status.lastEventType,
+            lastEventAt: status.lastEventAt,
+          };
+        } catch {
+          return {
+            ...run,
+            status: 'unknown',
+          };
+        }
+      }),
+    );
     writeJson(response, 200, {
       ok: true,
-      data: { runs: listLocalRuns(options.runtimeDb, limit) },
+      data: { runs },
     });
     return;
   }

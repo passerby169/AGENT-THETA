@@ -3,23 +3,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Activity,
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  Clock3,
+  ChevronRight,
+  CircleDot,
   Database,
-  FileSearch,
-  FlaskConical,
-  FolderOpen,
   Home,
+  Plus,
   RefreshCw,
-  RotateCcw,
+  Search,
   ShieldCheck,
 } from 'lucide-react';
-import { ProjectHub, type Project } from '@/components/dashboard/project-hub';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -34,18 +31,19 @@ import {
   type ThetaRunSummary,
 } from '@/lib/api/theta-agent-v2';
 
-interface RunProject extends Project {
-  summary: ThetaRunSummary;
-  runStatus?: ThetaRunStatus;
-}
+type RunFilter = 'all' | 'attention' | 'active' | 'completed';
 
 export default function WorkbenchPage() {
   const router = useRouter();
   const [health, setHealth] = useState<ThetaHealth>();
   const [runs, setRuns] = useState<ThetaRunSummary[]>([]);
-  const [statuses, setStatuses] = useState<Record<string, ThetaRunStatus>>({});
   const [activeRunId, setActiveRunId] = useState<string>();
+  const [activeStatus, setActiveStatus] = useState<ThetaRunStatus>();
+  const [filter, setFilter] = useState<RunFilter>('all');
+  const [query, setQuery] = useState('');
+  const [showAll, setShowAll] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showCreateNotice, setShowCreateNotice] = useState(false);
 
@@ -57,18 +55,8 @@ export default function WorkbenchPage() {
         ThetaAgentV2API.health(),
         ThetaAgentV2API.runs(),
       ]);
-      const resolvedStatuses = await Promise.allSettled(
-        runData.runs.map((run) => ThetaAgentV2API.status(run.runId)),
-      );
       setHealth(nextHealth);
       setRuns(runData.runs);
-      setStatuses(Object.fromEntries(
-        resolvedStatuses.flatMap((result, index) =>
-          result.status === 'fulfilled'
-            ? [[runData.runs[index].runId, result.value] as const]
-            : [],
-        ),
-      ));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -80,125 +68,166 @@ export default function WorkbenchPage() {
     void refresh();
   }, [refresh]);
 
-  const projects = useMemo<RunProject[]>(() => runs.map((run) => {
-    const runStatus = statuses[run.runId];
-    return {
-      id: run.runId,
-      name: run.runId,
-      rows: run.eventCount,
-      createdAt: formatDate(run.updatedAt),
-      status: projectStatus(runStatus),
-      pipelineStatus: pipelineStatus(runStatus),
-      hasResults: runStatus?.currentState === 'Completed',
-      datasetName: run.runId,
-      description: `${run.eventCount} 个事件`,
-      summary: run,
-      runStatus,
-    };
-  }), [runs, statuses]);
+  const openRun = useCallback(async (runId: string) => {
+    setActiveRunId(runId);
+    setActiveStatus(undefined);
+    setDetailLoading(true);
+    setError(undefined);
+    try {
+      setActiveStatus(await ThetaAgentV2API.status(runId));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
-  const activeStatus = activeRunId ? statuses[activeRunId] : undefined;
-  const checks = health?.checks ?? [];
-  const warningCount = checks.filter((check) => check.status === 'WARN').length;
-  const failureCount = checks.filter((check) => check.status === 'FAIL').length;
+  const counts = useMemo(() => ({
+    all: runs.length,
+    attention: runs.filter(needsAttention).length,
+    active: runs.filter(isActive).length,
+    completed: runs.filter(isCompleted).length,
+  }), [runs]);
+
+  const filteredRuns = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    return runs.filter((run) => {
+      const filterMatch = filter === 'all'
+        || (filter === 'attention' && needsAttention(run))
+        || (filter === 'active' && isActive(run))
+        || (filter === 'completed' && isCompleted(run));
+      const searchMatch = !search
+        || run.runId.toLowerCase().includes(search)
+        || runLabel(run).toLowerCase().includes(search)
+        || (run.currentState ?? '').toLowerCase().includes(search);
+      return filterMatch && searchMatch;
+    });
+  }, [filter, query, runs]);
+
+  const visibleRuns = showAll ? filteredRuns : filteredRuns.slice(0, 7);
 
   return (
-    <div className="h-screen w-full max-w-[100vw] min-w-0 flex flex-col bg-gradient-to-br from-slate-50 via-slate-50 to-blue-50/30 overflow-hidden">
-      <header className="h-14 min-w-0 flex-shrink-0 bg-white/90 backdrop-blur-md border-b border-slate-200/60 flex items-center justify-between gap-2 px-4 sm:px-6 shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
-        <div className="flex flex-1 items-center gap-3 sm:gap-4 min-w-0 overflow-hidden">
-          <img src="/theta-logo.png" alt="THETA" className="h-9 sm:h-10 w-auto flex-shrink-0" />
-          <div className="h-5 w-px bg-slate-200 hidden sm:block" />
-          <span className="text-xs font-medium text-slate-400 hidden sm:block">二代研究训练 Agent</span>
-          <Button type="button" variant="ghost" size="sm" onClick={() => router.push('/')} className="h-8 gap-1.5 rounded-lg text-slate-600 hover:text-blue-700 hover:bg-blue-50">
-            <Home className="h-4 w-4" />
-            <span className="hidden sm:inline">返回首页</span>
-          </Button>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <Badge variant="outline" className={healthBadgeClass(health?.status)}>
-            <span className="relative flex h-2 w-2 mr-1.5"><span className="relative inline-flex rounded-full h-2 w-2 bg-current" /></span>
-            <span className="hidden sm:inline">{healthLabel(health?.status)}</span>
-            <span className="sm:hidden">{healthShortLabel(health?.status)}</span>
-          </Badge>
-          <Button type="button" variant="outline" size="icon" onClick={() => void refresh()} disabled={loading} title="刷新工作台" className="h-8 w-8 rounded-lg">
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
+    <div className="min-h-screen w-full max-w-[100vw] bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-30 h-14 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <img src="/theta-logo.png" alt="THETA" className="h-9 w-auto flex-shrink-0" />
+            <span className="hidden h-5 w-px bg-slate-200 sm:block" />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-800">研究训练工作台</p>
+              <p className="hidden text-[11px] text-slate-400 sm:block">Hypha Event-first Runtime</p>
+            </div>
+            <Button type="button" variant="ghost" size="icon" onClick={() => router.push('/')} title="返回首页" className="h-8 w-8 rounded-lg sm:hidden">
+              <Home className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="hidden flex-shrink-0 items-center gap-2 sm:flex">
+            <HealthBadge status={health?.status} />
+            <Button type="button" variant="ghost" size="icon" onClick={() => router.push('/')} title="返回首页" className="h-8 w-8 rounded-lg">
+              <Home className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
-      <div className="h-11 flex-shrink-0 bg-white/80 border-b border-slate-200 flex items-center px-3 sm:px-5 gap-1 overflow-x-auto">
-        <button type="button" onClick={() => setActiveRunId(undefined)} className={`flex items-center gap-2 px-4 h-8 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${activeRunId ? 'text-slate-500 hover:bg-slate-50' : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200/80'}`}>
-          <FolderOpen className="h-3.5 w-3.5" />项目中心
-        </button>
+      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+        {error ? <ErrorNotice message={error} /> : null}
         {activeRunId ? (
-          <button type="button" className="flex items-center gap-2 px-4 h-8 rounded-lg bg-slate-100 text-slate-800 ring-1 ring-slate-200 text-sm font-medium whitespace-nowrap">
-            <Activity className="h-3.5 w-3.5" />{activeRunId}
-          </button>
-        ) : null}
-      </div>
-
-      {error ? (
-        <div className="mx-4 sm:mx-6 mt-4 px-4 py-3 rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm flex items-start gap-2">
-          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-          <div><p className="font-medium">Agent API 暂不可用</p><p className="mt-1 text-red-600">{error}</p></div>
-        </div>
-      ) : null}
-
-      <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden">
-        <main className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 max-w-full">
-          {!activeRunId ? (
-            <ProjectHub
-              projects={projects}
-              isLoading={loading}
-              onProjectSelect={setActiveRunId}
-              onNewProject={() => setShowCreateNotice(true)}
-              onRefresh={() => void refresh()}
-            />
-          ) : (
-            <RunWorkspace status={activeStatus} onBack={() => setActiveRunId(undefined)} />
-          )}
-        </main>
-
-        <aside className="hidden xl:flex w-[340px] flex-shrink-0 border-l border-slate-200 bg-white flex-col overflow-hidden">
-          <div className="h-12 px-4 border-b border-slate-200 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ShieldCheck className="h-4 w-4 text-blue-600" />运行保障</div>
-            <span className="text-[11px] text-slate-400">Hypha</span>
-          </div>
-          <div className="flex-1 overflow-auto p-4 space-y-5">
-            <section>
-              <p className="text-xs font-semibold text-slate-500 mb-3">环境检查</p>
-              <div className="grid grid-cols-3 border border-slate-200 rounded-lg overflow-hidden">
-                <Metric label="通过" value={checks.filter((check) => check.status === 'PASS').length} tone="emerald" />
-                <Metric label="提醒" value={warningCount} tone="amber" />
-                <Metric label="阻塞" value={failureCount} tone="red" />
+          <RunWorkspace
+            runId={activeRunId}
+            status={activeStatus}
+            loading={detailLoading}
+            onBack={() => {
+              setActiveRunId(undefined);
+              setActiveStatus(undefined);
+            }}
+            onRefresh={() => void openRun(activeRunId)}
+          />
+        ) : (
+          <>
+            <section className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+              <div>
+                <p className="text-xs font-medium text-blue-600">THETA 2.0</p>
+                <h1 className="mt-1 text-2xl font-semibold text-slate-900">研究任务</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                  从事件记录查看任务进度；需要审批、恢复或确认的任务会优先显示。
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" size="icon" onClick={() => void refresh()} disabled={loading} title="刷新运行数据" className="h-9 w-9 rounded-lg bg-white">
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+                <Button type="button" onClick={() => setShowCreateNotice(true)} className="h-9 gap-2 rounded-lg bg-blue-600 px-4 hover:bg-blue-700">
+                  <Plus className="h-4 w-4" />开始新研究
+                </Button>
               </div>
             </section>
-            <section>
-              <p className="text-xs font-semibold text-slate-500 mb-3">执行原则</p>
-              <ul className="space-y-2.5 text-xs text-slate-600">
-                <Boundary icon={Database} text="Run 状态从 Event Store 投影" />
-                <Boundary icon={ShieldCheck} text="训练启动必须经过两阶段审批" />
-                <Boundary icon={RotateCcw} text="失败恢复保留完整事件谱系" />
-                <Boundary icon={FileSearch} text="模型证据与结果均可追溯" />
-              </ul>
-            </section>
-            {activeStatus?.pendingReason ? (
-              <section className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                <p className="text-xs font-semibold text-amber-800">当前需要处理</p>
-                <p className="mt-1.5 text-xs leading-5 text-amber-700">{activeStatus.pendingReason}</p>
-              </section>
+
+            {counts.attention > 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilter('attention');
+                  setShowAll(true);
+                }}
+                className="mb-6 flex w-full items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left transition-colors hover:bg-amber-100/70"
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <AlertCircle className="h-5 w-5 flex-shrink-0 text-amber-600" />
+                  <span>
+                    <strong className="block text-sm text-amber-900">{counts.attention} 个任务需要处理</strong>
+                    <span className="mt-0.5 block text-xs text-amber-700">查看隔离原因、失败信息或待确认步骤。</span>
+                  </span>
+                </span>
+                <ChevronRight className="h-4 w-4 flex-shrink-0 text-amber-600" />
+              </button>
             ) : null}
-          </div>
-        </aside>
-      </div>
+
+            <RunMetrics counts={counts} loading={loading} />
+
+            <section className="mt-8">
+              <div className="mb-4 flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+                <div>
+                  <h2 className="text-base font-semibold text-slate-800">运行记录</h2>
+                  <p className="mt-1 text-xs text-slate-400">按最后事件时间排序</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="flex items-center overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
+                    <FilterButton active={filter === 'all'} onClick={() => setFilter('all')} label="全部" count={counts.all} />
+                    <FilterButton active={filter === 'attention'} onClick={() => setFilter('attention')} label="待处理" count={counts.attention} />
+                    <FilterButton active={filter === 'active'} onClick={() => setFilter('active')} label="进行中" count={counts.active} />
+                    <FilterButton active={filter === 'completed'} onClick={() => setFilter('completed')} label="已完成" count={counts.completed} />
+                  </div>
+                  <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 sm:w-64">
+                    <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务或状态" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400" />
+                  </label>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                {loading ? <LoadingRows /> : null}
+                {!loading && visibleRuns.length === 0 ? <EmptyRuns filtered={runs.length > 0} /> : null}
+                {!loading ? visibleRuns.map((run) => <RunRow key={run.runId} run={run} onOpen={() => void openRun(run.runId)} />) : null}
+              </div>
+
+              {!loading && filteredRuns.length > 7 ? (
+                <button type="button" onClick={() => setShowAll((value) => !value)} className="mt-3 w-full py-2 text-sm font-medium text-blue-600 hover:text-blue-700">
+                  {showAll ? '收起历史任务' : `展开其余 ${filteredRuns.length - 7} 个任务`}
+                </button>
+              ) : null}
+            </section>
+
+            <EnvironmentPanel health={health} />
+          </>
+        )}
+      </main>
 
       <Dialog open={showCreateNotice} onOpenChange={setShowCreateNotice}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>数据集接入正在迁移</DialogTitle>
-            <DialogDescription>
-              当前页面已经接入真实 Run 和事件状态。下一步会把一代的数据上传交互接入二代的研究访谈、列确认和计划审批流程。
-            </DialogDescription>
+            <DialogTitle>新研究入口正在接入</DialogTitle>
+            <DialogDescription>当前工作台已读取真实 Run 与 FSM 状态。下一阶段会在此接入数据选择、研究设置、列确认和两阶段审批。</DialogDescription>
           </DialogHeader>
           <Button type="button" onClick={() => setShowCreateNotice(false)} className="w-full bg-blue-600 hover:bg-blue-700">知道了</Button>
         </DialogContent>
@@ -207,85 +236,137 @@ export default function WorkbenchPage() {
   );
 }
 
-function RunWorkspace({ status, onBack }: { status?: ThetaRunStatus; onBack: () => void }) {
-  if (!status) {
-    return <div className="h-full grid place-items-center text-sm text-slate-500">正在读取事件投影...</div>;
-  }
-  const uniquePath = status.statePath.filter((state, index, path) => index === 0 || path[index - 1] !== state);
+function RunMetrics({ counts, loading }: { counts: Record<RunFilter, number>; loading: boolean }) {
+  const metrics = [
+    { label: '全部任务', value: counts.all, tone: 'text-slate-900' },
+    { label: '需要处理', value: counts.attention, tone: 'text-amber-700' },
+    { label: '进行中', value: counts.active, tone: 'text-blue-700' },
+    { label: '已完成', value: counts.completed, tone: 'text-emerald-700' },
+  ];
   return (
-    <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div className="min-w-0">
-          <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 mb-2 h-8 text-slate-500"><ArrowLeft className="h-4 w-4 mr-1.5" />项目中心</Button>
-          <h1 className="text-xl sm:text-2xl font-semibold text-slate-900 break-all">{status.runId}</h1>
-          <p className="mt-2 text-sm text-slate-500">最后事件：{status.lastEventType} · {formatDate(status.lastEventAt)}</p>
+    <section className="grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-4">
+      {metrics.map((metric) => (
+        <div key={metric.label} className="border-b border-r border-slate-100 px-4 py-4 last:border-r-0 sm:border-b-0 sm:px-5">
+          <p className="text-xs text-slate-400">{metric.label}</p>
+          <p className={`mt-2 text-2xl font-semibold ${metric.tone}`}>{loading ? '-' : metric.value}</p>
         </div>
-        <Badge variant="outline" className={runBadgeClass(status.currentState)}>{runStateLabel(status.currentState)}</Badge>
+      ))}
+    </section>
+  );
+}
+
+function RunRow({ run, onOpen }: { run: ThetaRunSummary; onOpen: () => void }) {
+  return (
+    <button type="button" onClick={onOpen} className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b border-slate-100 px-4 py-4 text-left transition-colors last:border-b-0 hover:bg-slate-50 sm:grid-cols-[minmax(0,1.6fr)_minmax(130px,0.7fr)_100px_90px_20px] sm:px-5">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2"><StatusDot run={run} /><p className="truncate text-sm font-semibold text-slate-800">{runLabel(run)}</p></div>
+        <p className="mt-1 truncate pl-5 text-xs text-slate-400" title={run.runId}>{run.runId}</p>
       </div>
+      <div className="hidden min-w-0 sm:block"><RunStatusBadge run={run} /><p className="mt-1 truncate text-xs text-slate-400">{run.currentState ?? '等待状态'}</p></div>
+      <div className="hidden sm:block"><p className="text-sm text-slate-600">{run.eventCount}</p><p className="mt-1 text-xs text-slate-400">事件</p></div>
+      <div className="hidden sm:block"><p className="text-xs text-slate-600">{formatDate(run.lastEventAt ?? run.updatedAt)}</p><p className="mt-1 text-xs text-slate-400">最后更新</p></div>
+      <div className="flex items-center gap-2 sm:block"><span className="sm:hidden"><RunStatusBadge run={run} /></span><ChevronRight className="h-4 w-4 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-500" /></div>
+    </button>
+  );
+}
 
-      <section className="grid grid-cols-2 lg:grid-cols-4 border border-slate-200 rounded-lg bg-white overflow-hidden mb-6">
-        <RunMetric label="运行投影" value={status.status} />
-        <RunMetric label="当前 FSM 状态" value={status.currentState ?? '无'} />
-        <RunMetric label="事件数量" value={String(status.eventCount)} />
-        <RunMetric label="处理要求" value={status.pendingReason ? '需要操作' : '无需操作'} />
+function FilterButton({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count: number }) {
+  return <button type="button" onClick={onClick} className={`h-7 whitespace-nowrap rounded-md px-2.5 text-xs font-medium transition-colors ${active ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>{label}<span className="ml-1 text-[10px] opacity-70">{count}</span></button>;
+}
+
+function EnvironmentPanel({ health }: { health?: ThetaHealth }) {
+  const checks = health?.checks ?? [];
+  const passing = checks.filter((check) => check.status === 'PASS').length;
+  const warnings = checks.filter((check) => check.status === 'WARN').length;
+  const failures = checks.filter((check) => check.status === 'FAIL').length;
+  return (
+    <details className="mt-8 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 hover:bg-slate-50 sm:px-5">
+        <span className="flex items-center gap-2 text-sm font-medium text-slate-700"><ShieldCheck className="h-4 w-4 text-blue-600" />运行保障</span>
+        <span className="text-xs text-slate-400">{passing} 通过 · {warnings} 提醒 · {failures} 阻塞</span>
+      </summary>
+      <div className="grid gap-2 border-t border-slate-100 px-4 py-4 sm:px-5 md:grid-cols-2">
+        {checks.map((check) => (
+          <div key={check.id} className="flex items-start gap-2 rounded-md bg-slate-50 px-3 py-2.5">
+            {check.status === 'PASS' ? <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-600" /> : <AlertCircle className={`mt-0.5 h-4 w-4 flex-shrink-0 ${check.status === 'FAIL' ? 'text-red-600' : 'text-amber-600'}`} />}
+            <div className="min-w-0"><p className="text-xs font-medium text-slate-700">{check.id}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{check.message}</p></div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function RunWorkspace({ runId, status, loading, onBack, onRefresh }: { runId: string; status?: ThetaRunStatus; loading: boolean; onBack: () => void; onRefresh: () => void }) {
+  if (loading || !status) {
+    return <div className="min-h-[60vh] grid place-items-center"><div className="text-center"><RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" /><p className="mt-3 text-sm text-slate-500">正在从事件记录恢复运行状态...</p></div></div>;
+  }
+  const path = status.statePath.filter((state, index, states) => index === 0 || states[index - 1] !== state);
+  return (
+    <div>
+      <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div className="min-w-0">
+          <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 mb-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />全部任务</Button>
+          <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">{runLabel({ runId } as ThetaRunSummary)}</h1>
+          <p className="mt-2 break-all text-xs text-slate-400">{runId}</p>
+        </div>
+        <div className="flex items-center gap-2"><Badge variant="outline" className={runBadgeClass(status.currentState, status.pendingReason)}>{runStateLabel(status.currentState, status.pendingReason)}</Badge><Button type="button" variant="outline" size="icon" onClick={onRefresh} title="刷新任务状态" className="h-8 w-8 rounded-lg"><RefreshCw className="h-4 w-4" /></Button></div>
+      </div>
+      {status.pendingReason ? <div className="mb-6 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{status.pendingReason}</span></div> : null}
+      <section className="mb-7 grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-4">
+        <DetailMetric label="运行状态" value={status.status} /><DetailMetric label="当前 FSM" value={status.currentState ?? '无'} /><DetailMetric label="事件数量" value={String(status.eventCount)} /><DetailMetric label="最后事件" value={status.lastEventType} />
       </section>
-
-      {status.pendingReason ? (
-        <div className="mb-6 px-4 py-3 rounded-lg border border-amber-200 bg-amber-50 flex gap-3 text-sm text-amber-800">
-          <Clock3 className="h-4 w-4 mt-0.5 flex-shrink-0" /><span>{status.pendingReason}</span>
-        </div>
-      ) : null}
-
-      <section className="border border-slate-200 rounded-lg bg-white overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-          <div><p className="text-xs font-medium text-slate-400">EVENT-FIRST WORKFLOW</p><h2 className="mt-1 text-base font-semibold text-slate-800">运行路径</h2></div>
-          <span className="text-xs text-slate-400">{uniquePath.length} 个阶段</span>
-        </div>
-        <ol className="divide-y divide-slate-100">
-          {uniquePath.map((state, index) => (
-            <li key={`${state}-${index}`} className="px-5 py-3 flex items-center gap-3">
-              <span className="h-7 w-7 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center flex-shrink-0"><CheckCircle2 className="h-4 w-4" /></span>
-              <div className="min-w-0 flex-1"><p className="text-sm font-medium text-slate-700 break-all">{state}</p><p className="text-xs text-slate-400 mt-0.5">阶段 {index + 1}</p></div>
-              {index === uniquePath.length - 1 ? <Badge variant="secondary">当前</Badge> : null}
-            </li>
-          ))}
+      <section>
+        <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold text-slate-800">执行路径</h2><p className="mt-1 text-xs text-slate-400">状态由 Event Store 重放得到</p></div><span className="text-xs text-slate-400">{path.length} 个阶段</span></div>
+        <ol className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+          {path.map((state, index) => {
+            const current = index === path.length - 1;
+            return <li key={`${state}-${index}`} className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 sm:px-5"><span className={`grid h-7 w-7 flex-shrink-0 place-items-center rounded-full ${current ? 'bg-blue-600 text-white' : 'bg-emerald-50 text-emerald-600'}`}>{current ? <CircleDot className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}</span><div className="min-w-0 flex-1"><p className="break-all text-sm font-medium text-slate-700">{state}</p><p className="mt-0.5 text-xs text-slate-400">阶段 {index + 1}</p></div>{current ? <Badge variant="secondary">当前</Badge> : null}</li>;
+          })}
         </ol>
       </section>
     </div>
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: 'emerald' | 'amber' | 'red' }) {
-  const color = tone === 'emerald' ? 'text-emerald-600' : tone === 'amber' ? 'text-amber-600' : 'text-red-600';
-  return <div className="p-3 text-center border-r last:border-r-0 border-slate-200"><strong className={`block text-lg ${color}`}>{value}</strong><span className="text-[11px] text-slate-400">{label}</span></div>;
+function DetailMetric({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 border-b border-r border-slate-100 px-4 py-4 last:border-r-0 sm:border-b-0"><p className="text-xs text-slate-400">{label}</p><p className="mt-2 break-all text-sm font-semibold text-slate-800">{value}</p></div>;
 }
 
-function Boundary({ icon: Icon, text }: { icon: typeof Database; text: string }) {
-  return <li className="flex items-start gap-2.5"><span className="h-7 w-7 rounded-md bg-blue-50 text-blue-600 grid place-items-center flex-shrink-0"><Icon className="h-3.5 w-3.5" /></span><span className="pt-1 leading-5">{text}</span></li>;
+function HealthBadge({ status }: { status?: ThetaHealth['status'] }) {
+  const label = status === 'ready' ? '环境正常' : status === 'degraded' ? '有提醒' : status === 'blocked' ? '环境阻塞' : '检查中';
+  const tone = status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : status === 'degraded' ? 'border-amber-200 bg-amber-50 text-amber-700' : status === 'blocked' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-50 text-slate-500';
+  return <Badge variant="outline" className={tone}><span className="mr-1.5 h-2 w-2 rounded-full bg-current" />{label}</Badge>;
 }
 
-function RunMetric({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0 px-4 py-4 border-r border-b lg:border-b-0 last:border-r-0 border-slate-200"><p className="text-xs text-slate-400">{label}</p><p className="mt-2 text-sm font-semibold text-slate-800 break-all">{value}</p></div>;
+function RunStatusBadge({ run }: { run: ThetaRunSummary }) {
+  const label = needsAttention(run) ? '待处理' : isCompleted(run) ? '已完成' : '进行中';
+  const tone = needsAttention(run) ? 'border-amber-200 bg-amber-50 text-amber-700' : isCompleted(run) ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700';
+  return <Badge variant="outline" className={`px-1.5 py-0 text-[10px] ${tone}`}>{label}</Badge>;
 }
 
-const pipelineStatus = (status?: ThetaRunStatus): Project['pipelineStatus'] => {
-  if (!status) return undefined;
-  if (status.currentState === 'Quarantined' || status.status === 'failed') return 'error';
-  if (status.currentState === 'Completed') return 'completed';
-  return 'running';
+function StatusDot({ run }: { run: ThetaRunSummary }) {
+  const tone = needsAttention(run) ? 'bg-amber-500' : isCompleted(run) ? 'bg-emerald-500' : 'bg-blue-500';
+  return <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${tone}`} />;
+}
+
+const ErrorNotice = ({ message }: { message: string }) => <div className="mb-5 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><div><p className="font-medium">Agent API 暂不可用</p><p className="mt-1 text-red-600">{message}</p></div></div>;
+const LoadingRows = () => <div className="divide-y divide-slate-100">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-[76px] animate-pulse bg-gradient-to-r from-white via-slate-50 to-white" />)}</div>;
+const EmptyRuns = ({ filtered }: { filtered: boolean }) => <div className="px-4 py-14 text-center"><Database className="mx-auto h-6 w-6 text-slate-300" /><p className="mt-3 text-sm font-medium text-slate-600">{filtered ? '没有匹配的任务' : '还没有研究任务'}</p><p className="mt-1 text-xs text-slate-400">{filtered ? '请调整筛选条件或搜索词。' : '创建任务后，Run 会显示在这里。'}</p></div>;
+
+const needsAttention = (run: ThetaRunSummary): boolean => Boolean(run.pendingReason) || run.currentState === 'Quarantined' || run.status === 'failed' || run.status === 'needs_attention';
+const isCompleted = (run: ThetaRunSummary): boolean => run.currentState
+  ? run.currentState === 'Completed'
+  : run.status === 'completed';
+const isActive = (run: ThetaRunSummary): boolean => !needsAttention(run) && !isCompleted(run);
+const runLabel = (run: ThetaRunSummary): string => {
+  if (run.runId.startsWith('theta-dataset-analysis')) {
+    const suffix = run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/i)?.[1];
+    return suffix ? `数据集主题分析 · ${suffix.toUpperCase()}` : '数据集主题分析';
+  }
+  if (run.runId.startsWith('theta-stage-')) return `阶段验证 · ${run.runId.replace('theta-stage-', '').replaceAll('-', ' ')}`;
+  return `研究任务 · ${run.runId.replace('theta-run-', '').slice(0, 8)}`;
 };
-
-const projectStatus = (status?: ThetaRunStatus): Project['status'] => {
-  const pipeline = pipelineStatus(status);
-  if (pipeline === 'completed') return 'completed';
-  if (pipeline === 'error') return 'no_result';
-  if (pipeline === 'running') return 'vectorizing';
-  return 'draft';
-};
-
-const healthLabel = (status?: ThetaHealth['status']): string => status === 'ready' ? '环境正常' : status === 'degraded' ? '可运行，有提醒' : status === 'blocked' ? '环境阻塞' : '检查中';
-const healthShortLabel = (status?: ThetaHealth['status']): string => status === 'ready' ? '正常' : status === 'degraded' ? '提醒' : status === 'blocked' ? '阻塞' : '检查';
-const healthBadgeClass = (status?: ThetaHealth['status']): string => status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : status === 'degraded' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-red-200 bg-red-50 text-red-700';
-const runStateLabel = (state?: string): string => state === 'Quarantined' ? '需要人工处理' : state === 'Completed' ? '已完成' : state ?? '读取中';
-const runBadgeClass = (state?: string): string => state === 'Quarantined' ? 'border-red-200 bg-red-50 text-red-700' : state === 'Completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700';
+const runStateLabel = (state?: string, pending?: string): string => pending || state === 'Quarantined' ? '需要处理' : state === 'Completed' ? '已完成' : '进行中';
+const runBadgeClass = (state?: string, pending?: string): string => pending || state === 'Quarantined' ? 'border-amber-200 bg-amber-50 text-amber-700' : state === 'Completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700';
 const formatDate = (value: string): string => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value));

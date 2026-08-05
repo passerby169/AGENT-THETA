@@ -19,6 +19,11 @@ export interface ThetaRunSummary {
   runId: string;
   updatedAt: string;
   eventCount: number;
+  status: string;
+  currentState?: string;
+  pendingReason?: string;
+  lastEventType?: string;
+  lastEventAt?: string;
   recoveryOfRunId?: string;
   successorRunId?: string;
 }

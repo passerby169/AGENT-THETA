@@ -639,11 +639,7 @@ export default function LandingPage() {
               title="Hugging Face - CodeSoul"
               aria-label="打开 Hugging Face CodeSoul 组织页"
             >
-              <img
-                src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg"
-                alt="Hugging Face"
-                className="h-4 w-4 sm:h-[18px] sm:w-[18px] object-contain"
-              />
+              <Sparkles className="h-4 w-4 text-amber-500 sm:h-[18px] sm:w-[18px]" aria-hidden />
               <span className="hidden sm:inline">Hugging Face</span>
             </a>
             <span className="w-px h-5 bg-slate-200" aria-hidden />
