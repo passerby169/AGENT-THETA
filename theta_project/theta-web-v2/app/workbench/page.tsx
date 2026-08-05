@@ -39,6 +39,7 @@ import {
   type ThetaRunStatus,
   type ThetaRunSummary,
   type ThetaRunTimeline,
+  type ThetaRunResults,
 } from '@/lib/api/theta-agent-v2';
 
 const actionableStates = new Set([
@@ -47,6 +48,8 @@ const actionableStates = new Set([
   'AwaitPlanCreationApproval',
   'AwaitTrainingStartApproval',
 ]);
+
+const terminalStates = new Set(['Completed', 'Failed', 'Quarantined', 'Cancelled']);
 
 export default function WorkbenchPage() {
   const router = useRouter();
@@ -144,7 +147,7 @@ export default function WorkbenchPage() {
               setActiveStatus(status);
               if (status.runId !== activeRunId) setActiveRunId(status.runId);
             }}
-            onRefresh={() => void openRun(activeRunId)}
+            onRefresh={() => openRun(activeRunId)}
           />
         ) : (
           <>
@@ -255,7 +258,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   status?: ThetaRunStatus;
   loading: boolean;
   onBack: () => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onStatusChange: (status: ThetaRunStatus) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -264,6 +267,8 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   const [plan, setPlan] = useState<ThetaPlan>();
   const [models, setModels] = useState<ThetaModel[]>([]);
   const [timeline, setTimeline] = useState<ThetaRunTimeline>();
+  const [results, setResults] = useState<ThetaRunResults>();
+  const [resultsLoading, setResultsLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const actionInFlight = useRef(false);
   const onStatusChangeRef = useRef(onStatusChange);
@@ -276,10 +281,29 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
     setTimeline(await ThetaAgentV2API.timeline(targetRunId));
   }, []);
 
+  const loadResults = useCallback(async (targetRunId: string) => {
+    setResultsLoading(true);
+    try {
+      setResults(await ThetaAgentV2API.results(targetRunId));
+    } finally {
+      setResultsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     setTimeline(undefined);
+    setResults(undefined);
     void loadTimeline(runId).catch((cause) => setActionError(errorMessage(cause)));
   }, [loadTimeline, runId]);
+
+  useEffect(() => {
+    if (status?.currentState !== 'Completed') {
+      setResults(undefined);
+      setResultsLoading(false);
+      return;
+    }
+    void loadResults(runId).catch((cause) => setActionError(`读取分析结果失败：${errorMessage(cause)}`));
+  }, [loadResults, runId, status?.currentState]);
 
   const loadPlan = useCallback(async (targetRunId: string) => {
     const [nextPlan, catalog] = await Promise.all([
@@ -330,7 +354,10 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
 
   const monitoring = status?.currentState === 'MonitorTraining' || status?.currentState === 'StartTraining';
   useEffect(() => {
-    if (!monitoring) return;
+    if (!monitoring) {
+      setSyncing(false);
+      return;
+    }
     let stopped = false;
     const poll = async () => {
       if (stopped || actionInFlight.current) return;
@@ -346,17 +373,35 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
         if (!stopped) setActionError(`自动同步训练状态失败：${errorMessage(cause)}`);
       } finally {
         actionInFlight.current = false;
-        if (!stopped) setSyncing(false);
+        setSyncing(false);
       }
     };
     const initial = window.setTimeout(() => void poll(), 600);
     const interval = window.setInterval(() => void poll(), 3_000);
     return () => {
       stopped = true;
+      setSyncing(false);
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
   }, [loadTimeline, monitoring, runId]);
+
+  const refreshRun = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setActionError(undefined);
+    try {
+      await onRefresh();
+      await Promise.all([
+        loadTimeline(runId),
+        status?.currentState === 'Completed' ? loadResults(runId) : Promise.resolve(),
+      ]);
+    } catch (cause) {
+      setActionError(`刷新运行状态失败：${errorMessage(cause)}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   if (loading || !status) return <LoadingBlock />;
   const presentation = status.presentation;
@@ -373,7 +418,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
           <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{runLabel({ runId } as ThetaRunSummary)}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
-          <Button type="button" variant="outline" size="icon" onClick={() => { onRefresh(); void loadTimeline(runId); }} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
+          <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
         </div>
         <div className="mt-5 flex items-center gap-3"><Progress value={progress} className="h-2" /><span className="whitespace-nowrap text-xs text-slate-400">{monitoring ? `训练 ${Math.round(progress)}%` : `步骤 ${presentation.progress?.current ?? '-'} / ${presentation.progress?.total ?? 7}`}</span></div>
       </section>
@@ -382,16 +427,95 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       {actionNotice ? <ActionNotice message={actionNotice} /> : null}
       <ActionPanel status={status} plan={plan} models={models} busy={busy} onAction={act} />
 
+      {status.currentState === 'Completed' ? <RunResults results={results} loading={resultsLoading} /> : null}
+
       <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
 
       <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="text-xs font-normal text-slate-400">{status.eventCount} 个事件</span></summary>
         <ol className="border-t border-slate-100 px-4 py-3 sm:px-5">
-          {uniquePath(status.statePath).map((state, index, states) => <li key={`${state}-${index}`} className="flex items-center gap-3 py-2 text-xs text-slate-500"><span className={`grid h-6 w-6 place-items-center rounded-full ${index === states.length - 1 ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>{index === states.length - 1 ? <CircleDot className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}</span><span>{state}</span></li>)}
+          {uniquePath(status.statePath).map((state, index, states) => {
+            const isLast = index === states.length - 1;
+            const isCurrent = isLast && !terminalStates.has(status.currentState ?? '');
+            const isProblem = isLast && ['Failed', 'Quarantined', 'Cancelled'].includes(state);
+            const tone = isCurrent
+              ? 'bg-blue-50 text-blue-600'
+              : isProblem
+                ? 'bg-amber-50 text-amber-700'
+                : 'bg-emerald-50 text-emerald-600';
+            return <li key={`${state}-${index}`} className="flex items-center gap-3 py-2 text-xs text-slate-500"><span className={`grid h-6 w-6 place-items-center rounded-full ${tone}`}>{isCurrent ? <CircleDot className="h-3.5 w-3.5" /> : isProblem ? <AlertCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}</span><span>{workflowStateLabel(state)}</span></li>;
+          })}
         </ol>
       </details>
     </div>
   );
+}
+
+function RunResults({ results, loading }: { results?: ThetaRunResults; loading: boolean }) {
+  if (loading) return (
+    <section className="mt-5 rounded-md border border-slate-200 bg-white px-5 py-8 text-center">
+      <RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" />
+      <p className="mt-2 text-sm text-slate-500">正在整理训练结果...</p>
+    </section>
+  );
+  if (!results) return null;
+
+  const metricEntries = Object.entries(results.metrics)
+    .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 8);
+  return (
+    <section className="mt-5 overflow-hidden rounded-md border border-emerald-200 bg-white">
+      <div className="flex flex-col justify-between gap-3 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-start">
+        <div>
+          <p className="text-xs font-semibold text-emerald-700">本次训练输出</p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-900">分析结果</h2>
+          <p className="mt-1 text-sm text-slate-500">结果已从受治理的训练产物中读取，并绑定到当前研究任务。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">训练完成</Badge>
+          <Badge variant="outline" className={results.researchStatus === 'passed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}>{researchStatusLabel(results.researchStatus)}</Badge>
+        </div>
+      </div>
+
+      <div className="grid border-b border-slate-100 sm:grid-cols-3">
+        <ResultSummary label="识别主题" value={`${results.topics.length} 个`} />
+        <ResultSummary label="执行状态" value={results.executionStatus ?? results.status} />
+        <ResultSummary label="质量状态" value={results.qualityStatus ?? '尚未评估'} />
+      </div>
+
+      <div className="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+        <div className="px-5 py-5">
+          <h3 className="text-sm font-semibold text-slate-800">主题与核心关键词</h3>
+          <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
+            {results.topics.length ? results.topics.map((topic, index) => (
+              <div key={topic.id} className="grid gap-2 py-3 sm:grid-cols-[32px_minmax(0,1fr)_auto] sm:items-start">
+                <span className="grid h-7 w-7 place-items-center rounded-full bg-blue-50 text-xs font-semibold text-blue-700">{index + 1}</span>
+                <div className="min-w-0"><p className="text-sm font-semibold text-slate-800">{topic.name}</p><p className="mt-1 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</p></div>
+                {typeof topic.strength === 'number' ? <span className="text-xs text-slate-400">强度 {formatResultNumber(topic.strength)}</span> : null}
+              </div>
+            )) : <p className="py-6 text-sm text-slate-400">训练产物中未找到可解析的主题表。</p>}
+          </div>
+        </div>
+
+        <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-5 lg:border-l lg:border-t-0">
+          <h3 className="text-sm font-semibold text-slate-800">核心指标</h3>
+          <dl className="mt-3 divide-y divide-slate-200">
+            {metricEntries.length ? metricEntries.map(([key, value]) => <div key={key} className="flex items-center justify-between gap-4 py-2.5"><dt className="text-xs text-slate-500">{metricLabel(key)}</dt><dd className="text-sm font-semibold text-slate-700">{formatResultValue(value)}</dd></div>) : <p className="py-4 text-xs text-slate-400">暂无可展示的聚合指标。</p>}
+          </dl>
+        </div>
+      </div>
+
+      {results.goalAssessment.length ? <div className="border-t border-slate-100 px-5 py-5"><h3 className="text-sm font-semibold text-slate-800">研究目标核对</h3><div className="mt-3 space-y-3">{results.goalAssessment.map((item) => <div key={item.criterion} className="flex items-start gap-3"><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === 'satisfied' ? 'text-emerald-600' : 'text-amber-600'}`} /><div><p className="text-sm font-medium text-slate-700">{item.criterion}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{item.evidence}</p></div></div>)}</div></div> : null}
+
+      {results.warnings.length ? <div className="border-t border-amber-100 bg-amber-50 px-5 py-4"><p className="text-xs font-semibold text-amber-800">结果解读提醒</p><ul className="mt-2 space-y-1 text-xs leading-5 text-amber-800">{results.warnings.slice(0, 4).map((warning) => <li key={warning}>• {warning}</li>)}</ul></div> : null}
+
+      {results.resultRoot ? <details className="border-t border-slate-100 px-5 py-4"><summary className="cursor-pointer text-xs font-medium text-slate-500">查看本地结果目录</summary><p className="mt-2 break-all font-mono text-[11px] leading-5 text-slate-500">{results.resultRoot}</p></details> : null}
+    </section>
+  );
+}
+
+function ResultSummary({ label, value }: { label: string; value: string }) {
+  return <div className="border-b border-slate-100 px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 text-base font-semibold text-slate-800">{value}</p></div>;
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {
@@ -546,7 +670,44 @@ function HealthBadge({ status }: { status?: ThetaHealth['status'] }) { const lab
 
 const statusKind = (run: ThetaRunSummary): { label: string; tone: string } => actionableStates.has(run.currentState ?? '') ? { label: '待确认', tone: 'border-amber-200 bg-amber-50 text-amber-700' } : isRunning(run) ? { label: '运行中', tone: 'border-blue-200 bg-blue-50 text-blue-700' } : run.currentState === 'Completed' ? { label: '已完成', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' } : { label: '需检查', tone: 'border-red-200 bg-red-50 text-red-700' };
 const isRunning = (run: ThetaRunSummary): boolean => ['StartTraining', 'MonitorTraining'].includes(run.currentState ?? '') || run.status === 'waiting_timer';
-const stateTitle = (state?: string): string => ({ ResearchClarification: '完善研究设置', ColumnConfirmation: '确认数据列', AwaitPlanCreationApproval: '确认训练方案', AwaitTrainingStartApproval: '启动真实训练', MonitorTraining: '模型训练中', Completed: '训练完成', Failed: '运行失败', Quarantined: '运行已隔离' } as Record<string, string>)[state ?? ''] ?? '处理研究任务';
+const workflowStateLabels: Record<string, string> = {
+  Intake: '接收研究任务',
+  ResearchClarification: '完善研究设置',
+  InspectDataset: '检查数据集',
+  ColumnConfirmation: '确认数据列',
+  RecommendModel: '生成模型建议',
+  ValidatePlan: '校验训练方案',
+  AwaitPlanCreationApproval: '等待方案审批',
+  CreatePlan: '固化训练方案',
+  DryRun: '训练前检查',
+  AwaitTrainingStartApproval: '等待启动审批',
+  VerifyDatasetBeforeTraining: '训练前复核数据',
+  StartTraining: '启动模型训练',
+  MonitorTraining: '跟踪训练进度',
+  Completed: '训练完成',
+  Failed: '运行失败',
+  Quarantined: '运行已隔离',
+  Cancelled: '训练已取消',
+};
+const workflowStateLabel = (state?: string): string => workflowStateLabels[state ?? ''] ?? state ?? '处理研究任务';
+const stateTitle = (state?: string): string => workflowStateLabel(state);
+const researchStatusLabel = (status?: ThetaRunResults['researchStatus']): string => status === 'passed' ? '研究目标已满足' : status === 'needs_review' ? '结果需要复核' : '研究目标未评估';
+const metricLabels: Record<string, string> = {
+  td: '主题多样性',
+  topic_diversity: '主题多样性',
+  irbo: '主题区分度',
+  npmi: 'NPMI 一致性',
+  c_v: 'C_V 一致性',
+  umass: 'UMass 一致性',
+  coherence: '主题一致性',
+  perplexity: '困惑度',
+  ppl: '困惑度',
+  exclusivity: '主题独占性',
+  model_name: '训练模型',
+};
+const metricLabel = (key: string): string => metricLabels[key.toLowerCase()] ?? key.replaceAll('_', ' ');
+const formatResultNumber = (value: number): string => Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/u, '').replace(/\.$/u, '');
+const formatResultValue = (value: unknown): string => typeof value === 'number' ? formatResultNumber(value) : typeof value === 'boolean' ? (value ? '是' : '否') : String(value);
 const runLabel = (run: ThetaRunSummary): string => run.runId.startsWith('theta-dataset-analysis') ? `数据集主题分析${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1] ? ` · ${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1]?.toUpperCase()}` : ''}` : run.runId.startsWith('theta-stage-') ? `阶段验证 · ${run.runId.replace('theta-stage-', '').replaceAll('-', ' ')}` : `研究任务 · ${run.runId.replace('theta-run-', '').slice(0, 8)}`;
 const planCandidate = (plan: ThetaPlan) => plan.validatedPlan ?? plan.candidatePlan;
 const planModelId = (plan: ThetaPlan): string => planCandidate(plan)?.modelId?.toLowerCase() ?? '';

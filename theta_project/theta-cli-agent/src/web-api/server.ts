@@ -211,6 +211,15 @@ const routeRequest = async (
     return;
   }
 
+  const resultsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/results$/);
+  if (resultsMatch) {
+    if (method !== 'GET') return methodNotAllowed(response);
+    const runId = decodeURIComponent(resultsMatch[1]);
+    const results = await new ResultService(workflow).overview(runId, options.runtimeDb);
+    writeJson(response, 200, { ok: true, data: results });
+    return;
+  }
+
 
   const planMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/plan$/);
   if (planMatch && method === 'GET') {

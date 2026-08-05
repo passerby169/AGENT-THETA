@@ -67,6 +67,33 @@ export interface ThetaRunTimeline {
   logs: string[];
 }
 
+export interface ThetaRunResults {
+  runId: string;
+  trainingRunId?: string;
+  status: string;
+  progress: number;
+  executionStatus?: string;
+  qualityStatus?: string;
+  researchStatus?: 'passed' | 'needs_review' | 'not_evaluated';
+  currentStep?: string;
+  resultRoot?: string;
+  metrics: Record<string, unknown>;
+  topics: Array<{
+    id: string;
+    name: string;
+    strength?: number;
+    keywords: string[];
+  }>;
+  goalAssessment: Array<{
+    criterion: string;
+    status: 'satisfied' | 'not_satisfied' | 'not_evaluated';
+    evidence: string;
+  }>;
+  comparison: string[];
+  warnings: string[];
+  message: string;
+}
+
 export interface ThetaPresentation {
   title: string;
   summary: string;
@@ -163,6 +190,8 @@ export const ThetaAgentV2API = {
     get<ThetaRunStatus>(`runs/${encodeURIComponent(runId)}/status`),
   timeline: (runId: string, limit = 40): Promise<ThetaRunTimeline> =>
     get<ThetaRunTimeline>(`runs/${encodeURIComponent(runId)}/timeline?limit=${limit}`),
+  results: (runId: string): Promise<ThetaRunResults> =>
+    get<ThetaRunResults>(`runs/${encodeURIComponent(runId)}/results`),
   datasets: (): Promise<{ datasets: ThetaDataset[] }> =>
     get<{ datasets: ThetaDataset[] }>('datasets'),
   models: (): Promise<{ models: ThetaModel[]; supportedModelIds: string[] }> =>
