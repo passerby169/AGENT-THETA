@@ -76,6 +76,7 @@ let requestedBody = '';
 const miniMaxProvider = new MiniMaxInferenceProvider({
   apiKey: 'test-key-not-a-secret',
   model: 'MiniMax-test',
+  timeoutMs: 150_000,
   fetchImpl: (async (input, init) => {
     requestedUrl = String(input);
     requestedBody = String(init?.body ?? '');

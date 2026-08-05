@@ -75,6 +75,12 @@ export interface ThetaPlan {
   presentation: ThetaPresentation;
 }
 
+export interface ThetaActionResult {
+  kind?: string;
+  response?: string;
+  explanation?: string;
+}
+
 export type ThetaRunAction =
   | { action: 'answer'; text: string }
   | { action: 'columns'; text: string }
@@ -120,6 +126,6 @@ export const ThetaAgentV2API = {
     get<ThetaPlan>(`runs/${encodeURIComponent(runId)}/plan`),
   createRun: (input: { filePath: string; researchGoal: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
     post<ThetaRunStatus>('runs', input),
-  act: (runId: string, action: ThetaRunAction): Promise<{ result: unknown; status: ThetaRunStatus }> =>
-    post<{ result: unknown; status: ThetaRunStatus }>(`runs/${encodeURIComponent(runId)}/actions`, action),
+  act: (runId: string, action: ThetaRunAction): Promise<{ result: ThetaActionResult; status: ThetaRunStatus }> =>
+    post<{ result: ThetaActionResult; status: ThetaRunStatus }>(`runs/${encodeURIComponent(runId)}/actions`, action),
 };

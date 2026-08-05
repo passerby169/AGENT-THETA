@@ -134,7 +134,7 @@ const shape = (request: NaturalLanguageRequest): string => {
     case 'generate_grilling_question':
       return `Shape: {"task":"generate_grilling_question","gapId":${JSON.stringify(request.gapId)},"field":${JSON.stringify(request.field)},"question":"...","reason":"...","examples":[],"answerHint":"..."}.`;
     case 'interpret_column_confirmation':
-      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft when ambiguous.';
+      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. The columns command and Web submit button are explicit confirmation, so accept one clear, type-valid assignment without asking the user to repeat it. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft only when a required role is missing or genuinely ambiguous.';
     case 'classify_conversation_intent':
       return 'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|unknown","response":"..."}.';
     case 'propose_readonly_tool':
@@ -518,15 +518,28 @@ const deterministicColumns = (
   };
   const text = mentioned.find((column) => linked(column, '正文|文本内容|待分析文本|语料'));
   const time = mentioned.find((column) => linked(column, '时间列|日期列|时间戳')) ?? null;
-  const id = mentioned.find((column) => linked(column, 'ID列|标识列|编号列|唯一标识')) ?? null;
+  const id = mentioned.find((column) => linked(column, 'ID列|ID 列|标识列|标识 列|编号列|编号 列|唯一标识')) ?? null;
   const covariates = mentioned.filter((column) =>
     linked(column, '训练协变量|协变量列|STM协变量|模型协变量'),
   );
   const groups = mentioned.filter((column) =>
-    linked(column, '展示分组|分组列|对比分组|分组展示'),
+    linked(column, '展示分组|分组列|对比分组|分组展示|分组元数据'),
   );
   const labels = mentioned.filter((column) =>
     linked(column, '评估标签|标签列|Golden标签|真值标签'),
+  );
+  const reserved = new Set([
+    ...(text ? [text] : []),
+    ...(time ? [time] : []),
+    ...(id ? [id] : []),
+    ...covariates,
+    ...groups,
+    ...labels,
+  ]);
+  const metadata = mentioned.filter(
+    (column) =>
+      !reserved.has(column) &&
+      linked(column, '描述元数据|元数据列|辅助信息'),
   );
   if (!text) {
     return {
@@ -543,7 +556,7 @@ const deterministicColumns = (
     timeColumn: time,
     idColumn: id,
     covariateColumns: covariates,
-    metadataColumns: [],
+    metadataColumns: metadata,
     groupingColumns: groups,
     evaluationLabelColumns: labels,
   };
@@ -559,17 +572,14 @@ const deterministicColumns = (
       explanation: `${roleIssue} 请重新明确各列角色。`,
     };
   }
-  const explicitlyReviewed = /(?:^|[：:\s])(?:我)?确认(?:无误)?|confirm/iu.test(request.answer);
   return {
     task: request.task,
     draft,
     unknownMentions: [],
-    ambiguousMentions: explicitlyReviewed ? [] : mentioned,
-    confidence: explicitlyReviewed ? 0.9 : 0.6,
-    needsClarification: !explicitlyReviewed,
-    explanation: explicitlyReviewed
-      ? '已通过列类型校验并记录显式确认。'
-      : `请复核后再次提交“确认：${columnDraftSummary(draft)}”。确定性模式不会直接采用首次解析结果。`,
+    ambiguousMentions: [],
+    confidence: 0.9,
+    needsClarification: false,
+    explanation: `已通过列类型校验：${columnDraftSummary(draft)}。`,
   };
 };
 

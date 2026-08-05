@@ -258,6 +258,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
 }) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [actionNotice, setActionNotice] = useState<string>();
   const [plan, setPlan] = useState<ThetaPlan>();
   const [models, setModels] = useState<ThetaModel[]>([]);
 
@@ -277,9 +278,11 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   const act = async (action: ThetaRunAction) => {
     setBusy(true);
     setActionError(undefined);
+    setActionNotice(undefined);
     try {
       const result = await ThetaAgentV2API.act(runId, action);
       onStatusChange(result.status);
+      setActionNotice(result.result.response ?? result.result.explanation);
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
@@ -304,6 +307,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       </section>
 
       {actionError ? <ErrorNotice message={actionError} /> : null}
+      {actionNotice ? <ActionNotice message={actionNotice} /> : null}
       <ActionPanel status={status} plan={plan} models={models} busy={busy} onAction={act} />
 
       <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
@@ -420,6 +424,7 @@ const SectionHeading = ({ title, subtitle }: { title: string; subtitle: string }
 const EmptyPanel = ({ title, description, compact = false }: { title: string; description: string; compact?: boolean }) => <div className={`rounded-md border border-dashed border-slate-200 bg-white text-center ${compact ? 'px-4 py-8' : 'px-4 py-12'}`}><Database className="mx-auto h-5 w-5 text-slate-300" /><p className="mt-2 text-sm font-medium text-slate-600">{title}</p><p className="mt-1 text-xs text-slate-400">{description}</p></div>;
 const LoadingBlock = () => <div className="grid min-h-44 place-items-center rounded-md border border-slate-200 bg-white"><div className="text-center"><RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" /><p className="mt-2 text-sm text-slate-500">正在读取事件状态...</p></div></div>;
 const ErrorNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
+const ActionNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800"><CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
 function HealthBadge({ status }: { status?: ThetaHealth['status'] }) { const label = status === 'ready' ? '环境正常' : status === 'degraded' ? '有提醒' : status === 'blocked' ? '环境阻塞' : '检查中'; const tone = status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : status === 'degraded' ? 'border-amber-200 bg-amber-50 text-amber-700' : status === 'blocked' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-50 text-slate-500'; return <Badge variant="outline" className={tone}>{label}</Badge>; }
 
 const statusKind = (run: ThetaRunSummary): { label: string; tone: string } => actionableStates.has(run.currentState ?? '') ? { label: '待确认', tone: 'border-amber-200 bg-amber-50 text-amber-700' } : isRunning(run) ? { label: '运行中', tone: 'border-blue-200 bg-blue-50 text-blue-700' } : run.currentState === 'Completed' ? { label: '已完成', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' } : { label: '需检查', tone: 'border-red-200 bg-red-50 text-red-700' };

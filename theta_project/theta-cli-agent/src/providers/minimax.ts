@@ -8,6 +8,7 @@ import type {
 const DEFAULT_BASE_URL = 'https://api.minimax.io/v1';
 const DEFAULT_MODEL = 'MiniMax-M2.7';
 const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_TIMEOUT_MS = 180_000;
 
 export interface MiniMaxProviderConfig {
   apiKey: string;
@@ -312,8 +313,8 @@ const required = (value: string, name: string): string => {
 };
 
 const positiveInteger = (value: number, name: string): number => {
-  if (!Number.isInteger(value) || value <= 0 || value > 120_000) {
-    throw new Error(`${name} must be an integer between 1 and 120000.`);
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_TIMEOUT_MS) {
+    throw new Error(`${name} must be an integer between 1 and ${MAX_TIMEOUT_MS}.`);
   }
   return value;
 };

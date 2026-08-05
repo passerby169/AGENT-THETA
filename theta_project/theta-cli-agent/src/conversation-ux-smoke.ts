@@ -165,6 +165,36 @@ if (
 ) {
   throw new Error('An unrelated research objective was mistaken for privacy consent.');
 }
+
+const columns = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'interpret_column_confirmation',
+  answer: 'text 是正文列，timestamp 是时间列，id 是 ID 列，source 作为分组元数据',
+  datasetSha256: 'a'.repeat(64),
+  columns: ['id', 'text', 'timestamp', 'source'],
+  candidates: {
+    text: ['text'],
+    time: ['timestamp'],
+    metadata: ['source'],
+  },
+  columnProfiles: [
+    { name: 'id', inferredType: 'string', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 8, maxLength: 8 },
+    { name: 'text', inferredType: 'text', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 64, maxLength: 120 },
+    { name: 'timestamp', inferredType: 'datetime', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 10, maxLength: 10 },
+    { name: 'source', inferredType: 'string', nonEmptySampleCount: 10, uniqueSampleCount: 2, avgLength: 5, maxLength: 8 },
+  ],
+  recentMessages: [],
+});
+if (
+  columns.output.task !== 'interpret_column_confirmation' ||
+  columns.output.needsClarification ||
+  columns.output.draft?.textColumns[0] !== 'text' ||
+  columns.output.draft.timeColumn !== 'timestamp' ||
+  columns.output.draft.idColumn !== 'id' ||
+  columns.output.draft.groupingColumns?.[0] !== 'source'
+) {
+  throw new Error('A clear column assignment did not pass in one submission.');
+}
 const biasAnswer = '目前没有发现其他明确偏差，但样本量可能较小。';
 const biasGuard = guardCriticalResearchPatch(
   'sensitiveData',
@@ -225,6 +255,7 @@ console.log(
     extractedFields: Object.keys(guarded.patch).length,
     privacyFalsePositive: 'blocked',
     parameterDecisionUx: 'verified',
+    singleSubmitColumnConfirmation: 'verified',
     revisionEvidence: 'persisted',
   }),
 );
