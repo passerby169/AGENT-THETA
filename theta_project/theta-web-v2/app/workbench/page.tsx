@@ -476,15 +476,11 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
   const metricEntries = Object.entries(results.metrics)
     .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
     .slice(0, 8);
-  const selectionCount = selection.topicIds.length
-    + selection.metricKeys.length
+  const selectionCount = selection.metricKeys.length
     + selection.visualizationIds.length
     + Number(selection.includeGoalAssessment)
     + Number(selection.includeWarnings);
   const selectedItems = [
-    ...results.topics
-      .filter((topic) => selection.topicIds.includes(topic.id))
-      .map((topic) => `主题：${topic.name}`),
     ...metricEntries
       .filter(([key]) => selection.metricKeys.includes(key))
       .map(([key]) => `指标：${metricLabel(key)}`),
@@ -503,12 +499,16 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
       src: ThetaAgentV2API.resultAssetUrl(runId, item.relativePath),
     }));
   const selectAll = () => setSelection({
-    topicIds: results.topics.slice(0, 12).map((topic) => topic.id),
+    topicIds: [],
     metricKeys: metricEntries.slice(0, 12).map(([key]) => key),
     visualizationIds: results.visualizations.slice(0, 12).map((item) => item.id),
     includeGoalAssessment: results.goalAssessment.length > 0,
     includeWarnings: results.warnings.length > 0,
   });
+  const analysisSelection: ThetaResultAnalysisSelection = {
+    ...selection,
+    topicIds: [],
+  };
   return (
     <div className="mt-5 grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
     <section className="overflow-hidden rounded-md border border-emerald-200 bg-white">
@@ -538,11 +538,10 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
           <h3 className="text-sm font-semibold text-slate-800">主题结果表</h3>
           <div className="mt-3 overflow-x-auto border-y border-slate-100">
             {results.topics.length ? (
-              <table className="w-full min-w-[650px] text-left">
-                <thead><tr className="text-xs text-slate-400"><th className="w-10 py-3 font-medium">选择</th><th className="w-14 py-3 font-medium">编号</th><th className="w-40 py-3 font-medium">主题</th><th className="py-3 font-medium">核心关键词</th><th className="w-20 py-3 text-right font-medium">强度</th></tr></thead>
+              <table className="w-full min-w-[620px] text-left">
+                <thead><tr className="text-xs text-slate-400"><th className="w-14 py-3 font-medium">编号</th><th className="w-40 py-3 font-medium">主题</th><th className="py-3 font-medium">核心关键词</th><th className="w-20 py-3 text-right font-medium">强度</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">{results.topics.map((topic, index) => (
-                  <tr key={topic.id} className={selection.topicIds.includes(topic.id) ? 'bg-blue-50/50 align-top' : 'align-top'}>
-                    <td className="py-3"><Checkbox checked={selection.topicIds.includes(topic.id)} onCheckedChange={(checked) => setSelection((current) => ({ ...current, topicIds: updateSelection(current.topicIds, topic.id, checked === true, 12) }))} aria-label={`选择主题 ${topic.name}`} /></td>
+                  <tr key={topic.id} className="align-top">
                     <td className="py-3 text-xs font-semibold text-blue-700">{index + 1}</td>
                     <td className="py-3 pr-4 text-sm font-semibold text-slate-800">{topic.name}</td>
                     <td className="py-3 pr-4 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</td>
@@ -584,7 +583,7 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
 
       {results.resultRoot ? <details className="border-t border-slate-100 px-5 py-4"><summary className="cursor-pointer text-xs font-medium text-slate-500">查看本地结果目录</summary><p className="mt-2 break-all font-mono text-[11px] leading-5 text-slate-500">{results.resultRoot}</p></details> : null}
     </section>
-    <ResultAnalysisAssistant runId={runId} selection={selection} selectionCount={selectionCount} selectedItems={selectedItems} selectedVisualizations={selectedVisualizations} />
+    <ResultAnalysisAssistant runId={runId} selection={analysisSelection} selectionCount={selectionCount} selectedItems={selectedItems} selectedVisualizations={selectedVisualizations} />
     </div>
   );
 }

@@ -65,9 +65,17 @@ export function ResultAnalysisAssistant({
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [busy, messages]);
 
-  const send = async (suggestedQuestion?: string) => {
-    const content = (suggestedQuestion ?? question).trim();
-    if (busy || !content || !attachment) return;
+  const send = async () => {
+    const content = question.trim();
+    if (busy) return;
+    if (!attachment) {
+      setError(selectionCount ? '请先点击“获取所勾选内容”，确认本次要交给猫咪科学家的结果。' : '请先在左侧勾选指标、图表或研究核对内容。');
+      return;
+    }
+    if (!content) {
+      setError('请先填写希望猫咪科学家分析的问题。');
+      return;
+    }
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -145,7 +153,7 @@ export function ResultAnalysisAssistant({
               先在左侧勾选结果，再点击下方“获取所勾选内容”。
             </div>
             {['总结所选结果的主要发现', '指出这些结果的研究限制', '给出下一步验证建议'].map((prompt) => (
-              <button key={prompt} type="button" disabled={!attachment} onClick={() => void send(prompt)} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <button key={prompt} type="button" disabled={busy} onClick={() => { setQuestion(prompt); setError(undefined); }} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {prompt}
               </button>
             ))}
@@ -179,11 +187,11 @@ export function ResultAnalysisAssistant({
               void send();
             }
           }}
-          placeholder={attachment ? '补充你的分析需求和思路...' : selectionCount ? '请先获取所勾选内容' : '请先勾选左侧结果'}
-          disabled={busy || !attachment}
+          placeholder={attachment ? '补充你的分析需求和思路...' : '可以先填写分析需求，再获取所勾选内容'}
+          disabled={busy}
           className="min-h-20 resize-none text-sm"
         />
-        <Button type="button" size="sm" onClick={() => void send()} disabled={busy || !attachment || !question.trim()} className="mt-2 w-full gap-2 bg-blue-600 hover:bg-blue-700">
+        <Button type="button" size="sm" onClick={() => void send()} disabled={busy} className="mt-2 w-full gap-2 bg-blue-600 hover:bg-blue-700">
           <Send className="h-3.5 w-3.5" />发送分析
         </Button>
       </div>
