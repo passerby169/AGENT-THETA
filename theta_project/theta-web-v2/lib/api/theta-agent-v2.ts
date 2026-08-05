@@ -72,7 +72,23 @@ export interface ThetaModel {
 
 export interface ThetaPlan {
   currentState?: string;
+  candidatePlan?: ThetaPlanCandidate;
+  validatedPlan?: ThetaPlanCandidate;
+  recommendation?: {
+    recommendations?: Array<{
+      modelId: string;
+      modelName?: string;
+    }>;
+  };
   presentation: ThetaPresentation;
+}
+
+export interface ThetaPlanCandidate {
+  modelId?: string;
+  numTopics?: number | null;
+  parameters?: {
+    numTopics?: number | null;
+  };
 }
 
 export interface ThetaActionResult {

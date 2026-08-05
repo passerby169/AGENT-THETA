@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AlertCircle,
@@ -261,21 +261,33 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   const [actionNotice, setActionNotice] = useState<string>();
   const [plan, setPlan] = useState<ThetaPlan>();
   const [models, setModels] = useState<ThetaModel[]>([]);
+  const actionInFlight = useRef(false);
+
+  const loadPlan = useCallback(async (targetRunId: string) => {
+    const [nextPlan, catalog] = await Promise.all([
+      ThetaAgentV2API.plan(targetRunId),
+      ThetaAgentV2API.models(),
+    ]);
+    setPlan(nextPlan);
+    setModels(
+      catalog.models.filter(
+        (model) => model.runnable !== false && !model.experimental,
+      ),
+    );
+  }, []);
 
   useEffect(() => {
     if (status?.currentState !== 'AwaitPlanCreationApproval') {
       setPlan(undefined);
       return;
     }
-    void Promise.all([ThetaAgentV2API.plan(runId), ThetaAgentV2API.models()])
-      .then(([nextPlan, catalog]) => {
-        setPlan(nextPlan);
-        setModels(catalog.models.filter((model) => model.runnable !== false && !model.experimental));
-      })
+    void loadPlan(runId)
       .catch((cause) => setActionError(errorMessage(cause)));
-  }, [runId, status?.currentState]);
+  }, [loadPlan, runId, status?.currentState]);
 
   const act = async (action: ThetaRunAction) => {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusy(true);
     setActionError(undefined);
     setActionNotice(undefined);
@@ -283,9 +295,16 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       const result = await ThetaAgentV2API.act(runId, action);
       onStatusChange(result.status);
       setActionNotice(result.result.response ?? result.result.explanation);
+      if (
+        action.action === 'adjustPlan' &&
+        result.status.currentState === 'AwaitPlanCreationApproval'
+      ) {
+        await loadPlan(result.status.runId);
+      }
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
+      actionInFlight.current = false;
       setBusy(false);
     }
   };
@@ -328,10 +347,16 @@ function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRu
 
   useEffect(() => {
     if (!plan) return;
-    setModel(extractPlanValue(plan, '模型')?.toLowerCase() ?? '');
-    const count = extractPlanValue(plan, '主题数')?.match(/\d+/u)?.[0];
-    setTopics(count ?? '');
-  }, [plan]);
+    const options = compatibleModels(plan, models);
+    const currentModel = planModelId(plan);
+    setModel(
+      options.some((item) => item.id === currentModel)
+        ? currentModel
+        : (options[0]?.id ?? currentModel),
+    );
+    const count = planTopicCount(plan);
+    setTopics(count === undefined || count === null ? '' : String(count));
+  }, [models, plan]);
 
   const state = status.currentState;
   const submitText = async (action: 'answer' | 'columns') => {
@@ -360,13 +385,13 @@ function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRu
       {!plan ? <p className="text-sm text-slate-500">正在读取模型方案...</p> : (
         <>
           <div className="grid gap-4 sm:grid-cols-2">
-            <label><span className="mb-1.5 block text-xs font-medium text-slate-600">训练模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500">{models.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.id.toUpperCase()})</option>)}</select></label>
+            <label><span className="mb-1.5 block text-xs font-medium text-slate-600">训练模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500">{compatibleModels(plan, models).map((item) => <option key={item.id} value={item.id}>{item.name} ({item.id.toUpperCase()})</option>)}</select></label>
             <label><span className="mb-1.5 block text-xs font-medium text-slate-600">主题数量</span><Input type="number" min={2} max={200} value={topics} onChange={(event) => setTopics(event.target.value)} /></label>
           </div>
           <div className="mt-4 rounded-md bg-slate-50 px-4 py-3"><p className="text-xs font-semibold text-slate-600">当前建议</p><p className="mt-1 text-sm text-slate-600">{plan.presentation.summary}</p></div>
           {plan.presentation.warnings?.length ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">{plan.presentation.warnings[0]}</div> : null}
           <label className="mt-3 flex items-start gap-2 text-xs text-slate-600"><input type="checkbox" checked={acceptDegradation} onChange={(event) => setAcceptDegradation(event.target.checked)} className="mt-0.5" />我已阅读能力缺口，并在仍有警告时接受该降级方案。</label>
-          <div className="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy || !model || !topics} onClick={() => void onAction({ action: 'adjustPlan', text: `将模型改为 ${model.toUpperCase()}，主题数改为 ${topics}` })}>应用模型设置</Button><Button type="button" disabled={busy} onClick={() => void onAction({ action: 'approvePlan', acceptDegradation })} className="bg-blue-600 hover:bg-blue-700">批准该方案</Button></div>
+          <div className="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy || !model || !topics || !planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'adjustPlan', text: `将模型改为 ${model.toUpperCase()}，主题数改为 ${topics}` })}>{planSettingsDirty(plan, model, topics) ? '应用模型设置' : '设置已应用'}</Button><Button type="button" disabled={busy || !model || planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'approvePlan', acceptDegradation })} className="bg-blue-600 hover:bg-blue-700">批准该方案</Button></div>
         </>
       )}
     </ActionShell>
@@ -380,7 +405,7 @@ function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRu
   );
 
   if (state === 'MonitorTraining' || state === 'StartTraining') return <ActionShell title="训练正在后台运行" description="无需重复启动。稍后点击页面右上角刷新即可查看进度。"><div className="flex items-center gap-2 text-sm text-blue-700"><RefreshCw className="h-4 w-4 animate-spin" />正在等待训练进程返回新事件</div></ActionShell>;
-  if (state === 'Failed') return <ActionShell title="训练未完成" description={status.presentation.summary}><Button type="button" disabled={busy} onClick={() => void onAction({ action: 'retry' })} className="bg-blue-600 hover:bg-blue-700">修复环境后创建恢复任务</Button></ActionShell>;
+  if (state === 'Failed') return <ActionShell title="运行未完成" description={status.presentation.summary}><p className="mb-3 text-sm text-slate-600">原任务会保持不变。系统将复用已确认的研究设置和数据列，创建一个新的恢复任务。</p><Button type="button" disabled={busy} onClick={() => void onAction({ action: 'retry' })} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在创建恢复任务...' : '创建恢复任务'}</Button></ActionShell>;
   if (state === 'Quarantined') return <ActionShell title="该记录已隔离" description="该次运行的产物或状态不完整，系统不会擅自重启。请保留此记录并新建研究；技术原因可在下方记录中核对。"><p className="text-sm text-amber-700">这不是等待审批，因此不需要点击“开始训练”。</p></ActionShell>;
   if (state === 'Completed') return <ActionShell title="训练已完成" description="训练和产物校验已经结束。"><div className="flex items-center gap-2 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" />可以继续查看结果产物和研究结论。</div></ActionShell>;
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
@@ -431,7 +456,29 @@ const statusKind = (run: ThetaRunSummary): { label: string; tone: string } => ac
 const isRunning = (run: ThetaRunSummary): boolean => ['StartTraining', 'MonitorTraining'].includes(run.currentState ?? '') || run.status === 'waiting_timer';
 const stateTitle = (state?: string): string => ({ ResearchClarification: '完善研究设置', ColumnConfirmation: '确认数据列', AwaitPlanCreationApproval: '确认训练方案', AwaitTrainingStartApproval: '启动真实训练', MonitorTraining: '模型训练中', Completed: '训练完成', Failed: '运行失败', Quarantined: '运行已隔离' } as Record<string, string>)[state ?? ''] ?? '处理研究任务';
 const runLabel = (run: ThetaRunSummary): string => run.runId.startsWith('theta-dataset-analysis') ? `数据集主题分析${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1] ? ` · ${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1]?.toUpperCase()}` : ''}` : run.runId.startsWith('theta-stage-') ? `阶段验证 · ${run.runId.replace('theta-stage-', '').replaceAll('-', ' ')}` : `研究任务 · ${run.runId.replace('theta-run-', '').slice(0, 8)}`;
-const extractPlanValue = (plan: ThetaPlan, label: string): string | undefined => plan.presentation.sections?.flatMap((section) => section.lines).find((line) => line.startsWith(`${label}：`))?.slice(label.length + 1).trim();
+const planCandidate = (plan: ThetaPlan) => plan.validatedPlan ?? plan.candidatePlan;
+const planModelId = (plan: ThetaPlan): string => planCandidate(plan)?.modelId?.toLowerCase() ?? '';
+const planTopicCount = (plan: ThetaPlan): number | null | undefined => {
+  const candidate = planCandidate(plan);
+  return candidate?.numTopics ?? candidate?.parameters?.numTopics;
+};
+const compatibleModels = (plan: ThetaPlan, catalog: ThetaModel[]): ThetaModel[] => {
+  const recommended = plan.recommendation?.recommendations ?? [];
+  return recommended.map((item) =>
+    catalog.find((model) => model.id.toLowerCase() === item.modelId.toLowerCase()) ?? {
+      id: item.modelId.toLowerCase(),
+      name: item.modelName ?? item.modelId.toUpperCase(),
+      type: 'topic-model',
+    },
+  );
+};
+const planSettingsDirty = (plan: ThetaPlan, model: string, topics: string): boolean => {
+  if (model.toLowerCase() !== planModelId(plan)) return true;
+  const currentTopics = planTopicCount(plan);
+  if (currentTopics === null) return topics.trim() !== '';
+  if (currentTopics === undefined) return topics.trim() !== '';
+  return Number(topics) !== currentTopics;
+};
 const uniquePath = (path: string[]): string[] => path.filter((state, index) => index === 0 || path[index - 1] !== state);
 const formatDate = (value: string): string => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 const formatBytes = (value: number): string => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;

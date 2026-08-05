@@ -465,6 +465,43 @@ export class ThetaTurnOrchestrator {
       };
     }
     const adjustment = parsed.patch;
+    const compatibleModels = recommendedModelIds(plan);
+    const requestedModel =
+      typeof adjustment.modelId === 'string'
+        ? adjustment.modelId.toLowerCase()
+        : undefined;
+    if (
+      requestedModel &&
+      compatibleModels.length > 0 &&
+      !compatibleModels.includes(requestedModel)
+    ) {
+      const response = `本次数据只允许选择已经通过能力约束的模型：${compatibleModels
+        .map((modelId) => modelId.toUpperCase())
+        .join('、')}。方案未修改。`;
+      this.assistantMessage(context, runId, 'plan.adjustment.rejected', response);
+      return {
+        value: {
+          kind: 'plan.adjustment.rejected',
+          requestedModel,
+          compatibleModels,
+          sourceMessageId: message.messageId,
+          response,
+        },
+        activeRunId: runId,
+      };
+    }
+    if (isSamePlanAdjustment(adjustment, currentValues)) {
+      const response = '模型设置与当前候选方案一致，无需重复应用。';
+      this.assistantMessage(context, runId, 'plan.adjustment.unchanged', response);
+      return {
+        value: {
+          kind: 'plan.adjustment.unchanged',
+          sourceMessageId: message.messageId,
+          response,
+        },
+        activeRunId: runId,
+      };
+    }
     const resumed = await this.workflow.resume({
       runId,
       runtimeDb: context.runtimeDb,
@@ -1072,6 +1109,48 @@ const currentPlanAdjustmentValues = (
     ),
     ...(protocol ? { experimentProtocol: protocol } : {}),
   };
+};
+
+const recommendedModelIds = (plan: { recommendation?: unknown }): string[] => {
+  const recommendation = asRecord(plan.recommendation);
+  if (!recommendation || !Array.isArray(recommendation.recommendations)) {
+    return [];
+  }
+  return recommendation.recommendations
+    .map((item) => asRecord(item)?.modelId)
+    .filter((modelId): modelId is string => typeof modelId === 'string')
+    .map((modelId) => modelId.toLowerCase());
+};
+
+const isSamePlanAdjustment = (
+  adjustment: Record<string, unknown>,
+  current: CurrentPlanAdjustmentValues,
+): boolean => {
+  const keys = Object.keys(adjustment);
+  if (
+    keys.length === 0 ||
+    keys.some(
+      (key) => !['modelId', 'numTopics', 'topicCountMode'].includes(key),
+    )
+  ) {
+    return false;
+  }
+  if (
+    typeof adjustment.modelId === 'string' &&
+    adjustment.modelId.toLowerCase() !== current.model?.toLowerCase()
+  ) {
+    return false;
+  }
+  if (
+    typeof adjustment.numTopics === 'number' &&
+    adjustment.numTopics !== current.numTopics
+  ) {
+    return false;
+  }
+  if (adjustment.numTopics === null && current.numTopics !== null) {
+    return false;
+  }
+  return true;
 };
 
 const planAdjustmentSummary = (

@@ -106,6 +106,30 @@ export class ThetaConversationWorkflowExecutor {
         const recommendation = record(plan.recommendation);
         const degradation = record(recommendation.degradation);
         const priorAdjustment = record(plan.planAdjustment);
+        const candidate =
+          record(plan.validatedPlan) ?? record(plan.candidatePlan);
+        const selectedModel = stringField(candidate, 'modelId')?.toLowerCase();
+        const compatibleModels = Array.isArray(recommendation.recommendations)
+          ? recommendation.recommendations
+              .map(record)
+              .map((item) => stringField(item, 'modelId')?.toLowerCase())
+              .filter((modelId): modelId is string => Boolean(modelId))
+          : [];
+        if (
+          selectedModel &&
+          compatibleModels.length > 0 &&
+          !compatibleModels.includes(selectedModel)
+        ) {
+          return {
+            value: {
+              kind: 'plan.approval.blocked',
+              response: `当前候选模型 ${selectedModel.toUpperCase()} 不属于本次可审批集合。请先选择 ${compatibleModels
+                .map((modelId) => modelId.toUpperCase())
+                .join('、')} 之一并应用设置。`,
+            },
+            activeRunId: runId,
+          };
+        }
         const requiresDegradation = degradation.required === true;
         const accepted =
           command.acceptDegradation || priorAdjustment.acceptDegradation === true;

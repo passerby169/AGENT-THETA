@@ -807,7 +807,13 @@ export class ThetaWorkflowService {
     }
     const head = await runtime.events.getStreamHead(streamScope(scope));
     const submissionId = createHash("sha256")
-      .update(canonicalJson(payload))
+      .update(
+        canonicalJson({
+          waitId: pending.waitId,
+          pendingActionRef: pending.pendingActionRef,
+          payload,
+        }),
+      )
       .digest("hex")
       .slice(0, 24);
     await runtime.events.append({
