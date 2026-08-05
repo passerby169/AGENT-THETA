@@ -24,7 +24,9 @@ components/ui/*
 !components/ui/dropdown-menu.tsx
 !components/ui/input.tsx
 !components/ui/label.tsx
+!components/ui/progress.tsx
 !components/ui/sonner.tsx
+!components/ui/textarea.tsx
 
 contexts/*
 !contexts/auth-context.tsx
@@ -41,3 +43,7 @@ public/*
 !public/github-mark.svg
 !public/huggingface_logo-noborder.svg
 !public/theta-logo.png
+!public/avatars/
+!public/avatars/**
+!public/papers/
+!public/papers/**
