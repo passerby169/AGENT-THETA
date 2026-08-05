@@ -28,13 +28,23 @@ try {
   assert.equal(runs.ok, true);
   assert.deepEqual(runs.data.runs, []);
 
-  const writeResponse = await requestJson(`${baseUrl}/api/v2/runs`, 'POST');
+  const datasetsResponse = await requestJson(`${baseUrl}/api/v2/datasets`);
+  assert.equal(datasetsResponse.statusCode, 200);
+
+  const invalidCreate = await requestJson(
+    `${baseUrl}/api/v2/runs`,
+    'POST',
+    {},
+  );
+  assert.equal(invalidCreate.statusCode, 400);
+
+  const writeResponse = await requestJson(`${baseUrl}/api/v2/missing`, 'POST');
   assert.equal(writeResponse.statusCode, 405);
 
   const missingResponse = await requestJson(`${baseUrl}/api/v2/missing`);
   assert.equal(missingResponse.statusCode, 404);
 
-  console.log(JSON.stringify({ status: 'ok', readOnly: true, version: 'v2' }));
+  console.log(JSON.stringify({ status: 'ok', governedActions: true, version: 'v2' }));
 } finally {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
@@ -45,9 +55,18 @@ try {
 async function requestJson(
   url: string,
   method = 'GET',
+  body?: unknown,
 ): Promise<{ statusCode: number; body: unknown }> {
   return new Promise((resolve, reject) => {
-    const outgoing = request(url, { method }, (response) => {
+    const outgoing = request(
+      url,
+      {
+        method,
+        headers: body === undefined
+          ? undefined
+          : { 'Content-Type': 'application/json' },
+      },
+      (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () => {
@@ -60,8 +79,9 @@ async function requestJson(
           reject(error);
         }
       });
-    });
+      },
+    );
     outgoing.on('error', reject);
-    outgoing.end();
+    outgoing.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }

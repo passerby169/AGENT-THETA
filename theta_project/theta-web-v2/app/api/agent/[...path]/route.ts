@@ -6,13 +6,26 @@ interface RouteContext {
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
+  return proxy(request, context);
+}
+
+export async function POST(request: NextRequest, context: RouteContext) {
+  return proxy(request, context);
+}
+
+async function proxy(request: NextRequest, context: RouteContext) {
   const { path } = await context.params;
   const baseUrl = process.env.THETA_AGENT_API_URL ?? 'http://127.0.0.1:4318';
   const target = new URL(`/api/v2/${path.map(encodeURIComponent).join('/')}`, baseUrl);
   target.search = request.nextUrl.search;
 
   try {
-    const response = await fetch(target, { cache: 'no-store' });
+    const response = await fetch(target, {
+      method: request.method,
+      cache: 'no-store',
+      headers: request.method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
+      body: request.method === 'POST' ? await request.text() : undefined,
+    });
     const body = await response.text();
     return new NextResponse(body, {
       status: response.status,
