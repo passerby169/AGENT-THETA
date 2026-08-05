@@ -110,6 +110,27 @@ export interface ThetaRunResults {
   message: string;
 }
 
+export interface ThetaResultAnalysisSelection {
+  topicIds: string[];
+  metricKeys: string[];
+  visualizationIds: string[];
+  includeGoalAssessment: boolean;
+  includeWarnings: boolean;
+}
+
+export interface ThetaResultAnalysisResponse {
+  answer: string;
+  provider: string;
+  model: string;
+  selected: {
+    topics: number;
+    metrics: number;
+    visualizations: number;
+    goalAssessment: boolean;
+    warnings: boolean;
+  };
+}
+
 export interface ThetaPresentation {
   title: string;
   summary: string;
@@ -208,6 +229,18 @@ export const ThetaAgentV2API = {
     get<ThetaRunTimeline>(`runs/${encodeURIComponent(runId)}/timeline?limit=${limit}`),
   results: (runId: string): Promise<ThetaRunResults> =>
     get<ThetaRunResults>(`runs/${encodeURIComponent(runId)}/results`),
+  analyzeResults: (
+    runId: string,
+    input: {
+      question: string;
+      selection: ThetaResultAnalysisSelection;
+      history: Array<{ role: 'user' | 'assistant'; content: string }>;
+    },
+  ): Promise<ThetaResultAnalysisResponse> =>
+    post<ThetaResultAnalysisResponse>(
+      `runs/${encodeURIComponent(runId)}/results/analysis`,
+      input,
+    ),
   resultAssetUrl: (runId: string, relativePath: string): string =>
     `/api/agent/runs/${encodeURIComponent(runId)}/results/assets/${relativePath.split('/').map(encodeURIComponent).join('/')}`,
   datasets: (): Promise<{ datasets: ThetaDataset[] }> =>

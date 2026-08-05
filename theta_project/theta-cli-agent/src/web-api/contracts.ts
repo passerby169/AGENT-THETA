@@ -17,8 +17,34 @@ export const thetaWebCreateRunSchema = z.object({
   useMiniMax: z.boolean().default(true),
 }).strict();
 
+const thetaResultAnalysisSelectionSchema = z.object({
+  topicIds: z.array(z.string().trim().min(1).max(120)).max(12).default([]),
+  metricKeys: z.array(z.string().trim().min(1).max(120)).max(12).default([]),
+  visualizationIds: z.array(z.string().trim().min(1).max(160)).max(12).default([]),
+  includeGoalAssessment: z.boolean().default(false),
+  includeWarnings: z.boolean().default(false),
+}).strict().refine(
+  (selection) =>
+    selection.topicIds.length > 0 ||
+    selection.metricKeys.length > 0 ||
+    selection.visualizationIds.length > 0 ||
+    selection.includeGoalAssessment ||
+    selection.includeWarnings,
+  { message: '至少选择一项分析结果。' },
+);
+
+export const thetaResultAnalysisRequestSchema = z.object({
+  question: z.string().trim().min(2).max(2000),
+  selection: thetaResultAnalysisSelectionSchema,
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().trim().min(1).max(3000),
+  }).strict()).max(8).default([]),
+}).strict();
+
 export type ThetaWebRunAction = z.infer<typeof thetaWebRunActionSchema>;
 export type ThetaWebCreateRun = z.infer<typeof thetaWebCreateRunSchema>;
+export type ThetaResultAnalysisRequest = z.infer<typeof thetaResultAnalysisRequestSchema>;
 
 export const thetaWebApiEnvelopeSchema = z.object({
   ok: z.boolean(),

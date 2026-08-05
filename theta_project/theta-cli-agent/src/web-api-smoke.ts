@@ -4,7 +4,12 @@ import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createThetaWebApiServer } from './web-api/server.js';
-import { thetaWebRunActionSchema } from './web-api/contracts.js';
+import { buildResultAnalysisContext } from './results/result-analysis-service.js';
+import type { RunResultOverview } from './results/result-service.js';
+import {
+  thetaResultAnalysisRequestSchema,
+  thetaWebRunActionSchema,
+} from './web-api/contracts.js';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'theta-web-api-smoke-'));
 const server = createThetaWebApiServer({
@@ -16,6 +21,39 @@ const server = createThetaWebApiServer({
 
 try {
   assert.deepEqual(thetaWebRunActionSchema.parse({ action: 'poll' }), { action: 'poll' });
+  const analysisRequest = thetaResultAnalysisRequestSchema.parse({
+    question: '这些主题之间有什么差异？',
+    selection: { topicIds: ['topic-1'] },
+  });
+  assert.deepEqual(analysisRequest.selection.topicIds, ['topic-1']);
+  assert.equal(analysisRequest.history.length, 0);
+  assert.throws(() => thetaResultAnalysisRequestSchema.parse({
+    question: '请分析结果',
+    selection: {},
+  }));
+  const selectedContext = buildResultAnalysisContext({
+    kind: 'run.results',
+    runId: 'run-analysis-smoke',
+    status: 'completed',
+    progress: 100,
+    artifacts: [],
+    visualizations: [],
+    metrics: { coherence: 0.71, ignored: 0.2 },
+    topics: [
+      { id: 'topic-1', name: '治理', strength: 0.4, keywords: ['政策', '监管'] },
+      { id: 'topic-2', name: '市场', strength: 0.3, keywords: ['价格'] },
+    ],
+    capabilities: {},
+    experiments: [],
+    goalAssessment: [],
+    comparison: [],
+    parameterDecisions: {},
+    warnings: [],
+    message: 'completed',
+  } satisfies RunResultOverview, analysisRequest.selection);
+  assert.match(selectedContext.text, /治理/u);
+  assert.doesNotMatch(selectedContext.text, /市场/u);
+  assert.equal(selectedContext.selected.topics, 1);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert(address && typeof address === 'object');

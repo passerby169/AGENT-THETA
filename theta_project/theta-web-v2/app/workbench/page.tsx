@@ -16,10 +16,15 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Settings2,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ResultAnalysisAssistant } from './result-analysis-assistant';
 import {
   Dialog,
   DialogContent,
@@ -42,6 +47,7 @@ import {
   type ThetaRunSummary,
   type ThetaRunTimeline,
   type ThetaRunResults,
+  type ThetaResultAnalysisSelection,
 } from '@/lib/api/theta-agent-v2';
 
 const actionableStates = new Set([
@@ -456,6 +462,11 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
 }
 
 function RunResults({ runId, results, loading }: { runId: string; results?: ThetaRunResults; loading: boolean }) {
+  const [selection, setSelection] = useState<ThetaResultAnalysisSelection>(emptyResultSelection());
+  useEffect(() => {
+    setSelection(emptyResultSelection());
+  }, [runId]);
+
   if (loading) return (
     <section className="mt-5 rounded-md border border-slate-200 bg-white px-5 py-8 text-center">
       <RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" />
@@ -467,15 +478,31 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
   const metricEntries = Object.entries(results.metrics)
     .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
     .slice(0, 8);
+  const selectionCount = selection.topicIds.length
+    + selection.metricKeys.length
+    + selection.visualizationIds.length
+    + Number(selection.includeGoalAssessment)
+    + Number(selection.includeWarnings);
+  const selectAll = () => setSelection({
+    topicIds: results.topics.slice(0, 12).map((topic) => topic.id),
+    metricKeys: metricEntries.slice(0, 12).map(([key]) => key),
+    visualizationIds: results.visualizations.slice(0, 12).map((item) => item.id),
+    includeGoalAssessment: results.goalAssessment.length > 0,
+    includeWarnings: results.warnings.length > 0,
+  });
   return (
-    <section className="mt-5 overflow-hidden rounded-md border border-emerald-200 bg-white">
+    <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <section className="overflow-hidden rounded-md border border-emerald-200 bg-white">
       <div className="flex flex-col justify-between gap-3 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-start">
         <div>
           <p className="text-xs font-semibold text-emerald-700">本次训练输出</p>
           <h2 className="mt-1 text-lg font-semibold text-slate-900">分析结果</h2>
           <p className="mt-1 text-sm text-slate-500">结果已从受治理的训练产物中读取，并绑定到当前研究任务。</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={selectionCount ? () => setSelection(emptyResultSelection()) : selectAll} className="h-8 text-xs">
+            {selectionCount ? `清除已选 ${selectionCount}` : '选择全部结果'}
+          </Button>
           <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">训练完成</Badge>
           <Badge variant="outline" className={results.researchStatus === 'passed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}>{researchStatusLabel(results.researchStatus)}</Badge>
         </div>
@@ -491,26 +518,55 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
         <div className="px-5 py-5">
           <h3 className="text-sm font-semibold text-slate-800">主题结果表</h3>
           <div className="mt-3 overflow-x-auto border-y border-slate-100">
-            {results.topics.length ? <table className="w-full min-w-[620px] text-left"><thead><tr className="text-xs text-slate-400"><th className="w-14 py-3 font-medium">编号</th><th className="w-40 py-3 font-medium">主题</th><th className="py-3 font-medium">核心关键词</th><th className="w-20 py-3 text-right font-medium">强度</th></tr></thead><tbody className="divide-y divide-slate-100">{results.topics.map((topic, index) => <tr key={topic.id} className="align-top"><td className="py-3 text-xs font-semibold text-blue-700">{index + 1}</td><td className="py-3 pr-4 text-sm font-semibold text-slate-800">{topic.name}</td><td className="py-3 pr-4 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</td><td className="py-3 text-right text-xs text-slate-500">{typeof topic.strength === 'number' ? formatResultNumber(topic.strength) : '-'}</td></tr>)}</tbody></table> : <p className="py-6 text-sm text-slate-400">训练产物中未找到可解析的主题表。</p>}
+            {results.topics.length ? (
+              <table className="w-full min-w-[650px] text-left">
+                <thead><tr className="text-xs text-slate-400"><th className="w-10 py-3 font-medium">选择</th><th className="w-14 py-3 font-medium">编号</th><th className="w-40 py-3 font-medium">主题</th><th className="py-3 font-medium">核心关键词</th><th className="w-20 py-3 text-right font-medium">强度</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">{results.topics.map((topic, index) => (
+                  <tr key={topic.id} className={selection.topicIds.includes(topic.id) ? 'bg-blue-50/50 align-top' : 'align-top'}>
+                    <td className="py-3"><Checkbox checked={selection.topicIds.includes(topic.id)} onCheckedChange={(checked) => setSelection((current) => ({ ...current, topicIds: updateSelection(current.topicIds, topic.id, checked === true, 12) }))} aria-label={`选择主题 ${topic.name}`} /></td>
+                    <td className="py-3 text-xs font-semibold text-blue-700">{index + 1}</td>
+                    <td className="py-3 pr-4 text-sm font-semibold text-slate-800">{topic.name}</td>
+                    <td className="py-3 pr-4 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</td>
+                    <td className="py-3 text-right text-xs text-slate-500">{typeof topic.strength === 'number' ? formatResultNumber(topic.strength) : '-'}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="py-6 text-sm text-slate-400">训练产物中未找到可解析的主题表。</p>}
           </div>
         </div>
 
         <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-5 lg:border-l lg:border-t-0">
           <h3 className="text-sm font-semibold text-slate-800">核心指标</h3>
           <dl className="mt-3 divide-y divide-slate-200">
-            {metricEntries.length ? metricEntries.map(([key, value]) => <div key={key} className="flex items-center justify-between gap-4 py-2.5"><dt className="text-xs text-slate-500">{metricLabel(key)}</dt><dd className="text-sm font-semibold text-slate-700">{formatResultValue(value)}</dd></div>) : <p className="py-4 text-xs text-slate-400">暂无可展示的聚合指标。</p>}
+            {metricEntries.length ? metricEntries.map(([key, value]) => (
+              <div key={key} className={`flex items-center gap-3 py-2.5 ${selection.metricKeys.includes(key) ? 'bg-blue-50/50' : ''}`}>
+                <Checkbox checked={selection.metricKeys.includes(key)} onCheckedChange={(checked) => setSelection((current) => ({ ...current, metricKeys: updateSelection(current.metricKeys, key, checked === true, 12) }))} aria-label={`选择指标 ${metricLabel(key)}`} />
+                <dt className="min-w-0 flex-1 text-xs text-slate-500">{metricLabel(key)}</dt>
+                <dd className="text-sm font-semibold text-slate-700">{formatResultValue(value)}</dd>
+              </div>
+            )) : <p className="py-4 text-xs text-slate-400">暂无可展示的聚合指标。</p>}
           </dl>
         </div>
       </div>
 
-      <ResultVisualizations runId={runId} visualizations={results.visualizations} />
+      <ResultVisualizations
+        runId={runId}
+        visualizations={results.visualizations}
+        selectedIds={selection.visualizationIds}
+        onSelectionChange={(id, checked) => setSelection((current) => ({
+          ...current,
+          visualizationIds: updateSelection(current.visualizationIds, id, checked, 12),
+        }))}
+      />
 
-      {results.goalAssessment.length ? <div className="border-t border-slate-100 px-5 py-5"><h3 className="text-sm font-semibold text-slate-800">研究目标核对</h3><div className="mt-3 space-y-3">{results.goalAssessment.map((item) => <div key={item.criterion} className="flex items-start gap-3"><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === 'satisfied' ? 'text-emerald-600' : 'text-amber-600'}`} /><div><p className="text-sm font-medium text-slate-700">{item.criterion}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{item.evidence}</p></div></div>)}</div></div> : null}
+      {results.goalAssessment.length ? <div className={`border-t border-slate-100 px-5 py-5 ${selection.includeGoalAssessment ? 'bg-blue-50/40' : ''}`}><div className="flex items-center gap-2"><Checkbox checked={selection.includeGoalAssessment} onCheckedChange={(checked) => setSelection((current) => ({ ...current, includeGoalAssessment: checked === true }))} aria-label="选择研究目标核对" /><h3 className="text-sm font-semibold text-slate-800">研究目标核对</h3></div><div className="mt-3 space-y-3">{results.goalAssessment.map((item) => <div key={item.criterion} className="flex items-start gap-3"><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === 'satisfied' ? 'text-emerald-600' : 'text-amber-600'}`} /><div><p className="text-sm font-medium text-slate-700">{item.criterion}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{item.evidence}</p></div></div>)}</div></div> : null}
 
-      {results.warnings.length ? <div className="border-t border-amber-100 bg-amber-50 px-5 py-4"><p className="text-xs font-semibold text-amber-800">结果解读提醒</p><ul className="mt-2 space-y-1 text-xs leading-5 text-amber-800">{results.warnings.slice(0, 4).map((warning) => <li key={warning}>• {warning}</li>)}</ul></div> : null}
+      {results.warnings.length ? <div className="border-t border-amber-100 bg-amber-50 px-5 py-4"><div className="flex items-center gap-2"><Checkbox checked={selection.includeWarnings} onCheckedChange={(checked) => setSelection((current) => ({ ...current, includeWarnings: checked === true }))} aria-label="选择结果解读提醒" /><p className="text-xs font-semibold text-amber-800">结果解读提醒</p></div><ul className="mt-2 space-y-1 text-xs leading-5 text-amber-800">{results.warnings.slice(0, 4).map((warning) => <li key={warning}>• {warning}</li>)}</ul></div> : null}
 
       {results.resultRoot ? <details className="border-t border-slate-100 px-5 py-4"><summary className="cursor-pointer text-xs font-medium text-slate-500">查看本地结果目录</summary><p className="mt-2 break-all font-mono text-[11px] leading-5 text-slate-500">{results.resultRoot}</p></details> : null}
     </section>
+    <ResultAnalysisAssistant runId={runId} selection={selection} selectionCount={selectionCount} />
+    </div>
   );
 }
 
@@ -518,8 +574,34 @@ function ResultSummary({ label, value }: { label: string; value: string }) {
   return <div className="border-b border-slate-100 px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 text-base font-semibold text-slate-800">{value}</p></div>;
 }
 
-function ResultVisualizations({ runId, visualizations }: { runId: string; visualizations: ThetaRunResults['visualizations'] }) {
+const emptyResultSelection = (): ThetaResultAnalysisSelection => ({
+  topicIds: [],
+  metricKeys: [],
+  visualizationIds: [],
+  includeGoalAssessment: false,
+  includeWarnings: false,
+});
+
+const updateSelection = (
+  values: string[],
+  value: string,
+  checked: boolean,
+  limit: number,
+): string[] => {
+  if (!checked) return values.filter((item) => item !== value);
+  if (values.includes(value) || values.length >= limit) return values;
+  return [...values, value];
+};
+
+function ResultVisualizations({ runId, visualizations, selectedIds, onSelectionChange }: {
+  runId: string;
+  visualizations: ThetaRunResults['visualizations'];
+  selectedIds: string[];
+  onSelectionChange: (id: string, checked: boolean) => void;
+}) {
   const [preview, setPreview] = useState<ThetaRunResults['visualizations'][number]>();
+  const [zoom, setZoom] = useState(100);
+  useEffect(() => setZoom(100), [preview?.id]);
   const globalImages = visualizations.filter((item) => item.scope === 'global' && item.format === 'image');
   const interactive = visualizations.filter((item) => item.format === 'interactive');
   const topicGroups = Object.entries(
@@ -535,31 +617,31 @@ function ResultVisualizations({ runId, visualizations }: { runId: string; visual
   return (
     <div className="border-t border-slate-100 px-5 py-5">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-        <div><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ImageIcon className="h-4 w-4 text-blue-600" />可视化图表</h3><p className="mt-1 text-xs text-slate-500">展示训练程序实际生成的全局图表；点击图片可查看原图。</p></div>
-        {interactive.map((item) => <button type="button" key={item.id} onClick={() => setPreview(item)} className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100">打开交互式主题图<ExternalLink className="h-3.5 w-3.5" /></button>)}
+        <div><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ImageIcon className="h-4 w-4 text-blue-600" />可视化图表</h3><p className="mt-1 text-xs text-slate-500">点击查看并缩放原图；勾选图表时仅发送名称与类型，最多 12 项。</p></div>
+        {interactive.map((item) => <div key={item.id} className="flex items-center gap-2"><Checkbox checked={selectedIds.includes(item.id)} onCheckedChange={(checked) => onSelectionChange(item.id, checked === true)} aria-label={`选择图表 ${item.label}`} /><button type="button" onClick={() => setPreview(item)} className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100">打开交互式主题图<ExternalLink className="h-3.5 w-3.5" /></button></div>)}
       </div>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        {globalImages.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} onOpen={() => setPreview(item)} />)}
+        {globalImages.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} selected={selectedIds.includes(item.id)} onSelectionChange={(checked) => onSelectionChange(item.id, checked)} onOpen={() => setPreview(item)} />)}
       </div>
-      {topicGroups.length ? <div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-semibold text-slate-600">各主题明细图</p><p className="mt-1 text-xs text-slate-400">按需展开词云、词语分布和主题演化图，避免一次加载全部图片。</p><div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">{topicGroups.map(([topicId, items]) => <TopicVisualizationGroup key={topicId} runId={runId} topicId={topicId} items={items} onPreview={setPreview} />)}</div></div> : null}
+      {topicGroups.length ? <div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-semibold text-slate-600">各主题明细图</p><p className="mt-1 text-xs text-slate-400">按需展开词云、词语分布和主题演化图，避免一次加载全部图片。</p><div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">{topicGroups.map(([topicId, items]) => <TopicVisualizationGroup key={topicId} runId={runId} topicId={topicId} items={items} selectedIds={selectedIds} onSelectionChange={onSelectionChange} onPreview={setPreview} />)}</div></div> : null}
       <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) setPreview(undefined); }}>
-        <DialogContent className="max-h-[92vh] overflow-auto sm:max-w-5xl">
+        <DialogContent className="max-h-[94vh] overflow-hidden sm:max-w-6xl">
           <DialogHeader><DialogTitle>{preview?.label ?? '图表预览'}</DialogTitle><DialogDescription>按 Esc、点击右上角关闭按钮或点击遮罩即可退出预览。</DialogDescription></DialogHeader>
-          {preview ? preview.format === 'interactive' ? <iframe title={preview.label} src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} sandbox="allow-scripts" className="h-[70vh] w-full rounded-md border border-slate-200 bg-white" /> : <div className="grid max-h-[76vh] place-items-center overflow-auto rounded-md bg-slate-50 p-3"><img src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} alt={preview.label} className="max-h-[72vh] max-w-full object-contain" /></div> : null}
+          {preview ? preview.format === 'interactive' ? <iframe title={preview.label} src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} sandbox="allow-scripts" className="h-[72vh] w-full rounded-md border border-slate-200 bg-white" /> : <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-50"><div className="flex h-10 items-center justify-center gap-1 border-b border-slate-200 bg-white"><Button type="button" variant="ghost" size="icon" title="缩小" disabled={zoom <= 50} onClick={() => setZoom((value) => Math.max(50, value - 25))} className="h-8 w-8"><ZoomOut className="h-4 w-4" /></Button><span className="w-14 text-center text-xs font-medium text-slate-600">{zoom}%</span><Button type="button" variant="ghost" size="icon" title="放大" disabled={zoom >= 300} onClick={() => setZoom((value) => Math.min(300, value + 25))} className="h-8 w-8"><ZoomIn className="h-4 w-4" /></Button><Button type="button" variant="ghost" size="icon" title="恢复原始视图" disabled={zoom === 100} onClick={() => setZoom(100)} className="ml-1 h-8 w-8"><RotateCcw className="h-4 w-4" /></Button></div><div className="grid h-[70vh] place-items-center overflow-auto p-3" onDoubleClick={() => setZoom((value) => value === 100 ? 200 : 100)}><img src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} alt={preview.label} style={zoom === 100 ? undefined : { width: `${zoom}%`, maxWidth: 'none', maxHeight: 'none' }} className={zoom === 100 ? 'max-h-[66vh] max-w-full object-contain' : 'h-auto object-contain'} /></div></div> : null}
         </DialogContent>
       </Dialog>
     </div>
   );
 }
 
-function TopicVisualizationGroup({ runId, topicId, items, onPreview }: { runId: string; topicId: string; items: ThetaRunResults['visualizations']; onPreview: (item: ThetaRunResults['visualizations'][number]) => void }) {
+function TopicVisualizationGroup({ runId, topicId, items, selectedIds, onSelectionChange, onPreview }: { runId: string; topicId: string; items: ThetaRunResults['visualizations']; selectedIds: string[]; onSelectionChange: (id: string, checked: boolean) => void; onPreview: (item: ThetaRunResults['visualizations'][number]) => void }) {
   const [open, setOpen] = useState(false);
-  return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-slate-700"><span>主题 {topicId}</span><span className="text-xs font-normal text-slate-400">{items.length} 张图表</span></summary>{open ? <div className="grid gap-4 pb-4 md:grid-cols-2">{items.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} onOpen={() => onPreview(item)} />)}</div> : null}</details>;
+  return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-slate-700"><span>主题 {topicId}</span><span className="text-xs font-normal text-slate-400">{items.length} 张图表</span></summary>{open ? <div className="grid gap-4 pb-4 md:grid-cols-2">{items.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} selected={selectedIds.includes(item.id)} onSelectionChange={(checked) => onSelectionChange(item.id, checked)} onOpen={() => onPreview(item)} />)}</div> : null}</details>;
 }
 
-function VisualizationCard({ runId, item, onOpen }: { runId: string; item: ThetaRunResults['visualizations'][number]; onOpen: () => void }) {
+function VisualizationCard({ runId, item, selected, onSelectionChange, onOpen }: { runId: string; item: ThetaRunResults['visualizations'][number]; selected: boolean; onSelectionChange: (checked: boolean) => void; onOpen: () => void }) {
   const source = ThetaAgentV2API.resultAssetUrl(runId, item.relativePath);
-  return <button type="button" onClick={onOpen} className="group overflow-hidden rounded-md border border-slate-200 bg-white text-left hover:border-blue-300"><div className="aspect-[4/3] bg-slate-50 p-2"><img src={source} alt={item.label} loading="lazy" className="h-full w-full object-contain" /></div><div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2.5"><span className="truncate text-xs font-medium text-slate-700">{item.label}</span><span className="shrink-0 text-[11px] text-slate-400">{formatBytes(item.sizeBytes)}</span></div></button>;
+  return <div className={`group overflow-hidden rounded-md border bg-white ${selected ? 'border-blue-300 ring-1 ring-blue-100' : 'border-slate-200'}`}><button type="button" onClick={onOpen} className="block w-full text-left"><div className="aspect-[4/3] bg-slate-50 p-2"><img src={source} alt={item.label} loading="lazy" className="h-full w-full object-contain" /></div></button><div className="flex items-center gap-2 border-t border-slate-100 px-3 py-2.5"><Checkbox checked={selected} onCheckedChange={(checked) => onSelectionChange(checked === true)} aria-label={`选择图表 ${item.label}`} /><button type="button" onClick={onOpen} className="min-w-0 flex-1 truncate text-left text-xs font-medium text-slate-700 hover:text-blue-700">{item.label}</button><span className="shrink-0 text-[11px] text-slate-400">{formatBytes(item.sizeBytes)}</span></div></div>;
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {

@@ -7,6 +7,7 @@ import { ThetaTurnOrchestrator } from '../conversation/turn-orchestrator.js';
 import { DoctorService } from '../doctor-service.js';
 import { loadThetaProjectEnvironment } from '../environment.js';
 import { buildHumanResponse } from '../presentation/human-response-builder.js';
+import { ResultAnalysisService } from '../results/result-analysis-service.js';
 import { ResultService } from '../results/result-service.js';
 import { listLocalRuns } from '../storage/run-catalog.js';
 import { SQLiteConversationStore } from '../storage/sqlite-conversation-store.js';
@@ -15,6 +16,7 @@ import { resolveDatasetFile } from '../tools/dataset-path-policy.js';
 import { runThetaModelCatalog } from '../tools/hypha-runner.js';
 import { runThetaTrainingStatus } from '../tools/hypha-runner.js';
 import {
+  thetaResultAnalysisRequestSchema,
   thetaWebCreateRunSchema,
   thetaWebRunActionSchema,
   type ThetaWebApiEnvelope,
@@ -239,6 +241,20 @@ const routeRequest = async (
     const results = await new ResultService(workflow).overview(runId, options.runtimeDb);
     if (results.resultRoot) resultRootCache.set(runId, results.resultRoot);
     writeJson(response, 200, { ok: true, data: results });
+    return;
+  }
+
+  const resultAnalysisMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/results\/analysis$/);
+  if (resultAnalysisMatch) {
+    if (method !== 'POST') return methodNotAllowed(response);
+    const runId = decodeURIComponent(resultAnalysisMatch[1]);
+    const input = thetaResultAnalysisRequestSchema.parse(await readJsonBody(request));
+    const analysis = await new ResultAnalysisService(workflow).analyze(
+      runId,
+      options.runtimeDb,
+      input,
+    );
+    writeJson(response, 200, { ok: true, data: analysis });
     return;
   }
 
