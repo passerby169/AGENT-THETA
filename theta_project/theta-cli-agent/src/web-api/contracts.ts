@@ -7,6 +7,7 @@ export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('adjustPlan'), text: z.string().trim().min(1).max(4000) }).strict(),
   z.object({ action: z.literal('approvePlan'), acceptDegradation: z.boolean().default(false) }).strict(),
   z.object({ action: z.literal('startTraining') }).strict(),
+  z.object({ action: z.literal('poll') }).strict(),
   z.object({ action: z.literal('retry') }).strict(),
 ]);
 
@@ -68,4 +69,13 @@ export interface ThetaWebRunSummary {
       destructive?: boolean;
     }>;
   };
+}
+
+export interface ThetaWebTimelineEntry {
+  id: string;
+  source: 'workflow' | 'tool';
+  type: string;
+  title: string;
+  detail?: string;
+  timestamp: string;
 }

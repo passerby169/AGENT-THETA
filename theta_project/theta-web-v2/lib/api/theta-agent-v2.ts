@@ -38,7 +38,33 @@ export interface ThetaRunStatus {
   lastEventType: string;
   lastEventAt: string;
   statePath: string[];
+  trainingReceipt?: ThetaTrainingReceipt;
   presentation: ThetaPresentation;
+}
+
+export interface ThetaTrainingReceipt {
+  trainingRunId?: string;
+  status?: string;
+  progress?: number;
+  currentStep?: string;
+  logPath?: string | null;
+  resultArtifacts?: Array<{ kind: string; path: string; description?: string; exists: boolean }>;
+  errorMessage?: string | null;
+  quarantineReason?: string | null;
+}
+
+export interface ThetaRunTimeline {
+  runId: string;
+  timeline: Array<{
+    id: string;
+    source: 'workflow' | 'tool';
+    type: string;
+    title: string;
+    detail?: string;
+    timestamp: string;
+  }>;
+  training?: ThetaTrainingReceipt;
+  logs: string[];
 }
 
 export interface ThetaPresentation {
@@ -104,6 +130,7 @@ export type ThetaRunAction =
   | { action: 'adjustPlan'; text: string }
   | { action: 'approvePlan'; acceptDegradation: boolean }
   | { action: 'startTraining' }
+  | { action: 'poll' }
   | { action: 'retry' };
 
 const get = async <T,>(path: string): Promise<T> => {
@@ -134,6 +161,8 @@ export const ThetaAgentV2API = {
     get<{ runs: ThetaRunSummary[] }>(`runs?limit=${limit}`),
   status: (runId: string): Promise<ThetaRunStatus> =>
     get<ThetaRunStatus>(`runs/${encodeURIComponent(runId)}/status`),
+  timeline: (runId: string, limit = 40): Promise<ThetaRunTimeline> =>
+    get<ThetaRunTimeline>(`runs/${encodeURIComponent(runId)}/timeline?limit=${limit}`),
   datasets: (): Promise<{ datasets: ThetaDataset[] }> =>
     get<{ datasets: ThetaDataset[] }>('datasets'),
   models: (): Promise<{ models: ThetaModel[]; supportedModelIds: string[] }> =>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AlertCircle,
+  Activity,
   ArrowLeft,
   CheckCircle2,
   ChevronRight,
@@ -37,6 +38,7 @@ import {
   type ThetaRunAction,
   type ThetaRunStatus,
   type ThetaRunSummary,
+  type ThetaRunTimeline,
 } from '@/lib/api/theta-agent-v2';
 
 const actionableStates = new Set([
@@ -261,7 +263,23 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   const [actionNotice, setActionNotice] = useState<string>();
   const [plan, setPlan] = useState<ThetaPlan>();
   const [models, setModels] = useState<ThetaModel[]>([]);
+  const [timeline, setTimeline] = useState<ThetaRunTimeline>();
+  const [syncing, setSyncing] = useState(false);
   const actionInFlight = useRef(false);
+  const onStatusChangeRef = useRef(onStatusChange);
+
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  const loadTimeline = useCallback(async (targetRunId: string) => {
+    setTimeline(await ThetaAgentV2API.timeline(targetRunId));
+  }, []);
+
+  useEffect(() => {
+    setTimeline(undefined);
+    void loadTimeline(runId).catch((cause) => setActionError(errorMessage(cause)));
+  }, [loadTimeline, runId]);
 
   const loadPlan = useCallback(async (targetRunId: string) => {
     const [nextPlan, catalog] = await Promise.all([
@@ -295,6 +313,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       const result = await ThetaAgentV2API.act(runId, action);
       onStatusChange(result.status);
       setActionNotice(result.result.response ?? result.result.explanation);
+      await loadTimeline(result.status.runId);
       if (
         action.action === 'adjustPlan' &&
         result.status.currentState === 'AwaitPlanCreationApproval'
@@ -309,25 +328,61 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
     }
   };
 
+  const monitoring = status?.currentState === 'MonitorTraining' || status?.currentState === 'StartTraining';
+  useEffect(() => {
+    if (!monitoring) return;
+    let stopped = false;
+    const poll = async () => {
+      if (stopped || actionInFlight.current) return;
+      actionInFlight.current = true;
+      setSyncing(true);
+      try {
+        const result = await ThetaAgentV2API.act(runId, { action: 'poll' });
+        if (stopped) return;
+        onStatusChangeRef.current(result.status);
+        await loadTimeline(result.status.runId);
+        setActionError(undefined);
+      } catch (cause) {
+        if (!stopped) setActionError(`自动同步训练状态失败：${errorMessage(cause)}`);
+      } finally {
+        actionInFlight.current = false;
+        if (!stopped) setSyncing(false);
+      }
+    };
+    const initial = window.setTimeout(() => void poll(), 600);
+    const interval = window.setInterval(() => void poll(), 3_000);
+    return () => {
+      stopped = true;
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [loadTimeline, monitoring, runId]);
+
   if (loading || !status) return <LoadingBlock />;
   const presentation = status.presentation;
-  const progress = presentation.progress
+  const workflowProgress = presentation.progress
     ? Math.round((presentation.progress.current / presentation.progress.total) * 100)
     : 0;
+  const trainingProgress = timeline?.training?.progress ?? status.trainingReceipt?.progress;
+  const progress = monitoring && typeof trainingProgress === 'number'
+    ? trainingProgress
+    : workflowProgress;
   return (
     <div>
       <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
       <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
           <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{runLabel({ runId } as ThetaRunSummary)}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
-          <Button type="button" variant="outline" size="icon" onClick={onRefresh} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className="h-4 w-4" /></Button>
+          <Button type="button" variant="outline" size="icon" onClick={() => { onRefresh(); void loadTimeline(runId); }} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
         </div>
-        <div className="mt-5 flex items-center gap-3"><Progress value={progress} className="h-2" /><span className="whitespace-nowrap text-xs text-slate-400">步骤 {presentation.progress?.current ?? '-'} / {presentation.progress?.total ?? 7}</span></div>
+        <div className="mt-5 flex items-center gap-3"><Progress value={progress} className="h-2" /><span className="whitespace-nowrap text-xs text-slate-400">{monitoring ? `训练 ${Math.round(progress)}%` : `步骤 ${presentation.progress?.current ?? '-'} / ${presentation.progress?.total ?? 7}`}</span></div>
       </section>
 
       {actionError ? <ErrorNotice message={actionError} /> : null}
       {actionNotice ? <ActionNotice message={actionNotice} /> : null}
       <ActionPanel status={status} plan={plan} models={models} busy={busy} onAction={act} />
+
+      <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
 
       <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="text-xs font-normal text-slate-400">{status.eventCount} 个事件</span></summary>
@@ -336,6 +391,35 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
         </ol>
       </details>
     </div>
+  );
+}
+
+function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {
+  const recent = [...(timeline?.timeline ?? [])].reverse().slice(0, 8);
+  return (
+    <section className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4 sm:px-5">
+        <div><h2 className="flex items-center gap-2 text-sm font-semibold"><Activity className="h-4 w-4 text-blue-600" />运行动态</h2><p className="mt-1 text-xs text-slate-400">训练进程、FSM 推进和受治理工具事件</p></div>
+        {monitoring ? <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">{syncing ? '正在同步' : '每 3 秒自动同步'}</Badge> : null}
+      </div>
+      <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.72fr)]">
+        <ol className="divide-y divide-slate-100 px-4 sm:px-5">
+          {recent.length ? recent.map((event) => (
+            <li key={`${event.source}-${event.id}`} className="flex gap-3 py-3">
+              <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${event.source === 'tool' ? 'bg-slate-400' : 'bg-blue-500'}`} />
+              <div className="min-w-0 flex-1"><p className="truncate text-sm text-slate-700">{event.title}</p>{event.detail ? <p className="mt-0.5 truncate text-xs text-slate-400">{event.detail}</p> : null}</div>
+              <time className="shrink-0 text-xs text-slate-400">{formatTime(event.timestamp)}</time>
+            </li>
+          )) : <li className="py-6 text-sm text-slate-400">正在读取运行事件...</li>}
+        </ol>
+        <div className="border-t border-slate-100 bg-slate-50/70 p-4 lg:border-l lg:border-t-0 sm:p-5">
+          <p className="text-xs font-semibold text-slate-600">最近训练日志</p>
+          <div className="mt-3 max-h-52 space-y-1 overflow-auto font-mono text-[11px] leading-5 text-slate-500">
+            {timeline?.logs.length ? timeline.logs.map((line, index) => <p key={`${index}-${line}`} className="break-all">{line}</p>) : <p>暂无训练日志。</p>}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -404,10 +488,14 @@ function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRu
     </ActionShell>
   );
 
-  if (state === 'MonitorTraining' || state === 'StartTraining') return <ActionShell title="训练正在后台运行" description="无需重复启动。稍后点击页面右上角刷新即可查看进度。"><div className="flex items-center gap-2 text-sm text-blue-700"><RefreshCw className="h-4 w-4 animate-spin" />正在等待训练进程返回新事件</div></ActionShell>;
+  if (state === 'MonitorTraining' || state === 'StartTraining') {
+    const receipt = status.trainingReceipt;
+    const progress = typeof receipt?.progress === 'number' ? Math.round(receipt.progress) : 0;
+    return <ActionShell title="训练正在后台运行" description="页面会自动推进耐久定时器并读取真实训练状态，不需要重复启动。"><div className="grid gap-3 sm:grid-cols-3"><Metric label="训练进度" value={`${progress}%`} /><Metric label="当前步骤" value={trainingStepLabel(receipt?.currentStep)} /><Metric label="训练 ID" value={receipt?.trainingRunId ?? '正在分配'} /></div></ActionShell>;
+  }
   if (state === 'Failed') return <ActionShell title="运行未完成" description={status.presentation.summary}><p className="mb-3 text-sm text-slate-600">原任务会保持不变。系统将复用已确认的研究设置和数据列，创建一个新的恢复任务。</p><Button type="button" disabled={busy} onClick={() => void onAction({ action: 'retry' })} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在创建恢复任务...' : '创建恢复任务'}</Button></ActionShell>;
   if (state === 'Quarantined') return <ActionShell title="该记录已隔离" description="该次运行的产物或状态不完整，系统不会擅自重启。请保留此记录并新建研究；技术原因可在下方记录中核对。"><p className="text-sm text-amber-700">这不是等待审批，因此不需要点击“开始训练”。</p></ActionShell>;
-  if (state === 'Completed') return <ActionShell title="训练已完成" description="训练和产物校验已经结束。"><div className="flex items-center gap-2 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" />可以继续查看结果产物和研究结论。</div></ActionShell>;
+  if (state === 'Completed') return <ActionShell title="训练已完成" description="训练和产物校验已经结束。"><div className="flex items-center gap-2 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" />结果已通过校验并绑定到本次 Run。</div>{status.trainingReceipt?.resultArtifacts?.length ? <div className="mt-3 space-y-2">{status.trainingReceipt.resultArtifacts.filter((item) => item.exists).map((item) => <div key={item.path} className="rounded-md bg-slate-50 px-3 py-2"><p className="text-xs font-medium text-slate-600">{item.kind}</p><p className="mt-1 break-all font-mono text-[11px] text-slate-500">{item.path}</p></div>)}</div> : null}</ActionShell>;
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
 }
 
@@ -443,6 +531,10 @@ function CreateResearchDialog({ open, onOpenChange, onCreated }: { open: boolean
 
 function ActionShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return <section className="mt-5 rounded-md border border-blue-200 bg-white p-5 sm:p-6"><div className="mb-4"><p className="text-xs font-semibold text-blue-600">你的下一步</p><h2 className="mt-1 text-lg font-semibold">{title}</h2><p className="mt-1 text-sm leading-6 text-slate-500">{description}</p></div>{children}</section>;
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 rounded-md bg-slate-50 px-4 py-3"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 truncate text-sm font-semibold text-slate-700" title={value}>{value}</p></div>;
 }
 
 const SectionHeading = ({ title, subtitle }: { title: string; subtitle: string }) => <div className="mb-3 flex items-end justify-between gap-4"><div><h2 className="text-base font-semibold">{title}</h2><p className="mt-1 text-xs text-slate-400">{subtitle}</p></div></div>;
@@ -481,5 +573,16 @@ const planSettingsDirty = (plan: ThetaPlan, model: string, topics: string): bool
 };
 const uniquePath = (path: string[]): string[] => path.filter((state, index) => index === 0 || path[index - 1] !== state);
 const formatDate = (value: string): string => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+const formatTime = (value: string): string => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value));
 const formatBytes = (value: number): string => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const errorMessage = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
+const trainingStepLabel = (step?: string): string => ({
+  prepare_data: '准备数据',
+  data_prepared: '数据准备完成',
+  train_model: '训练模型',
+  evaluate_model: '评估模型',
+  generate_visualizations: '生成可视化',
+  verify_visualizations: '校验可视化',
+  bind_results: '绑定结果',
+  completed: '训练完成',
+} as Record<string, string>)[step ?? ''] ?? step ?? '等待训练进程';

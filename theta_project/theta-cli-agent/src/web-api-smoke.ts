@@ -4,6 +4,7 @@ import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createThetaWebApiServer } from './web-api/server.js';
+import { thetaWebRunActionSchema } from './web-api/contracts.js';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'theta-web-api-smoke-'));
 const server = createThetaWebApiServer({
@@ -14,6 +15,7 @@ const server = createThetaWebApiServer({
 });
 
 try {
+  assert.deepEqual(thetaWebRunActionSchema.parse({ action: 'poll' }), { action: 'poll' });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert(address && typeof address === 'object');

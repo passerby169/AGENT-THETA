@@ -13,12 +13,14 @@ import { SQLiteConversationStore } from '../storage/sqlite-conversation-store.js
 import { ThetaWorkflowService } from '../theta-workflow-service.js';
 import { resolveDatasetFile } from '../tools/dataset-path-policy.js';
 import { runThetaModelCatalog } from '../tools/hypha-runner.js';
+import { runThetaTrainingStatus } from '../tools/hypha-runner.js';
 import {
   thetaWebCreateRunSchema,
   thetaWebRunActionSchema,
   type ThetaWebApiEnvelope,
   type ThetaWebApiHealth,
   type ThetaWebRunAction,
+  type ThetaWebTimelineEntry,
 } from './contracts.js';
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -179,6 +181,36 @@ const routeRequest = async (
     return;
   }
 
+  const timelineMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/timeline$/);
+  if (timelineMatch) {
+    if (method !== 'GET') return methodNotAllowed(response);
+    const runId = decodeURIComponent(timelineMatch[1]);
+    const limit = boundedLimit(url.searchParams.get('limit'));
+    const [status, evidence] = await Promise.all([
+      workflow.status(runId, options.runtimeDb),
+      workflow.evidence(runId, options.runtimeDb),
+    ]);
+    const timeline = [...evidence.orchestrationEvents, ...evidence.toolEvents]
+      .map(toTimelineEntry)
+      .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+      .slice(-limit);
+    const trainingRunId = stringField(status.trainingReceipt, 'trainingRunId');
+    let training: Record<string, unknown> | undefined;
+    let logs: string[] = [];
+    if (trainingRunId) {
+      const observed = await runThetaTrainingStatus({ trainingRunId, logLimit: 30 });
+      if (observed.status === 'completed' && observed.output?.found) {
+        training = observed.output.receipt as unknown as Record<string, unknown>;
+        logs = observed.output.logs.filter((line) => line.trim()).slice(-12);
+      }
+    }
+    writeJson(response, 200, {
+      ok: true,
+      data: { runId, timeline, training, logs },
+    });
+    return;
+  }
+
 
   const planMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/plan$/);
   if (planMatch && method === 'GET') {
@@ -262,6 +294,9 @@ const executeRunAction = async (
   if (action.action === 'retry') {
     return new ResultService(workflow).retry(runId, runtimeDb);
   }
+  if (action.action === 'poll') {
+    return workflow.resume({ runId, runtimeDb });
+  }
   const store = new SQLiteConversationStore(runtimeDb);
   try {
     const orchestrator = new ThetaTurnOrchestrator(store, workflow);
@@ -288,6 +323,72 @@ const executeRunAction = async (
   } finally {
     store.close();
   }
+};
+
+const toTimelineEntry = (event: {
+  id: string;
+  type: string;
+  timestamp: string;
+  payload: unknown;
+}): ThetaWebTimelineEntry => {
+  const payload = asRecord(event.payload);
+  const state = stringField(payload, 'stateId') ?? stringField(payload, 'toStateId');
+  const toolId = stringField(payload, 'toolId');
+  const labels: Record<string, string> = {
+    'run.started': '研究任务已创建',
+    'run.completed': '研究训练已完成',
+    'run.failed': '研究任务运行失败',
+    'run.waiting_human': '等待你的确认',
+    'run.waiting_timer': '等待下一次训练状态检查',
+    'fsm.state.entered': state ? `进入 ${humanState(state)}` : '进入下一阶段',
+    'fsm.state.exited': state ? `完成 ${humanState(state)}` : '完成当前阶段',
+    'fsm.transition.accepted': 'FSM 已确认状态迁移',
+    'timer.fired': '训练监控定时器已触发',
+    'tool.call.started': toolId ? `开始执行 ${toolId}` : '开始执行受治理工具',
+    'tool.call.completed': toolId ? `${toolId} 执行完成` : '受治理工具执行完成',
+    'tool.call.failed': toolId ? `${toolId} 执行失败` : '受治理工具执行失败',
+    'tool.policy.checked': toolId ? `已校验 ${toolId} 权限` : '已完成工具权限校验',
+    'tool.output.validated': '工具输出已通过契约校验',
+    'tool.invocation.state.changed': '工具调用状态已更新',
+  };
+  return {
+    id: event.id,
+    source: event.type.startsWith('tool.') ? 'tool' : 'workflow',
+    type: event.type,
+    title: labels[event.type] ?? event.type,
+    ...(state ? { detail: `状态：${humanState(state)}` } : toolId ? { detail: `工具：${toolId}` } : {}),
+    timestamp: event.timestamp,
+  };
+};
+
+const humanState = (state: string): string => ({
+  Intake: '接收研究任务',
+  ResearchClarification: '完善研究设置',
+  InspectDataset: '检查数据集',
+  ColumnConfirmation: '确认数据列',
+  RecommendModel: '生成模型建议',
+  ValidatePlan: '校验训练方案',
+  AwaitPlanCreationApproval: '等待方案审批',
+  CreatePlan: '固化训练方案',
+  DryRun: '训练前检查',
+  AwaitTrainingStartApproval: '等待启动审批',
+  VerifyDatasetBeforeTraining: '训练前复核数据',
+  StartTraining: '启动模型训练',
+  MonitorTraining: '跟踪训练进度',
+  Completed: '训练完成',
+  Failed: '运行失败',
+  Cancelled: '训练已取消',
+  Quarantined: '运行已隔离',
+} as Record<string, string>)[state] ?? state;
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+
+const stringField = (value: unknown, key: string): string | undefined => {
+  const field = asRecord(value)?.[key];
+  return typeof field === 'string' && field.length > 0 ? field : undefined;
 };
 
 const listDatasets = async (agentRoot: string): Promise<Array<{
