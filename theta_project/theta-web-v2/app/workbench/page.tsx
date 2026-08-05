@@ -16,15 +16,13 @@ import {
   Play,
   Plus,
   RefreshCw,
-  RotateCcw,
   Settings2,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ResultAnalysisAssistant } from './result-analysis-assistant';
+import { ZoomableResultImage } from './zoomable-result-image';
 import {
   Dialog,
   DialogContent,
@@ -121,7 +119,7 @@ export default function WorkbenchPage() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-30 h-14 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-full max-w-6xl items-center justify-between px-4 sm:px-6">
+        <div className="mx-auto flex h-full max-w-[1500px] items-center justify-between px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <img src="/theta-logo.png" alt="THETA" className="h-9 w-auto" />
             <span className="h-5 w-px bg-slate-200" />
@@ -139,7 +137,7 @@ export default function WorkbenchPage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+      <main className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 sm:py-8">
         {error ? <ErrorNotice message={error} /> : null}
         {activeRunId ? (
           <RunWorkspace
@@ -483,6 +481,27 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
     + selection.visualizationIds.length
     + Number(selection.includeGoalAssessment)
     + Number(selection.includeWarnings);
+  const selectedItems = [
+    ...results.topics
+      .filter((topic) => selection.topicIds.includes(topic.id))
+      .map((topic) => `主题：${topic.name}`),
+    ...metricEntries
+      .filter(([key]) => selection.metricKeys.includes(key))
+      .map(([key]) => `指标：${metricLabel(key)}`),
+    ...results.visualizations
+      .filter((item) => selection.visualizationIds.includes(item.id))
+      .map((item) => `图表：${item.label}`),
+    ...(selection.includeGoalAssessment ? ['研究目标核对'] : []),
+    ...(selection.includeWarnings ? ['结果解读提醒'] : []),
+  ];
+  const selectedVisualizations = results.visualizations
+    .filter((item) => selection.visualizationIds.includes(item.id))
+    .map((item) => ({
+      id: item.id,
+      label: item.label,
+      format: item.format,
+      src: ThetaAgentV2API.resultAssetUrl(runId, item.relativePath),
+    }));
   const selectAll = () => setSelection({
     topicIds: results.topics.slice(0, 12).map((topic) => topic.id),
     metricKeys: metricEntries.slice(0, 12).map(([key]) => key),
@@ -491,7 +510,7 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
     includeWarnings: results.warnings.length > 0,
   });
   return (
-    <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="mt-5 grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
     <section className="overflow-hidden rounded-md border border-emerald-200 bg-white">
       <div className="flex flex-col justify-between gap-3 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-start">
         <div>
@@ -565,7 +584,7 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
 
       {results.resultRoot ? <details className="border-t border-slate-100 px-5 py-4"><summary className="cursor-pointer text-xs font-medium text-slate-500">查看本地结果目录</summary><p className="mt-2 break-all font-mono text-[11px] leading-5 text-slate-500">{results.resultRoot}</p></details> : null}
     </section>
-    <ResultAnalysisAssistant runId={runId} selection={selection} selectionCount={selectionCount} />
+    <ResultAnalysisAssistant runId={runId} selection={selection} selectionCount={selectionCount} selectedItems={selectedItems} selectedVisualizations={selectedVisualizations} />
     </div>
   );
 }
@@ -600,8 +619,6 @@ function ResultVisualizations({ runId, visualizations, selectedIds, onSelectionC
   onSelectionChange: (id: string, checked: boolean) => void;
 }) {
   const [preview, setPreview] = useState<ThetaRunResults['visualizations'][number]>();
-  const [zoom, setZoom] = useState(100);
-  useEffect(() => setZoom(100), [preview?.id]);
   const globalImages = visualizations.filter((item) => item.scope === 'global' && item.format === 'image');
   const interactive = visualizations.filter((item) => item.format === 'interactive');
   const topicGroups = Object.entries(
@@ -627,7 +644,7 @@ function ResultVisualizations({ runId, visualizations, selectedIds, onSelectionC
       <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) setPreview(undefined); }}>
         <DialogContent className="max-h-[94vh] overflow-hidden sm:max-w-6xl">
           <DialogHeader><DialogTitle>{preview?.label ?? '图表预览'}</DialogTitle><DialogDescription>按 Esc、点击右上角关闭按钮或点击遮罩即可退出预览。</DialogDescription></DialogHeader>
-          {preview ? preview.format === 'interactive' ? <iframe title={preview.label} src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} sandbox="allow-scripts" className="h-[72vh] w-full rounded-md border border-slate-200 bg-white" /> : <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-50"><div className="flex h-10 items-center justify-center gap-1 border-b border-slate-200 bg-white"><Button type="button" variant="ghost" size="icon" title="缩小" disabled={zoom <= 50} onClick={() => setZoom((value) => Math.max(50, value - 25))} className="h-8 w-8"><ZoomOut className="h-4 w-4" /></Button><span className="w-14 text-center text-xs font-medium text-slate-600">{zoom}%</span><Button type="button" variant="ghost" size="icon" title="放大" disabled={zoom >= 300} onClick={() => setZoom((value) => Math.min(300, value + 25))} className="h-8 w-8"><ZoomIn className="h-4 w-4" /></Button><Button type="button" variant="ghost" size="icon" title="恢复原始视图" disabled={zoom === 100} onClick={() => setZoom(100)} className="ml-1 h-8 w-8"><RotateCcw className="h-4 w-4" /></Button></div><div className="grid h-[70vh] place-items-center overflow-auto p-3" onDoubleClick={() => setZoom((value) => value === 100 ? 200 : 100)}><img src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} alt={preview.label} style={zoom === 100 ? undefined : { width: `${zoom}%`, maxWidth: 'none', maxHeight: 'none' }} className={zoom === 100 ? 'max-h-[66vh] max-w-full object-contain' : 'h-auto object-contain'} /></div></div> : null}
+          {preview ? preview.format === 'interactive' ? <iframe title={preview.label} src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} sandbox="allow-scripts" className="h-[72vh] w-full rounded-md border border-slate-200 bg-white" /> : <ZoomableResultImage src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} alt={preview.label} /> : null}
         </DialogContent>
       </Dialog>
     </div>

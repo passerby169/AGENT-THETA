@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { ImageIcon, ListPlus, Loader2, Paperclip, Send, ShieldCheck, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -16,26 +16,50 @@ interface ChatMessage {
   model?: string;
 }
 
+interface SelectionAttachment {
+  selection: ThetaResultAnalysisSelection;
+  items: string[];
+  visualizations: SelectedVisualization[];
+}
+
+interface SelectedVisualization {
+  id: string;
+  label: string;
+  format: 'image' | 'interactive';
+  src: string;
+}
+
 export function ResultAnalysisAssistant({
   runId,
   selection,
   selectionCount,
+  selectedItems,
+  selectedVisualizations,
 }: {
   runId: string;
   selection: ThetaResultAnalysisSelection;
   selectionCount: number;
+  selectedItems: string[];
+  selectedVisualizations: SelectedVisualization[];
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [attachment, setAttachment] = useState<SelectionAttachment>();
   const endRef = useRef<HTMLDivElement>(null);
+  const selectionSignature = JSON.stringify(selection);
 
   useEffect(() => {
     setMessages([]);
     setQuestion('');
     setError(undefined);
+    setAttachment(undefined);
   }, [runId]);
+
+  useEffect(() => {
+    setAttachment(undefined);
+  }, [selectionSignature]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -43,7 +67,7 @@ export function ResultAnalysisAssistant({
 
   const send = async (suggestedQuestion?: string) => {
     const content = (suggestedQuestion ?? question).trim();
-    if (busy || !content || selectionCount === 0) return;
+    if (busy || !content || !attachment) return;
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -59,7 +83,7 @@ export function ResultAnalysisAssistant({
     try {
       const response = await ThetaAgentV2API.analyzeResults(runId, {
         question: content,
-        selection,
+        selection: attachment.selection,
         history: priorHistory,
       });
       setMessages((current) => [...current, {
@@ -75,8 +99,24 @@ export function ResultAnalysisAssistant({
     }
   };
 
+  const captureSelection = () => {
+    if (!selectionCount) return;
+    setAttachment({
+      selection: {
+        topicIds: [...selection.topicIds],
+        metricKeys: [...selection.metricKeys],
+        visualizationIds: [...selection.visualizationIds],
+        includeGoalAssessment: selection.includeGoalAssessment,
+        includeWarnings: selection.includeWarnings,
+      },
+      items: [...selectedItems],
+      visualizations: [...selectedVisualizations],
+    });
+    setError(undefined);
+  };
+
   return (
-    <aside className="self-start overflow-hidden rounded-md border border-slate-200 bg-white xl:sticky xl:top-20">
+    <aside className="flex self-start flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg shadow-slate-200/70 xl:sticky xl:top-20 xl:h-[calc(100vh-6rem)]">
       <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-4">
         <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-blue-50">
           <img src="/ai-avatar.png" alt="猫咪科学家" className="h-16 w-16 object-contain" />
@@ -87,10 +127,10 @@ export function ResultAnalysisAssistant({
             <ShieldCheck className="h-3 w-3 text-emerald-600" />仅包含已勾选结果
           </p>
         </div>
-        <span className="ml-auto rounded-sm bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700">已选 {selectionCount}</span>
+        <span className={`ml-auto rounded-sm px-2 py-1 text-[11px] font-semibold ${attachment ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{attachment ? `已获取 ${attachment.items.length}` : `待获取 ${selectionCount}`}</span>
       </div>
 
-      <div className="max-h-[52vh] min-h-80 space-y-3 overflow-y-auto bg-slate-50/60 px-4 py-4">
+      <div className="max-h-[52vh] min-h-80 space-y-3 overflow-y-auto bg-slate-50/60 px-4 py-4 xl:min-h-0 xl:max-h-none xl:flex-1">
         {messages.length ? messages.map((message) => (
           <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[92%] rounded-md px-3 py-2.5 text-sm leading-6 ${message.role === 'user' ? 'bg-blue-600 text-white' : 'border border-slate-200 bg-white text-slate-700'}`}>
@@ -102,10 +142,10 @@ export function ResultAnalysisAssistant({
           <div className="space-y-3">
             <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-3 text-xs leading-5 text-blue-900">
               <Sparkles className="mb-2 h-4 w-4 text-blue-600" />
-              先在左侧勾选结果，再选择问题或直接提问。
+              先在左侧勾选结果，再点击下方“获取所勾选内容”。
             </div>
             {['总结所选结果的主要发现', '指出这些结果的研究限制', '给出下一步验证建议'].map((prompt) => (
-              <button key={prompt} type="button" disabled={selectionCount === 0} onClick={() => void send(prompt)} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <button key={prompt} type="button" disabled={!attachment} onClick={() => void send(prompt)} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {prompt}
               </button>
             ))}
@@ -117,6 +157,19 @@ export function ResultAnalysisAssistant({
       </div>
 
       <div className="border-t border-slate-100 p-3">
+        <Button type="button" variant={attachment ? 'outline' : 'secondary'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="mb-2 w-full gap-2">
+          <ListPlus className="h-3.5 w-3.5" />{attachment ? '重新获取所勾选内容' : '获取所勾选内容'}
+        </Button>
+        {attachment ? (
+          <div className="mb-2 rounded-md border border-blue-100 bg-blue-50/70 p-2">
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析附件 · {attachment.items.length} 项</p>
+            {attachment.visualizations.length ? <div className="mt-2 grid grid-cols-3 gap-1.5">{attachment.visualizations.slice(0, 3).map((item) => item.format === 'image' ? <div key={item.id} className="aspect-[4/3] overflow-hidden rounded-sm border border-blue-100 bg-white"><img src={item.src} alt={item.label} className="h-full w-full object-contain" /></div> : <div key={item.id} className="grid aspect-[4/3] place-items-center rounded-sm border border-blue-100 bg-white text-blue-600" title={item.label}><ImageIcon className="h-4 w-4" /></div>)}</div> : null}
+            <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
+              {attachment.items.slice(0, 8).map((item, index) => <span key={`${index}-${item}`} className="max-w-full truncate rounded-sm bg-white px-2 py-1 text-[10px] text-slate-600">{item}</span>)}
+              {attachment.items.length > 8 ? <span className="rounded-sm bg-white px-2 py-1 text-[10px] text-slate-500">另有 {attachment.items.length - 8} 项</span> : null}
+            </div>
+          </div>
+        ) : null}
         <Textarea
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
@@ -126,11 +179,11 @@ export function ResultAnalysisAssistant({
               void send();
             }
           }}
-          placeholder={selectionCount ? '询问所选结果...' : '请先勾选左侧结果'}
-          disabled={busy || selectionCount === 0}
+          placeholder={attachment ? '补充你的分析需求和思路...' : selectionCount ? '请先获取所勾选内容' : '请先勾选左侧结果'}
+          disabled={busy || !attachment}
           className="min-h-20 resize-none text-sm"
         />
-        <Button type="button" size="sm" onClick={() => void send()} disabled={busy || selectionCount === 0 || !question.trim()} className="mt-2 w-full gap-2 bg-blue-600 hover:bg-blue-700">
+        <Button type="button" size="sm" onClick={() => void send()} disabled={busy || !attachment || !question.trim()} className="mt-2 w-full gap-2 bg-blue-600 hover:bg-blue-700">
           <Send className="h-3.5 w-3.5" />发送分析
         </Button>
       </div>
