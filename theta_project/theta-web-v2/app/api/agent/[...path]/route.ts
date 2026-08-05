@@ -26,10 +26,15 @@ async function proxy(request: NextRequest, context: RouteContext) {
       headers: request.method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
       body: request.method === 'POST' ? await request.text() : undefined,
     });
-    const body = await response.text();
+    const body = await response.arrayBuffer();
+    const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
     return new NextResponse(body, {
       status: response.status,
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': contentType.startsWith('image/') ? 'private, max-age=300' : 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
     });
   } catch {
     return NextResponse.json(

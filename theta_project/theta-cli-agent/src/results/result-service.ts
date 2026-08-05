@@ -28,6 +28,16 @@ export interface ResultArtifactView {
   description: string;
 }
 
+export interface ResultVisualizationView {
+  id: string;
+  label: string;
+  relativePath: string;
+  format: 'image' | 'interactive';
+  scope: 'global' | 'topic';
+  topicId?: string;
+  sizeBytes: number;
+}
+
 export interface RunResultOverview {
   kind: 'run.results';
   runId: string;
@@ -40,6 +50,7 @@ export interface RunResultOverview {
   currentStep?: string;
   resultRoot?: string;
   artifacts: ResultArtifactView[];
+  visualizations: ResultVisualizationView[];
   metrics: Record<string, unknown>;
   topics: Array<{
     id: string;
@@ -184,6 +195,9 @@ export class ResultService {
     const figureCount = resultRoot
       ? findFiles(resultRoot, (name) => /\.(?:png|html)$/iu.test(name)).length
       : 0;
+    const visualizations = resultRoot
+      ? listVisualizations(resultRoot)
+      : [];
     const visualizationWarnings = resultRoot
       ? findFiles(resultRoot, (name) => name === 'visualization_status.json')
           .flatMap((filename) => {
@@ -239,6 +253,7 @@ export class ResultService {
         : {}),
       ...(resultRoot ? { resultRoot } : {}),
       artifacts,
+      visualizations,
       metrics,
       topics,
       capabilities: {
@@ -623,6 +638,28 @@ const findFiles = (
   if (existsSync(root)) visit(root);
   return found;
 };
+
+const listVisualizations = (root: string): ResultVisualizationView[] =>
+  findFiles(root, (name) => /\.(?:png|html)$/iu.test(name))
+    .map((filename) => {
+      const relativePath = path.relative(root, filename).split(path.sep).join('/');
+      const topicMatch = relativePath.match(/(?:^|\/)topic_(\d+)(?:\/|$)/iu);
+      const extension = path.extname(filename).toLowerCase();
+      return {
+        id: relativePath,
+        label: path.basename(filename, extension),
+        relativePath,
+        format: extension === '.html' ? 'interactive' as const : 'image' as const,
+        scope: topicMatch ? 'topic' as const : 'global' as const,
+        ...(topicMatch ? { topicId: topicMatch[1] } : {}),
+        sizeBytes: statSync(filename).size,
+      };
+    })
+    .sort((left, right) => {
+      if (left.scope !== right.scope) return left.scope === 'global' ? -1 : 1;
+      const topicOrder = Number(left.topicId ?? 0) - Number(right.topicId ?? 0);
+      return topicOrder || left.label.localeCompare(right.label, 'zh-CN');
+    });
 
 const safeEntries = (directory: string): Dirent[] => {
   try {

@@ -10,7 +10,9 @@ import {
   ChevronRight,
   CircleDot,
   Database,
+  ExternalLink,
   Home,
+  ImageIcon,
   Play,
   Plus,
   RefreshCw,
@@ -427,7 +429,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       {actionNotice ? <ActionNotice message={actionNotice} /> : null}
       <ActionPanel status={status} plan={plan} models={models} busy={busy} onAction={act} />
 
-      {status.currentState === 'Completed' ? <RunResults results={results} loading={resultsLoading} /> : null}
+      {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
       <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
 
@@ -451,7 +453,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
   );
 }
 
-function RunResults({ results, loading }: { results?: ThetaRunResults; loading: boolean }) {
+function RunResults({ runId, results, loading }: { runId: string; results?: ThetaRunResults; loading: boolean }) {
   if (loading) return (
     <section className="mt-5 rounded-md border border-slate-200 bg-white px-5 py-8 text-center">
       <RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" />
@@ -485,15 +487,9 @@ function RunResults({ results, loading }: { results?: ThetaRunResults; loading: 
 
       <div className="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
         <div className="px-5 py-5">
-          <h3 className="text-sm font-semibold text-slate-800">主题与核心关键词</h3>
-          <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
-            {results.topics.length ? results.topics.map((topic, index) => (
-              <div key={topic.id} className="grid gap-2 py-3 sm:grid-cols-[32px_minmax(0,1fr)_auto] sm:items-start">
-                <span className="grid h-7 w-7 place-items-center rounded-full bg-blue-50 text-xs font-semibold text-blue-700">{index + 1}</span>
-                <div className="min-w-0"><p className="text-sm font-semibold text-slate-800">{topic.name}</p><p className="mt-1 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</p></div>
-                {typeof topic.strength === 'number' ? <span className="text-xs text-slate-400">强度 {formatResultNumber(topic.strength)}</span> : null}
-              </div>
-            )) : <p className="py-6 text-sm text-slate-400">训练产物中未找到可解析的主题表。</p>}
+          <h3 className="text-sm font-semibold text-slate-800">主题结果表</h3>
+          <div className="mt-3 overflow-x-auto border-y border-slate-100">
+            {results.topics.length ? <table className="w-full min-w-[620px] text-left"><thead><tr className="text-xs text-slate-400"><th className="w-14 py-3 font-medium">编号</th><th className="w-40 py-3 font-medium">主题</th><th className="py-3 font-medium">核心关键词</th><th className="w-20 py-3 text-right font-medium">强度</th></tr></thead><tbody className="divide-y divide-slate-100">{results.topics.map((topic, index) => <tr key={topic.id} className="align-top"><td className="py-3 text-xs font-semibold text-blue-700">{index + 1}</td><td className="py-3 pr-4 text-sm font-semibold text-slate-800">{topic.name}</td><td className="py-3 pr-4 text-xs leading-5 text-slate-500">{topic.keywords.length ? topic.keywords.slice(0, 10).join(' · ') : '暂无可展示关键词'}</td><td className="py-3 text-right text-xs text-slate-500">{typeof topic.strength === 'number' ? formatResultNumber(topic.strength) : '-'}</td></tr>)}</tbody></table> : <p className="py-6 text-sm text-slate-400">训练产物中未找到可解析的主题表。</p>}
           </div>
         </div>
 
@@ -504,6 +500,8 @@ function RunResults({ results, loading }: { results?: ThetaRunResults; loading: 
           </dl>
         </div>
       </div>
+
+      <ResultVisualizations runId={runId} visualizations={results.visualizations} />
 
       {results.goalAssessment.length ? <div className="border-t border-slate-100 px-5 py-5"><h3 className="text-sm font-semibold text-slate-800">研究目标核对</h3><div className="mt-3 space-y-3">{results.goalAssessment.map((item) => <div key={item.criterion} className="flex items-start gap-3"><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === 'satisfied' ? 'text-emerald-600' : 'text-amber-600'}`} /><div><p className="text-sm font-medium text-slate-700">{item.criterion}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{item.evidence}</p></div></div>)}</div></div> : null}
 
@@ -516,6 +514,43 @@ function RunResults({ results, loading }: { results?: ThetaRunResults; loading: 
 
 function ResultSummary({ label, value }: { label: string; value: string }) {
   return <div className="border-b border-slate-100 px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 text-base font-semibold text-slate-800">{value}</p></div>;
+}
+
+function ResultVisualizations({ runId, visualizations }: { runId: string; visualizations: ThetaRunResults['visualizations'] }) {
+  const globalImages = visualizations.filter((item) => item.scope === 'global' && item.format === 'image');
+  const interactive = visualizations.filter((item) => item.format === 'interactive');
+  const topicGroups = Object.entries(
+    visualizations
+      .filter((item) => item.scope === 'topic' && item.format === 'image')
+      .reduce<Record<string, ThetaRunResults['visualizations']>>((groups, item) => {
+        const topicId = item.topicId ?? 'unknown';
+        (groups[topicId] ??= []).push(item);
+        return groups;
+      }, {}),
+  ).sort(([left], [right]) => Number(left) - Number(right));
+  if (!visualizations.length) return null;
+  return (
+    <div className="border-t border-slate-100 px-5 py-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+        <div><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ImageIcon className="h-4 w-4 text-blue-600" />可视化图表</h3><p className="mt-1 text-xs text-slate-500">展示训练程序实际生成的全局图表；点击图片可查看原图。</p></div>
+        {interactive.map((item) => <a key={item.id} href={ThetaAgentV2API.resultAssetUrl(runId, item.relativePath)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100">打开交互式主题图<ExternalLink className="h-3.5 w-3.5" /></a>)}
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {globalImages.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} />)}
+      </div>
+      {topicGroups.length ? <div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-semibold text-slate-600">各主题明细图</p><p className="mt-1 text-xs text-slate-400">按需展开词云、词语分布和主题演化图，避免一次加载全部图片。</p><div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">{topicGroups.map(([topicId, items]) => <TopicVisualizationGroup key={topicId} runId={runId} topicId={topicId} items={items} />)}</div></div> : null}
+    </div>
+  );
+}
+
+function TopicVisualizationGroup({ runId, topicId, items }: { runId: string; topicId: string; items: ThetaRunResults['visualizations'] }) {
+  const [open, setOpen] = useState(false);
+  return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-slate-700"><span>主题 {topicId}</span><span className="text-xs font-normal text-slate-400">{items.length} 张图表</span></summary>{open ? <div className="grid gap-4 pb-4 md:grid-cols-2">{items.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} />)}</div> : null}</details>;
+}
+
+function VisualizationCard({ runId, item }: { runId: string; item: ThetaRunResults['visualizations'][number] }) {
+  const source = ThetaAgentV2API.resultAssetUrl(runId, item.relativePath);
+  return <a href={source} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-md border border-slate-200 bg-white hover:border-blue-300"><div className="aspect-[4/3] bg-slate-50 p-2"><img src={source} alt={item.label} loading="lazy" className="h-full w-full object-contain" /></div><div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2.5"><span className="truncate text-xs font-medium text-slate-700">{item.label}</span><span className="shrink-0 text-[11px] text-slate-400">{formatBytes(item.sizeBytes)}</span></div></a>;
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {

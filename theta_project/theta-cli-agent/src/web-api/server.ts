@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
@@ -25,6 +25,7 @@ import {
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultAgentRoot = path.resolve(moduleDirectory, '..', '..');
+const resultRootCache = new Map<string, string>();
 
 loadThetaProjectEnvironment();
 
@@ -211,11 +212,28 @@ const routeRequest = async (
     return;
   }
 
+  const resultAssetMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/results\/assets\/(.+)$/);
+  if (resultAssetMatch) {
+    if (method !== 'GET') return methodNotAllowed(response);
+    const runId = decodeURIComponent(resultAssetMatch[1]);
+    const relativePath = decodeURIComponent(resultAssetMatch[2]);
+    let resultRoot = resultRootCache.get(runId);
+    if (!resultRoot) {
+      const results = await new ResultService(workflow).overview(runId, options.runtimeDb);
+      resultRoot = results.resultRoot;
+      if (resultRoot) resultRootCache.set(runId, resultRoot);
+    }
+    if (!resultRoot) throw new Error('当前任务没有可读取的结果目录。');
+    await writeResultAsset(response, resultRoot, relativePath);
+    return;
+  }
+
   const resultsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/results$/);
   if (resultsMatch) {
     if (method !== 'GET') return methodNotAllowed(response);
     const runId = decodeURIComponent(resultsMatch[1]);
     const results = await new ResultService(workflow).overview(runId, options.runtimeDb);
+    if (results.resultRoot) resultRootCache.set(runId, results.resultRoot);
     writeJson(response, 200, { ok: true, data: results });
     return;
   }
@@ -274,6 +292,39 @@ const writeJson = (
   writeCors(response);
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(payload));
+};
+
+const writeResultAsset = async (
+  response: ServerResponse,
+  resultRoot: string,
+  relativePath: string,
+): Promise<void> => {
+  const root = path.resolve(resultRoot);
+  const candidate = path.resolve(root, relativePath);
+  const boundary = path.relative(root, candidate);
+  if (!relativePath || boundary.startsWith('..') || path.isAbsolute(boundary)) {
+    throw new Error('结果文件路径超出当前 Run 的结果目录。');
+  }
+  const extension = path.extname(candidate).toLowerCase();
+  const contentTypes: Record<string, string> = {
+    '.png': 'image/png',
+    '.html': 'text/html; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8',
+  };
+  const contentType = contentTypes[extension];
+  if (!contentType) throw new Error('该结果文件类型不允许通过网页读取。');
+  const metadata = await stat(candidate);
+  if (!metadata.isFile()) throw new Error('请求的结果产物不是文件。');
+  const content = await readFile(candidate);
+  writeCors(response);
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': String(content.byteLength),
+    'X-Content-Type-Options': 'nosniff',
+  });
+  response.end(content);
 };
 
 const writeCors = (response: ServerResponse): void => {
