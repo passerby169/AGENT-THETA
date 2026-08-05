@@ -101,7 +101,13 @@ export function ResultAnalysisAssistant({
         model: response.model,
       }]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setQuestion(content);
+      setError(
+        message.includes('exceeded') || message.toLowerCase().includes('timeout')
+          ? 'MiniMax 响应超时，问题和分析附件均已保留。请稍后直接点击“重新发送”。'
+          : message,
+      );
     } finally {
       setBusy(false);
     }
@@ -165,18 +171,22 @@ export function ResultAnalysisAssistant({
       </div>
 
       <div className="border-t border-slate-100 p-3">
-        <Button type="button" variant={attachment ? 'outline' : 'secondary'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="mb-2 w-full gap-2">
-          <ListPlus className="h-3.5 w-3.5" />{attachment ? '重新获取所勾选内容' : '获取所勾选内容'}
-        </Button>
-        {attachment ? (
-          <div className="mb-2 rounded-md border border-blue-100 bg-blue-50/70 p-2">
-            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析附件 · {attachment.items.length} 项</p>
-            {attachment.visualizations.length ? <div className="mt-2 grid grid-cols-3 gap-1.5">{attachment.visualizations.slice(0, 3).map((item) => item.format === 'image' ? <div key={item.id} className="aspect-[4/3] overflow-hidden rounded-sm border border-blue-100 bg-white"><img src={item.src} alt={item.label} className="h-full w-full object-contain" /></div> : <div key={item.id} className="grid aspect-[4/3] place-items-center rounded-sm border border-blue-100 bg-white text-blue-600" title={item.label}><ImageIcon className="h-4 w-4" /></div>)}</div> : null}
-            <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
-              {attachment.items.slice(0, 8).map((item, index) => <span key={`${index}-${item}`} className="max-w-full truncate rounded-sm bg-white px-2 py-1 text-[10px] text-slate-600">{item}</span>)}
-              {attachment.items.length > 8 ? <span className="rounded-sm bg-white px-2 py-1 text-[10px] text-slate-500">另有 {attachment.items.length - 8} 项</span> : null}
-            </div>
-          </div>
+        {messages.length === 0 ? (
+          <>
+            <Button type="button" variant={attachment ? 'outline' : 'secondary'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="mb-2 w-full gap-2">
+              <ListPlus className="h-3.5 w-3.5" />{attachment ? '重新获取所勾选内容' : '获取所勾选内容'}
+            </Button>
+            {attachment ? (
+              <div className="mb-2 rounded-md border border-blue-100 bg-blue-50/70 p-2">
+                <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析附件 · {attachment.items.length} 项</p>
+                {attachment.visualizations.length ? <div className="mt-2 grid grid-cols-3 gap-1.5">{attachment.visualizations.slice(0, 3).map((item) => item.format === 'image' ? <div key={item.id} className="aspect-[4/3] overflow-hidden rounded-sm border border-blue-100 bg-white"><img src={item.src} alt={item.label} className="h-full w-full object-contain" /></div> : <div key={item.id} className="grid aspect-[4/3] place-items-center rounded-sm border border-blue-100 bg-white text-blue-600" title={item.label}><ImageIcon className="h-4 w-4" /></div>)}</div> : null}
+                <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
+                  {attachment.items.slice(0, 8).map((item, index) => <span key={`${index}-${item}`} className="max-w-full truncate rounded-sm bg-white px-2 py-1 text-[10px] text-slate-600">{item}</span>)}
+                  {attachment.items.length > 8 ? <span className="rounded-sm bg-white px-2 py-1 text-[10px] text-slate-500">另有 {attachment.items.length - 8} 项</span> : null}
+                </div>
+              </div>
+            ) : null}
+          </>
         ) : null}
         <Textarea
           value={question}
@@ -192,7 +202,7 @@ export function ResultAnalysisAssistant({
           className="min-h-20 resize-none text-sm"
         />
         <Button type="button" size="sm" onClick={() => void send()} disabled={busy} className="mt-2 w-full gap-2 bg-blue-600 hover:bg-blue-700">
-          <Send className="h-3.5 w-3.5" />发送分析
+          <Send className="h-3.5 w-3.5" />{error && messages.length ? '重新发送' : '发送分析'}
         </Button>
       </div>
     </aside>
