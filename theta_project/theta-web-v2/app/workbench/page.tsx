@@ -335,8 +335,8 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       .catch((cause) => setActionError(errorMessage(cause)));
   }, [loadPlan, runId, status?.currentState]);
 
-  const act = async (action: ThetaRunAction) => {
-    if (actionInFlight.current) return;
+  const act = async (action: ThetaRunAction): Promise<boolean> => {
+    if (actionInFlight.current) return false;
     actionInFlight.current = true;
     setBusy(true);
     setActionError(undefined);
@@ -352,8 +352,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       ) {
         await loadPlan(result.status.runId);
       }
+      return true;
     } catch (cause) {
       setActionError(errorMessage(cause));
+      return false;
     } finally {
       actionInFlight.current = false;
       setBusy(false);
@@ -432,8 +434,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       </section>
 
       {actionError ? <ErrorNotice message={actionError} /> : null}
-      {actionNotice ? <ActionNotice message={actionNotice} /> : null}
-      <ActionPanel status={status} plan={plan} models={models} busy={busy} onAction={act} />
+      {actionNotice && !['ResearchClarification', 'ColumnConfirmation'].includes(status.currentState ?? '')
+        ? <ActionNotice message={actionNotice} />
+        : null}
+      <ActionPanel status={status} plan={plan} models={models} busy={busy} notice={actionNotice} onAction={act} />
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
@@ -689,7 +693,7 @@ function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTim
   );
 }
 
-function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; busy: boolean; onAction: (action: ThetaRunAction) => Promise<void> }) {
+function ActionPanel({ status, plan, models, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<boolean> }) {
   const [text, setText] = useState('');
   const [model, setModel] = useState('');
   const [topics, setTopics] = useState('');
@@ -711,20 +715,24 @@ function ActionPanel({ status, plan, models, busy, onAction }: { status: ThetaRu
   const state = status.currentState;
   const submitText = async (action: 'answer' | 'columns') => {
     if (!text.trim()) return;
-    await onAction({ action, text: text.trim() });
-    setText('');
+    const completed = await onAction({ action, text: text.trim() });
+    if (completed) setText('');
   };
 
   if (state === 'ResearchClarification') return (
-    <ActionShell title="回答一个问题" description="THETA 只会继续询问仍缺少的必要信息。">
-      <div className="rounded-md bg-blue-50 px-4 py-3 text-sm font-medium leading-6 text-blue-900">{status.pendingReason ?? '请补充当前研究设置。'}</div>
-      <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="直接用自然语言回答" className="mt-3 min-h-24" />
-      <div className="mt-3 flex flex-wrap gap-2"><Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('answer')} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在处理...' : '提交回答并继续'}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })}>信息已足够，开始分析</Button></div>
+    <ActionShell title="完善研究设置" description="每次只回答当前问题；提交成功后，系统会立即显示下一步。">
+      {notice ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800"><p className="font-semibold">上一步已记录</p><p className="mt-1">{notice}</p></div> : null}
+      <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950"><p className="text-xs font-semibold uppercase text-blue-600">当前问题</p><p className="mt-1 font-medium">{status.pendingReason ?? '请补充当前研究设置。'}</p></div>
+      <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="在这里回答当前问题" className="mt-3 min-h-24" />
+      <p className="mt-2 text-xs text-slate-500">填写后点击“提交回答并进入下一步”。如系统仍有必要信息缺口，会在上方显示新的当前问题。</p>
+      <div className="mt-3 flex flex-wrap gap-2"><Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('answer')} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在理解回答并生成下一步...' : '提交回答并进入下一步'}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })}>必要信息已完整，开始分析</Button></div>
     </ActionShell>
   );
 
   if (state === 'ColumnConfirmation') return (
     <ActionShell title="确认数据列" description="说明正文、时间和 ID 列；不使用的角色可以写“无”。">
+      {notice ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800"><p className="font-semibold">研究设置已确认</p><p className="mt-1">{notice}</p></div> : null}
+      <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950"><p className="text-xs font-semibold uppercase text-blue-600">当前操作</p><p className="mt-1 font-medium">确认正文、时间、ID 和元数据列，然后生成模型建议。</p></div>
       <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="例如：text 是正文列，timestamp 是时间列，id 是 ID 列，source 作为分组元数据" className="min-h-28" />
       <Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('columns')} className="mt-3 bg-blue-600 hover:bg-blue-700">{busy ? '正在校验...' : '确认列并生成模型建议'}</Button>
     </ActionShell>

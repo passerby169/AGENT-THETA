@@ -181,12 +181,16 @@ MINIMAX_API_BASE=https://api.minimaxi.com/v1
 MINIMAX_MODEL=MiniMax-M2.7
 MINIMAX_TIMEOUT_MS=60000
 MINIMAX_PLANNER_TIMEOUT_MS=120000
+THETA_RESULT_ANALYSIS_TIMEOUT_MS=120000
 ```
 
 `MINIMAX_TIMEOUT_MS` controls normal conversational language calls.
 `MINIMAX_PLANNER_TIMEOUT_MS` controls only the bounded Planner and defaults to
 120 seconds, so a slow plan does not loosen the latency budget for ordinary
 Grilling turns.
+`THETA_RESULT_ANALYSIS_TIMEOUT_MS` controls the result-analysis assistant only
+and defaults to 120 seconds because selected result attachments require a
+longer explanation budget than workflow clarification turns.
 
 The key is ignored by Git. The compiled CLI loads `../.env` at startup, or the
 file selected by `THETA_ENV_FILE`. Existing process environment variables keep

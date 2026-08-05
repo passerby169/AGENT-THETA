@@ -148,9 +148,12 @@ const routeRequest = async (
         }
       }),
     );
+    const visibleRuns = url.searchParams.get('includeSystem') === '1'
+      ? runs
+      : runs.filter(isUserFacingRun);
     writeJson(response, 200, {
       ok: true,
-      data: { runs },
+      data: { runs: visibleRuns },
     });
     return;
   }
@@ -490,6 +493,15 @@ const buildRunIdentity = (value: unknown): Record<string, unknown> => {
     ...(modelId ? { modelId } : {}),
     ...(numTopics !== undefined ? { numTopics } : {}),
   };
+};
+
+export const isUserFacingRun = (value: unknown): boolean => {
+  const run = asRecord(value) ?? {};
+  const runId = stringField(run, 'runId') ?? '';
+  const identity = asRecord(run.identity) ?? {};
+  const datasetName = (stringField(identity, 'datasetName') ?? '').toLowerCase();
+  if (runId.startsWith('theta-stage-')) return false;
+  return datasetName !== 'sample' && datasetName !== 'recommendation-sample';
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>

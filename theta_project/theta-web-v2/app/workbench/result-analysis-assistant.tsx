@@ -81,10 +81,15 @@ export function ResultAnalysisAssistant({
       role: 'user',
       content,
     };
-    const priorHistory = messages
+    const lastMessage = messages.at(-1);
+    const retrying = Boolean(
+      error && lastMessage?.role === 'user' && lastMessage.content === content,
+    );
+    const historyMessages = retrying ? messages.slice(0, -1) : messages;
+    const priorHistory = historyMessages
       .slice(-8)
       .map(({ role, content: historyContent }) => ({ role, content: historyContent }));
-    setMessages((current) => [...current, userMessage]);
+    if (!retrying) setMessages((current) => [...current, userMessage]);
     setQuestion('');
     setBusy(true);
     setError(undefined);
@@ -165,7 +170,7 @@ export function ResultAnalysisAssistant({
             ))}
           </div>
         )}
-        {busy ? <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin text-blue-600" />正在分析已选结果...</div> : null}
+        {busy ? <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin text-blue-600" />正在分析已选结果，复杂问题可能需要 1–2 分钟...</div> : null}
         {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">{error}</div> : null}
         <div ref={endRef} />
       </div>

@@ -3,8 +3,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { createThetaWebApiServer } from './web-api/server.js';
-import { buildResultAnalysisContext } from './results/result-analysis-service.js';
+import { createThetaWebApiServer, isUserFacingRun } from './web-api/server.js';
+import {
+  buildResultAnalysisContext,
+  resultAnalysisTimeoutMs,
+} from './results/result-analysis-service.js';
 import type { RunResultOverview } from './results/result-service.js';
 import {
   thetaResultAnalysisRequestSchema,
@@ -12,6 +15,27 @@ import {
 } from './web-api/contracts.js';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'theta-web-api-smoke-'));
+
+assert.equal(isUserFacingRun({ runId: 'theta-stage-c2-ready' }), false);
+assert.equal(isUserFacingRun({
+  runId: 'theta-run-example',
+  identity: { datasetName: 'recommendation-sample' },
+}), false);
+assert.equal(isUserFacingRun({
+  runId: 'theta-run-user',
+  identity: { datasetName: '我的数据集' },
+}), true);
+
+const originalResultTimeout = process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS;
+delete process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS;
+assert.equal(resultAnalysisTimeoutMs(), 120_000);
+process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS = '999999';
+assert.equal(resultAnalysisTimeoutMs(), 180_000);
+if (originalResultTimeout === undefined) {
+  delete process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS;
+} else {
+  process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS = originalResultTimeout;
+}
 const server = createThetaWebApiServer({
   agentRoot: process.cwd(),
   runtimeDb: path.join(root, 'runtime.sqlite'),

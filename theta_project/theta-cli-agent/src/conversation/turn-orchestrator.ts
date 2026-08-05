@@ -37,6 +37,7 @@ import {
   commandNeedsActiveRun,
   noActiveRunResult,
 } from './no-active-run.js';
+
 import {
   parsePlanAdjustmentRequest,
   type CurrentPlanAdjustmentValues,
@@ -44,6 +45,16 @@ import {
 } from './plan-adjustment.js';
 
 export { parsePlanAdjustment } from './plan-adjustment.js';
+
+const workflowCriticalLanguageTasks = new Set<NaturalLanguageRequest['task']>([
+  'interpret_research_answer',
+  'generate_grilling_question',
+  'interpret_column_confirmation',
+]);
+
+const workflowCriticalLanguageTask = (
+  task: NaturalLanguageRequest['task'],
+): boolean => workflowCriticalLanguageTasks.has(task);
 
 export interface TurnContext {
   sessionId: string;
@@ -831,8 +842,12 @@ export class ThetaTurnOrchestrator {
     const session = this.store.getOrCreateSession(sessionId, {
       activeRunId: runId,
     });
-    const generated = session.languageConsent
-      ? await runApprovedThetaConversationLanguage(request, {
+    let generated: NaturalLanguageResult;
+    if (!session.languageConsent) {
+      generated = await this.deterministicLanguage.generate(request);
+    } else {
+      try {
+        generated = await runApprovedThetaConversationLanguage(request, {
           userId: 'local_user',
         }).then((value) => {
           if (value.status !== 'completed' || !value.output) {
@@ -843,8 +858,20 @@ export class ThetaTurnOrchestrator {
             );
           }
           return naturalLanguageResultSchema.parse(value.output);
-        })
-      : await this.deterministicLanguage.generate(request);
+        });
+      } catch (error) {
+        if (!workflowCriticalLanguageTask(request.task)) throw error;
+        const fallback = await this.deterministicLanguage.generate(request);
+        generated = naturalLanguageResultSchema.parse({
+          ...fallback,
+          fallbackReason: 'governed_provider_failed',
+          telemetry: {
+            ...fallback.telemetry,
+            fallback: true,
+          },
+        });
+      }
+    }
     this.store.recordLanguageInterpretation({
       interpretationId: `interpretation.${randomUUID()}`,
       sessionId,

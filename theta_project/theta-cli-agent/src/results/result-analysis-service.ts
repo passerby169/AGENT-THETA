@@ -22,12 +22,25 @@ interface SelectedContext {
   selected: ResultAnalysisResponse['selected'];
 }
 
+const DEFAULT_RESULT_ANALYSIS_TIMEOUT_MS = 120_000;
+const MAX_RESULT_ANALYSIS_TIMEOUT_MS = 180_000;
+
+export const resultAnalysisTimeoutMs = (): number => {
+  const configured = Number(process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS);
+  if (!Number.isInteger(configured) || configured < 30_000) {
+    return DEFAULT_RESULT_ANALYSIS_TIMEOUT_MS;
+  }
+  return Math.min(configured, MAX_RESULT_ANALYSIS_TIMEOUT_MS);
+};
+
 export class ResultAnalysisService {
   private readonly resultService: ResultService;
 
   constructor(
     workflow: ThetaWorkflowService,
-    private readonly provider: InferenceProvider | undefined = createMiniMaxProviderFromEnv(),
+    private readonly provider: InferenceProvider | undefined = createMiniMaxProviderFromEnv({
+      timeoutMs: resultAnalysisTimeoutMs(),
+    }),
   ) {
     this.resultService = new ResultService(workflow);
   }
@@ -69,7 +82,7 @@ export class ResultAnalysisService {
       stepId: 'explain_selected_results',
       modelAlias: 'configured-result-analysis-model',
       input: { messages },
-      options: { temperature: 0.2, maxTokens: 1200 },
+      options: { temperature: 0.2, maxTokens: 800 },
       trace: true,
       metadata: {
         purpose: 'explain_selected_results',
