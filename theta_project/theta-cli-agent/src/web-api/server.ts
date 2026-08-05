@@ -124,7 +124,10 @@ const routeRequest = async (
     const runs = await Promise.all(
       catalog.map(async (run) => {
         try {
-          const status = await workflow.status(run.runId, options.runtimeDb);
+          const [status, plan] = await Promise.all([
+            workflow.status(run.runId, options.runtimeDb),
+            workflow.plan(run.runId, options.runtimeDb),
+          ]);
           return {
             ...run,
             status: status.status,
@@ -133,6 +136,7 @@ const routeRequest = async (
             lastEventType: status.lastEventType,
             lastEventAt: status.lastEventAt,
             presentation: buildHumanResponse(status),
+            identity: buildRunIdentity(plan),
           };
         } catch {
           return {
@@ -440,6 +444,37 @@ const humanState = (state: string): string => ({
   Cancelled: '训练已取消',
   Quarantined: '运行已隔离',
 } as Record<string, string>)[state] ?? state;
+
+const buildRunIdentity = (value: unknown): Record<string, unknown> => {
+  const plan = asRecord(value) ?? {};
+  const brief = asRecord(plan.researchBrief) ?? {};
+  const dataSource = Array.isArray(brief.dataSources)
+    ? brief.dataSources.find((item): item is string => typeof item === 'string')
+    : undefined;
+  const datasetName = dataSource
+    ? path.basename(dataSource, path.extname(dataSource))
+    : stringField(asRecord(plan.datasetProfile), 'datasetId') ?? '本地数据集';
+  const researchQuestion = stringField(brief, 'researchQuestion') ?? '主题分析';
+  const canonicalPlan = asRecord(asRecord(plan.planRecord)?.canonicalPlan);
+  const model = asRecord(canonicalPlan?.model) ?? asRecord(plan.validatedPlan) ?? asRecord(plan.candidatePlan);
+  const modelId = stringField(model, 'modelId');
+  const numTopics = typeof model?.numTopics === 'number' ? model.numTopics : undefined;
+  const compactQuestion = researchQuestion.replace(/\s+/gu, ' ').trim();
+  const purpose = /主题|topic/iu.test(compactQuestion)
+    ? /时间|趋势|演化|temporal|trend/iu.test(compactQuestion)
+      ? '主题识别与趋势分析'
+      : '主题识别分析'
+    : compactQuestion.length > 20
+      ? `${compactQuestion.slice(0, 20)}…`
+      : compactQuestion;
+  return {
+    datasetName,
+    researchQuestion,
+    displayName: `${datasetName} · ${purpose}`,
+    ...(modelId ? { modelId } : {}),
+    ...(numTopics !== undefined ? { numTopics } : {}),
+  };
+};
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)

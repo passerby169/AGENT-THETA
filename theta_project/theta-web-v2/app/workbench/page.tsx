@@ -138,6 +138,7 @@ export default function WorkbenchPage() {
         {activeRunId ? (
           <RunWorkspace
             runId={activeRunId}
+            run={runs.find((item) => item.runId === activeRunId)}
             status={activeStatus}
             loading={detailLoading}
             onBack={() => {
@@ -235,7 +236,7 @@ function NextTaskCard({ run, primary, onOpen }: { run: ThetaRunSummary; primary:
     <button type="button" onClick={onOpen} className={`flex min-h-36 w-full flex-col justify-between rounded-md border p-5 text-left transition-colors ${primary ? 'border-blue-200 bg-blue-50/60 hover:bg-blue-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
       <div>
         <div className="flex items-center justify-between gap-3"><Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">待确认</Badge><span className="text-xs text-slate-400">步骤 {presentation?.progress?.current ?? '-'} / {presentation?.progress?.total ?? 7}</span></div>
-        <h2 className="mt-3 text-base font-semibold text-slate-900">{presentation?.title ?? stateTitle(run.currentState)}</h2>
+        <h2 className="mt-3 text-base font-semibold text-slate-900">{runLabel(run)}</h2>
         <p className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500">{run.pendingReason ?? presentation?.summary ?? '打开任务查看下一步。'}</p>
       </div>
       <span className="mt-4 flex items-center justify-between text-sm font-semibold text-blue-700"><span>{action?.label ?? '继续处理'}</span><ChevronRight className="h-4 w-4" /></span>
@@ -247,7 +248,7 @@ function RunRow({ run, onOpen }: { run: ThetaRunSummary; onOpen: () => void }) {
   const state = statusKind(run);
   return (
     <button type="button" onClick={onOpen} className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b border-slate-100 px-4 py-4 text-left last:border-b-0 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_150px_100px_20px] sm:px-5">
-      <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{runLabel(run)}</p><p className="mt-1 truncate text-xs text-slate-400">{run.presentation?.title ?? stateTitle(run.currentState)}</p></div>
+      <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{runLabel(run)}</p><p className="mt-1 truncate text-xs text-slate-400">{runSubtitle(run)}</p></div>
       <Badge variant="outline" className={state.tone}>{state.label}</Badge>
       <span className="hidden text-xs text-slate-400 sm:block">{formatDate(run.lastEventAt ?? run.updatedAt)}</span>
       <ChevronRight className="h-4 w-4 text-slate-300" />
@@ -255,8 +256,9 @@ function RunRow({ run, onOpen }: { run: ThetaRunSummary; onOpen: () => void }) {
   );
 }
 
-function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChange }: {
+function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatusChange }: {
   runId: string;
+  run?: ThetaRunSummary;
   status?: ThetaRunStatus;
   loading: boolean;
   onBack: () => void;
@@ -419,7 +421,7 @@ function RunWorkspace({ runId, status, loading, onBack, onRefresh, onStatusChang
       <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
       <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-          <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{runLabel({ runId } as ThetaRunSummary)}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
+          <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{run ? runSubtitle(run) : '研究任务'}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{run ? runLabel(run) : presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
           <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
         </div>
         <div className="mt-5 flex items-center gap-3"><Progress value={progress} className="h-2" /><span className="whitespace-nowrap text-xs text-slate-400">{monitoring ? `训练 ${Math.round(progress)}%` : `步骤 ${presentation.progress?.current ?? '-'} / ${presentation.progress?.total ?? 7}`}</span></div>
@@ -517,6 +519,7 @@ function ResultSummary({ label, value }: { label: string; value: string }) {
 }
 
 function ResultVisualizations({ runId, visualizations }: { runId: string; visualizations: ThetaRunResults['visualizations'] }) {
+  const [preview, setPreview] = useState<ThetaRunResults['visualizations'][number]>();
   const globalImages = visualizations.filter((item) => item.scope === 'global' && item.format === 'image');
   const interactive = visualizations.filter((item) => item.format === 'interactive');
   const topicGroups = Object.entries(
@@ -533,24 +536,30 @@ function ResultVisualizations({ runId, visualizations }: { runId: string; visual
     <div className="border-t border-slate-100 px-5 py-5">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ImageIcon className="h-4 w-4 text-blue-600" />可视化图表</h3><p className="mt-1 text-xs text-slate-500">展示训练程序实际生成的全局图表；点击图片可查看原图。</p></div>
-        {interactive.map((item) => <a key={item.id} href={ThetaAgentV2API.resultAssetUrl(runId, item.relativePath)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100">打开交互式主题图<ExternalLink className="h-3.5 w-3.5" /></a>)}
+        {interactive.map((item) => <button type="button" key={item.id} onClick={() => setPreview(item)} className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100">打开交互式主题图<ExternalLink className="h-3.5 w-3.5" /></button>)}
       </div>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        {globalImages.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} />)}
+        {globalImages.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} onOpen={() => setPreview(item)} />)}
       </div>
-      {topicGroups.length ? <div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-semibold text-slate-600">各主题明细图</p><p className="mt-1 text-xs text-slate-400">按需展开词云、词语分布和主题演化图，避免一次加载全部图片。</p><div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">{topicGroups.map(([topicId, items]) => <TopicVisualizationGroup key={topicId} runId={runId} topicId={topicId} items={items} />)}</div></div> : null}
+      {topicGroups.length ? <div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-semibold text-slate-600">各主题明细图</p><p className="mt-1 text-xs text-slate-400">按需展开词云、词语分布和主题演化图，避免一次加载全部图片。</p><div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">{topicGroups.map(([topicId, items]) => <TopicVisualizationGroup key={topicId} runId={runId} topicId={topicId} items={items} onPreview={setPreview} />)}</div></div> : null}
+      <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) setPreview(undefined); }}>
+        <DialogContent className="max-h-[92vh] overflow-auto sm:max-w-5xl">
+          <DialogHeader><DialogTitle>{preview?.label ?? '图表预览'}</DialogTitle><DialogDescription>按 Esc、点击右上角关闭按钮或点击遮罩即可退出预览。</DialogDescription></DialogHeader>
+          {preview ? preview.format === 'interactive' ? <iframe title={preview.label} src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} sandbox="allow-scripts" className="h-[70vh] w-full rounded-md border border-slate-200 bg-white" /> : <div className="grid max-h-[76vh] place-items-center overflow-auto rounded-md bg-slate-50 p-3"><img src={ThetaAgentV2API.resultAssetUrl(runId, preview.relativePath)} alt={preview.label} className="max-h-[72vh] max-w-full object-contain" /></div> : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function TopicVisualizationGroup({ runId, topicId, items }: { runId: string; topicId: string; items: ThetaRunResults['visualizations'] }) {
+function TopicVisualizationGroup({ runId, topicId, items, onPreview }: { runId: string; topicId: string; items: ThetaRunResults['visualizations']; onPreview: (item: ThetaRunResults['visualizations'][number]) => void }) {
   const [open, setOpen] = useState(false);
-  return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-slate-700"><span>主题 {topicId}</span><span className="text-xs font-normal text-slate-400">{items.length} 张图表</span></summary>{open ? <div className="grid gap-4 pb-4 md:grid-cols-2">{items.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} />)}</div> : null}</details>;
+  return <details onToggle={(event) => setOpen(event.currentTarget.open)}><summary className="flex cursor-pointer list-none items-center justify-between py-3 text-sm font-medium text-slate-700"><span>主题 {topicId}</span><span className="text-xs font-normal text-slate-400">{items.length} 张图表</span></summary>{open ? <div className="grid gap-4 pb-4 md:grid-cols-2">{items.map((item) => <VisualizationCard key={item.id} runId={runId} item={item} onOpen={() => onPreview(item)} />)}</div> : null}</details>;
 }
 
-function VisualizationCard({ runId, item }: { runId: string; item: ThetaRunResults['visualizations'][number] }) {
+function VisualizationCard({ runId, item, onOpen }: { runId: string; item: ThetaRunResults['visualizations'][number]; onOpen: () => void }) {
   const source = ThetaAgentV2API.resultAssetUrl(runId, item.relativePath);
-  return <a href={source} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-md border border-slate-200 bg-white hover:border-blue-300"><div className="aspect-[4/3] bg-slate-50 p-2"><img src={source} alt={item.label} loading="lazy" className="h-full w-full object-contain" /></div><div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2.5"><span className="truncate text-xs font-medium text-slate-700">{item.label}</span><span className="shrink-0 text-[11px] text-slate-400">{formatBytes(item.sizeBytes)}</span></div></a>;
+  return <button type="button" onClick={onOpen} className="group overflow-hidden rounded-md border border-slate-200 bg-white text-left hover:border-blue-300"><div className="aspect-[4/3] bg-slate-50 p-2"><img src={source} alt={item.label} loading="lazy" className="h-full w-full object-contain" /></div><div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2.5"><span className="truncate text-xs font-medium text-slate-700">{item.label}</span><span className="shrink-0 text-[11px] text-slate-400">{formatBytes(item.sizeBytes)}</span></div></button>;
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {
@@ -743,7 +752,13 @@ const metricLabels: Record<string, string> = {
 const metricLabel = (key: string): string => metricLabels[key.toLowerCase()] ?? key.replaceAll('_', ' ');
 const formatResultNumber = (value: number): string => Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/u, '').replace(/\.$/u, '');
 const formatResultValue = (value: unknown): string => typeof value === 'number' ? formatResultNumber(value) : typeof value === 'boolean' ? (value ? '是' : '否') : String(value);
-const runLabel = (run: ThetaRunSummary): string => run.runId.startsWith('theta-dataset-analysis') ? `数据集主题分析${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1] ? ` · ${run.runId.match(/-(dtm\d*|btm\d*|hdp\d*)$/iu)?.[1]?.toUpperCase()}` : ''}` : run.runId.startsWith('theta-stage-') ? `阶段验证 · ${run.runId.replace('theta-stage-', '').replaceAll('-', ' ')}` : `研究任务 · ${run.runId.replace('theta-run-', '').slice(0, 8)}`;
+const runLabel = (run: ThetaRunSummary): string => run.identity?.displayName ?? (run.runId.startsWith('theta-stage-') ? `阶段验证 · ${run.runId.replace('theta-stage-', '').replaceAll('-', ' ')}` : '未命名研究任务');
+const runSubtitle = (run: ThetaRunSummary): string => [
+  run.recoveryOfRunId ? '恢复任务' : undefined,
+  run.identity?.modelId?.toUpperCase(),
+  typeof run.identity?.numTopics === 'number' ? `${run.identity.numTopics} 个主题` : undefined,
+  stateTitle(run.currentState),
+].filter(Boolean).join(' · ');
 const planCandidate = (plan: ThetaPlan) => plan.validatedPlan ?? plan.candidatePlan;
 const planModelId = (plan: ThetaPlan): string => planCandidate(plan)?.modelId?.toLowerCase() ?? '';
 const planTopicCount = (plan: ThetaPlan): number | null | undefined => {

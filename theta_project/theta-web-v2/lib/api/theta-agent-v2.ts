@@ -27,6 +27,13 @@ export interface ThetaRunSummary {
   recoveryOfRunId?: string;
   successorRunId?: string;
   presentation?: ThetaPresentation;
+  identity?: {
+    datasetName: string;
+    researchQuestion: string;
+    displayName: string;
+    modelId?: string;
+    numTopics?: number;
+  };
 }
 
 export interface ThetaRunStatus {
