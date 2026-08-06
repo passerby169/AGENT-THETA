@@ -21,6 +21,7 @@ import {
   thetaWebRunActionSchema,
   type ThetaWebApiEnvelope,
   type ThetaWebApiHealth,
+  type ThetaWebConversationMessage,
   type ThetaWebRunAction,
   type ThetaWebTimelineEntry,
 } from './contracts.js';
@@ -218,6 +219,35 @@ const routeRequest = async (
       ok: true,
       data: { runId, timeline, training, logs },
     });
+    return;
+  }
+
+  const conversationMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/conversation$/);
+  if (conversationMatch) {
+    if (method !== 'GET') return methodNotAllowed(response);
+    const runId = decodeURIComponent(conversationMatch[1]);
+    const limit = boundedLimit(url.searchParams.get('limit'));
+    const store = new SQLiteConversationStore(options.runtimeDb);
+    try {
+      const messages: ThetaWebConversationMessage[] = store
+        .listRecentMessages(`theta-web-${runId}`, limit)
+        .filter(
+          (message) =>
+            message.runId === runId &&
+            (message.role === 'user' || message.role === 'assistant'),
+        )
+        .map((message) => ({
+          messageId: message.messageId,
+          role: message.role as 'user' | 'assistant',
+          messageKind: message.messageKind,
+          content: message.content,
+          sequenceNumber: message.sequenceNumber,
+          createdAt: message.createdAt,
+        }));
+      writeJson(response, 200, { ok: true, data: { runId, messages } });
+    } finally {
+      store.close();
+    }
     return;
   }
 

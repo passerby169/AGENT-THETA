@@ -74,6 +74,15 @@ export interface ThetaRunTimeline {
   logs: string[];
 }
 
+export interface ThetaConversationMessage {
+  messageId: string;
+  role: 'user' | 'assistant';
+  messageKind: string;
+  content: string;
+  sequenceNumber: number;
+  createdAt: string;
+}
+
 export interface ThetaRunResults {
   runId: string;
   trainingRunId?: string;
@@ -227,6 +236,10 @@ export const ThetaAgentV2API = {
     get<ThetaRunStatus>(`runs/${encodeURIComponent(runId)}/status`),
   timeline: (runId: string, limit = 40): Promise<ThetaRunTimeline> =>
     get<ThetaRunTimeline>(`runs/${encodeURIComponent(runId)}/timeline?limit=${limit}`),
+  conversation: (runId: string, limit = 80): Promise<{ runId: string; messages: ThetaConversationMessage[] }> =>
+    get<{ runId: string; messages: ThetaConversationMessage[] }>(
+      `runs/${encodeURIComponent(runId)}/conversation?limit=${limit}`,
+    ),
   results: (runId: string): Promise<ThetaRunResults> =>
     get<ThetaRunResults>(`runs/${encodeURIComponent(runId)}/results`),
   analyzeResults: (

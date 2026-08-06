@@ -13,9 +13,11 @@ import {
   ExternalLink,
   Home,
   ImageIcon,
+  MessageSquareText,
   Play,
   Plus,
   RefreshCw,
+  Send,
   Settings2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -37,6 +39,7 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   ThetaAgentV2API,
   type ThetaDataset,
+  type ThetaConversationMessage,
   type ThetaHealth,
   type ThetaModel,
   type ThetaPlan,
@@ -102,6 +105,11 @@ export default function WorkbenchPage() {
       setDetailLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const requestedRunId = new URLSearchParams(window.location.search).get('run');
+    if (requestedRunId) void openRun(requestedRunId);
+  }, [openRun]);
 
   const actionable = useMemo(
     () => runs.filter((run) => actionableStates.has(run.currentState ?? '')),
@@ -274,6 +282,8 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   const [actionNotice, setActionNotice] = useState<string>();
   const [plan, setPlan] = useState<ThetaPlan>();
   const [models, setModels] = useState<ThetaModel[]>([]);
+  const [conversation, setConversation] = useState<ThetaConversationMessage[]>([]);
+  const [conversationLoading, setConversationLoading] = useState(false);
   const [timeline, setTimeline] = useState<ThetaRunTimeline>();
   const [results, setResults] = useState<ThetaRunResults>();
   const [resultsLoading, setResultsLoading] = useState(false);
@@ -289,6 +299,16 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
     setTimeline(await ThetaAgentV2API.timeline(targetRunId));
   }, []);
 
+  const loadConversation = useCallback(async (targetRunId: string) => {
+    setConversationLoading(true);
+    try {
+      const result = await ThetaAgentV2API.conversation(targetRunId);
+      setConversation(result.messages);
+    } finally {
+      setConversationLoading(false);
+    }
+  }, []);
+
   const loadResults = useCallback(async (targetRunId: string) => {
     setResultsLoading(true);
     try {
@@ -300,9 +320,11 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
 
   useEffect(() => {
     setTimeline(undefined);
+    setConversation([]);
     setResults(undefined);
     void loadTimeline(runId).catch((cause) => setActionError(errorMessage(cause)));
-  }, [loadTimeline, runId]);
+    void loadConversation(runId).catch((cause) => setActionError(errorMessage(cause)));
+  }, [loadConversation, loadTimeline, runId]);
 
   useEffect(() => {
     if (status?.currentState !== 'Completed') {
@@ -350,7 +372,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
         result.result.explanation ??
         (unresolved ? '当前回答未能解决这个问题，请根据提示补充后再次提交。' : undefined),
       );
-      await loadTimeline(result.status.runId);
+      await Promise.all([
+        loadTimeline(result.status.runId),
+        loadConversation(result.status.runId),
+      ]);
       if (
         action.action === 'adjustPlan' &&
         result.status.currentState === 'AwaitPlanCreationApproval'
@@ -409,6 +434,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       await onRefresh();
       await Promise.all([
         loadTimeline(runId),
+        loadConversation(runId),
         status?.currentState === 'Completed' ? loadResults(runId) : Promise.resolve(),
       ]);
     } catch (cause) {
@@ -448,7 +474,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       {actionNotice && !['ResearchClarification', 'ColumnConfirmation'].includes(status.currentState ?? '')
         ? <ActionNotice message={actionNotice} />
         : null}
-      <ActionPanel status={status} plan={plan} models={models} busy={busy} notice={actionNotice} onAction={act} />
+      <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} onAction={act} />
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
@@ -704,7 +730,7 @@ function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTim
   );
 }
 
-function ActionPanel({ status, plan, models, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<boolean> }) {
+function ActionPanel({ status, plan, models, conversation, conversationLoading, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; conversation: ThetaConversationMessage[]; conversationLoading: boolean; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<boolean> }) {
   const [text, setText] = useState('');
   const [model, setModel] = useState('');
   const [topics, setTopics] = useState('');
@@ -731,17 +757,14 @@ function ActionPanel({ status, plan, models, busy, notice, onAction }: { status:
   };
 
   if (state === 'ResearchClarification') return (
-    <ActionShell title="完善研究设置" description="每次只回答当前问题；提交成功后，系统会立即显示下一步。">
-      <div className="rounded-md border border-blue-300 bg-blue-50/70 px-5 py-5 shadow-sm">
-        <p className="text-xs font-semibold text-blue-600">当前必须回答</p>
-        <p className="mt-2 text-lg font-semibold leading-8 text-slate-950">{status.pendingReason ?? '请补充当前研究设置。'}</p>
-      </div>
-      <Label htmlFor="research-answer" className="mt-4 block text-sm font-medium text-slate-700">你的回答</Label>
-      <Textarea id="research-answer" value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} placeholder="只回答上方当前问题" className="mt-2 min-h-32" />
-      <div className="mt-2 flex items-start justify-between gap-4 text-xs text-slate-500"><p>提交后会刷新为下一道必要问题；如果当前回答不明确，系统会说明需要补充的内容。</p><span className="shrink-0">{text.length} / 4000</span></div>
-      <div className="mt-3 flex flex-wrap gap-2"><Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('answer')} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在理解回答并生成下一步...' : '提交回答并进入下一步'}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })}>必要信息已完整，开始分析</Button></div>
-      {notice ? <ClarificationFeedback message={notice} /> : null}
-    </ActionShell>
+    <ResearchConversation
+      status={status}
+      messages={conversation}
+      loading={conversationLoading}
+      busy={busy}
+      notice={notice}
+      onAction={onAction}
+    />
   );
 
   if (state === 'ColumnConfirmation') return (
@@ -786,6 +809,135 @@ function ActionPanel({ status, plan, models, busy, notice, onAction }: { status:
   if (state === 'Quarantined') return <ActionShell title="该记录已隔离" description="该次运行的产物或状态不完整，系统不会擅自重启。请保留此记录并新建研究；技术原因可在下方记录中核对。"><p className="text-sm text-amber-700">这不是等待审批，因此不需要点击“开始训练”。</p></ActionShell>;
   if (state === 'Completed') return <ActionShell title="训练已完成" description="训练和产物校验已经结束。"><div className="flex items-center gap-2 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" />结果已通过校验并绑定到本次 Run。</div>{status.trainingReceipt?.resultArtifacts?.length ? <div className="mt-3 space-y-2">{status.trainingReceipt.resultArtifacts.filter((item) => item.exists).map((item) => <div key={item.path} className="rounded-md bg-slate-50 px-3 py-2"><p className="text-xs font-medium text-slate-600">{item.kind}</p><p className="mt-1 break-all font-mono text-[11px] text-slate-500">{item.path}</p></div>)}</div> : null}</ActionShell>;
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
+}
+
+function ResearchConversation({ status, messages, loading, busy, notice, onAction }: {
+  status: ThetaRunStatus;
+  messages: ThetaConversationMessage[];
+  loading: boolean;
+  busy: boolean;
+  notice?: string;
+  onAction: (action: ThetaRunAction) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState('');
+  const endRef = useRef<HTMLDivElement>(null);
+  const researchMessages = useMemo(
+    () => messages.filter((message) => message.messageKind.startsWith('research.')),
+    [messages],
+  );
+  const currentPrompt = status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
+  const latestAssistant = [...researchMessages]
+    .reverse()
+    .find((message) => message.role === 'assistant');
+  const showCurrentPrompt = !latestAssistant?.content.includes(currentPrompt);
+  const noticeAlreadyShown = notice
+    ? researchMessages.some((message) => message.content.includes(notice))
+    : false;
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [busy, currentPrompt, researchMessages.length]);
+
+  const send = async () => {
+    const answer = draft.trim();
+    if (!answer || busy) return;
+    const accepted = await onAction({ action: 'answer', text: answer });
+    if (accepted) setDraft('');
+  };
+
+  return (
+    <section className="mt-5 overflow-hidden rounded-md border border-blue-200 bg-white">
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
+            <MessageSquareText className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-slate-900">THETA 研究助手</h2>
+            <p className="mt-0.5 text-xs text-slate-500">通过自然对话完善研究设置，关键答案仍由 FSM 校验后写入研究档案。</p>
+          </div>
+        </div>
+        <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">设置对话进行中</Badge>
+      </div>
+
+      <div className="max-h-[440px] min-h-[240px] space-y-5 overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6" aria-live="polite">
+        {loading && researchMessages.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
+        ) : null}
+        {researchMessages.map((message) => (
+          <ConversationBubble key={message.messageId} message={message} />
+        ))}
+        {showCurrentPrompt ? (
+          <ConversationBubble
+            message={{
+              messageId: `pending-${status.runId}-${currentPrompt}`,
+              role: 'assistant',
+              messageKind: 'research.question',
+              content: currentPrompt,
+              sequenceNumber: Number.MAX_SAFE_INTEGER,
+              createdAt: status.lastEventAt,
+            }}
+            current
+          />
+        ) : null}
+        {notice && !noticeAlreadyShown ? (
+          <div className="ml-11 max-w-3xl rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">{notice}</div>
+        ) : null}
+        {busy ? (
+          <div className="flex items-center gap-3 text-sm text-slate-500">
+            <span className="grid h-8 w-8 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span>
+            <span className="flex items-center gap-2"><RefreshCw className="h-3.5 w-3.5 animate-spin" />正在理解你的说明并核对研究档案...</span>
+          </div>
+        ) : null}
+        <div ref={endRef} />
+      </div>
+
+      <div className="border-t border-slate-100 bg-white p-4 sm:p-5">
+        <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
+          <Textarea
+            id="research-answer"
+            value={draft}
+            maxLength={4000}
+            disabled={busy}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              void send();
+            }}
+            placeholder="直接说明你的研究需求；Enter 发送，Shift + Enter 换行"
+            className="min-h-24 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+          />
+          <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
+            <span className="text-xs text-slate-400">{draft.length} / 4000</span>
+            <Button type="button" size="icon" disabled={busy || !draft.trim()} onClick={() => void send()} title="发送说明" className="h-9 w-9 rounded-md bg-blue-600 hover:bg-blue-700">
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+          <p>回答不相关或信息不足时，助手会在对话中说明原因，不会推进工作流。</p>
+          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">信息已完整，检查并继续</Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ConversationBubble({ message, current = false }: { message: ThetaConversationMessage; current?: boolean }) {
+  const isUser = message.role === 'user';
+  return (
+    <div className={`flex items-end gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser ? <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span> : null}
+      <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? 'text-right' : 'text-left'}`}>
+        <div className={`inline-block rounded-md px-4 py-3 text-left text-sm leading-6 shadow-sm ${isUser ? 'bg-blue-600 text-white' : current ? 'border border-blue-200 bg-blue-50 text-slate-900' : 'border border-slate-200 bg-white text-slate-700'}`}>
+          {current ? <p className="mb-1 text-[11px] font-semibold text-blue-600">当前需要确认</p> : null}
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        </div>
+        <p className={`mt-1 text-[11px] text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {formatTime(message.createdAt)}</p>
+      </div>
+    </div>
+  );
 }
 
 function CreateResearchDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (status: ThetaRunStatus) => void }) {

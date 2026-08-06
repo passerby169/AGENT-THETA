@@ -105,3 +105,12 @@ export interface ThetaWebTimelineEntry {
   detail?: string;
   timestamp: string;
 }
+
+export interface ThetaWebConversationMessage {
+  messageId: string;
+  role: 'user' | 'assistant';
+  messageKind: string;
+  content: string;
+  sequenceNumber: number;
+  createdAt: string;
+}

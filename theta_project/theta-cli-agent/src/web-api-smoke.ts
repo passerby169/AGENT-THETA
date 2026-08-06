@@ -4,6 +4,7 @@ import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createThetaWebApiServer, isUserFacingRun } from './web-api/server.js';
+import { SQLiteConversationStore } from './storage/sqlite-conversation-store.js';
 import {
   buildResultAnalysisContext,
   resultAnalysisTimeoutMs,
@@ -82,6 +83,50 @@ try {
   const address = server.address();
   assert(address && typeof address === 'object');
   const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const conversationRunId = 'theta-run-conversation-smoke';
+  const conversationStore = new SQLiteConversationStore(
+    path.join(root, 'runtime.sqlite'),
+  );
+  conversationStore.getOrCreateSession(`theta-web-${conversationRunId}`, {
+    activeRunId: conversationRunId,
+  });
+  conversationStore.appendMessage({
+    messageId: 'message.user.smoke',
+    sessionId: `theta-web-${conversationRunId}`,
+    runId: conversationRunId,
+    role: 'user',
+    messageKind: 'research.answer',
+    content: '我希望比较不同时间阶段。',
+    createdAt: '2026-08-06T00:00:00.000Z',
+  });
+  conversationStore.appendMessage({
+    messageId: 'message.assistant.smoke',
+    sessionId: `theta-web-${conversationRunId}`,
+    runId: conversationRunId,
+    role: 'assistant',
+    messageKind: 'research.progress',
+    content: '已记录比较需求。',
+    createdAt: '2026-08-06T00:00:01.000Z',
+  });
+  conversationStore.close();
+
+  const conversationResponse = await requestJson(
+    `${baseUrl}/api/v2/runs/${conversationRunId}/conversation?limit=20`,
+  );
+  const conversation = conversationResponse.body as {
+    ok: boolean;
+    data: { messages: Array<{ role: string; content: string }> };
+  };
+  assert.equal(conversationResponse.statusCode, 200);
+  assert.equal(conversation.ok, true);
+  assert.deepEqual(
+    conversation.data.messages.map(({ role, content }) => ({ role, content })),
+    [
+      { role: 'user', content: '我希望比较不同时间阶段。' },
+      { role: 'assistant', content: '已记录比较需求。' },
+    ],
+  );
 
   const runsResponse = await requestJson(`${baseUrl}/api/v2/runs?limit=3`);
   const runs = runsResponse.body as {
