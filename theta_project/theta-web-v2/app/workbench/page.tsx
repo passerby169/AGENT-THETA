@@ -1014,9 +1014,12 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
   onAction: (action: ThetaRunAction) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState('');
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const researchMessages = useMemo(
-    () => messages.filter((message) => message.messageKind.startsWith('research.')),
+    () => messages.filter((message) =>
+      message.messageKind.startsWith('research.') ||
+      message.messageKind.startsWith('conversation.'),
+    ),
     [messages],
   );
   const currentPrompt = status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
@@ -1029,18 +1032,21 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
     : false;
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const area = scrollAreaRef.current;
+    if (!area) return;
+    area.scrollTo({ top: area.scrollHeight, behavior: 'smooth' });
   }, [busy, currentPrompt, researchMessages.length]);
 
   const send = async () => {
     const answer = draft.trim();
     if (!answer || busy) return;
-    const accepted = await onAction({ action: 'answer', text: answer });
-    if (accepted) setDraft('');
+    setDraft('');
+    const accepted = await onAction({ action: 'message', text: answer, useMiniMax: true });
+    if (!accepted) setDraft((current) => current || answer);
   };
 
   return (
-    <section className="mt-4 flex min-h-[70vh] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
+    <section className="mt-4 flex h-[calc(100dvh-12rem)] min-h-[540px] max-h-[800px] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
@@ -1054,7 +1060,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
         <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">Agent 对话进行中</Badge>
       </div>
 
-      <div className="min-h-[360px] flex-1 space-y-5 overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6 sm:py-8" aria-live="polite">
+      <div ref={scrollAreaRef} className="min-h-0 flex-1 space-y-5 overscroll-contain overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6 sm:py-8" aria-live="polite">
         {loading && researchMessages.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
         ) : null}
@@ -1083,10 +1089,9 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
             <span className="flex items-center gap-2"><RefreshCw className="h-3.5 w-3.5 animate-spin" />正在理解你的说明并核对研究档案...</span>
           </div>
         ) : null}
-        <div ref={endRef} />
       </div>
 
-      <div className="sticky bottom-0 border-t border-slate-100 bg-white p-4 sm:p-5">
+      <div className="shrink-0 border-t border-slate-100 bg-white p-4 sm:p-5">
         <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
           <Textarea
             id="research-answer"
@@ -1099,7 +1104,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
               event.preventDefault();
               void send();
             }}
-            placeholder="回答当前问题，也可以补充新要求、纠正前文或修改研究约束"
+            placeholder="回答研究问题，或直接询问 THETA 能力、模型、数据与当前步骤"
             className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
           />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
@@ -1110,7 +1115,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
           </div>
         </div>
         <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <p>你可以一次补充多项信息；系统只采纳有明确证据的内容，并据此更新后续问题。</p>
+          <p>THETA 会先判断你是在回答研究设置，还是在向助手咨询；只有研究答案会推进流程。</p>
           <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">请检查现有信息并继续</Button>
         </div>
       </div>
@@ -1126,8 +1131,10 @@ function ConversationBubble({ message, current = false }: { message: ThetaConver
       ? '已更新研究设置并调整下一问'
       : message.messageKind === 'research.clarification'
         ? '需要补充后再继续'
-        : message.messageKind === 'research.interview.completed'
+      : message.messageKind === 'research.interview.completed'
           ? '研究设置已完成'
+          : message.messageKind === 'conversation.response'
+            ? 'THETA 助手回复'
           : undefined;
   return (
     <div className={`flex items-end gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>

@@ -198,6 +198,7 @@ export interface ThetaActionResult {
 
 export type ThetaRunAction =
   | { action: 'answer'; text: string }
+  | { action: 'message'; text: string; useMiniMax: boolean }
   | { action: 'columns'; text: string }
   | { action: 'finishInterview' }
   | { action: 'adjustPlan'; text: string }

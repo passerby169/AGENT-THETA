@@ -137,11 +137,16 @@ const shape = (request: NaturalLanguageRequest): string => {
     case 'interpret_column_confirmation':
       return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. The columns command and Web submit button are explicit confirmation, so accept one clear, type-valid assignment without asking the user to repeat it. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft only when a required role is missing or genuinely ambiguous.';
     case 'classify_conversation_intent':
-      return 'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|unknown","response":"..."}.';
+      return [
+        'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|research_answer|unknown","response":"..."}.',
+        'When currentQuestion is supplied, use research_answer only when the user supplies information that answers or corrects that question.',
+        'Questions about THETA capabilities, models, data handling, the current workflow, or how to answer are assistant requests, not research_answer.',
+        'A short uncertainty answer such as 不知道 or 不确定 is still research_answer when it responds to currentQuestion.',
+      ].join(' ');
     case 'propose_readonly_tool':
       return 'Shape: {"task":"propose_readonly_tool","intent":"...","toolId":"one supplied allowedToolIds or null","arguments":{},"reason":"...","confidence":0.0,"requiresConfirmation":false}. Never propose a write or training tool.';
     case 'compose_grounded_response':
-      return 'Shape: {"task":"compose_grounded_response","text":"...","evidenceIds":[]}. Use only supplied facts and evidence; never claim an action was executed unless facts prove it.';
+      return 'Shape: {"task":"compose_grounded_response","text":"...","evidenceIds":[]}. Act as the THETA research-training assistant. Answer directly about THETA capabilities, the active research workflow, datasets, models, evidence, and safe next steps. Use only supplied facts and evidence; never claim an action was executed unless facts prove it. End with the current research question when one is supplied and still needs an answer.';
   }
 };
 
@@ -269,16 +274,13 @@ const deterministicOutput = (
     case 'interpret_column_confirmation':
       return deterministicColumns(request);
     case 'classify_conversation_intent':
-      return deterministicIntent(request.text);
+      return deterministicIntent(request.text, request.currentQuestion);
     case 'propose_readonly_tool':
       return deterministicToolProposal(request.text, request.allowedToolIds);
     case 'compose_grounded_response':
       return {
         task: request.task,
-        text:
-          request.evidence.length > 0
-            ? `根据本地证据，已找到 ${request.evidence.length} 条相关信息：${request.evidence.map((item) => item.excerpt).join('；')}`
-            : `根据当前受治理工具结果：${sanitizeLanguageText(JSON.stringify(request.facts), 1600)}`,
+        text: deterministicGroundedResponse(request),
         evidenceIds: request.evidence.map((item) => item.evidenceId),
       };
   }
@@ -670,6 +672,7 @@ const columnDraftSummary = (draft: ColumnRoleDraft): string =>
 
 const deterministicIntent = (
   text: string,
+  currentQuestion?: string,
 ): NaturalLanguageProviderOutput => {
   const normalized = text.toLowerCase();
   const intent = /状态|进度|status|progress/u.test(normalized)
@@ -686,14 +689,47 @@ const deterministicIntent = (
               ? 'approve_current'
               : /拒绝|不同意|reject/u.test(normalized)
                 ? 'reject_current'
-                : /帮助|help|怎么用/u.test(normalized)
+                : /帮助|help|怎么用|能做什么|可以做什么|你是谁/u.test(normalized)
                   ? 'help'
-                  : 'chat';
+                  : currentQuestion && !/[？?]$/u.test(normalized)
+                    ? 'research_answer'
+                    : 'chat';
   return {
     task: 'classify_conversation_intent',
     intent,
     response: `已识别为 ${intent}。`,
   };
+};
+
+const deterministicGroundedResponse = (
+  request: Extract<
+    NaturalLanguageRequest,
+    { task: 'compose_grounded_response' }
+  >,
+): string => {
+  if (request.evidence.length > 0) {
+    return `根据 THETA 本地知识与运行证据，已找到 ${request.evidence.length} 条相关信息：${request.evidence.map((item) => item.excerpt).join('；')}`;
+  }
+  const facts = request.facts as Record<string, unknown>;
+  const capabilities = Array.isArray(facts.capabilities)
+    ? facts.capabilities.filter(
+        (item): item is string => typeof item === 'string',
+      )
+    : [];
+  const currentQuestion =
+    typeof facts.currentQuestion === 'string'
+      ? facts.currentQuestion
+      : undefined;
+  if (capabilities.length > 0) {
+    return [
+      `我是 THETA 专属研究训练助手。我可以${capabilities.join('；')}。`,
+      typeof facts.boundary === 'string' ? facts.boundary : '',
+      currentQuestion ? `当前研究流程仍需确认：${currentQuestion}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return `根据当前 THETA 受治理工具结果：${sanitizeLanguageText(JSON.stringify(request.facts), 1600)}`;
 };
 
 const deterministicToolProposal = (

@@ -92,6 +92,8 @@ export const naturalLanguageRequestSchema = z.discriminatedUnion('task', [
       text: boundedText,
       currentState: z.string().trim().min(1).max(160).optional(),
       pendingActionRef: z.string().trim().min(1).max(160).optional(),
+      currentQuestion: boundedText.optional(),
+      recentMessages: z.array(recentMessageSchema).max(12).default([]),
     })
     .strict(),
   z
@@ -198,6 +200,7 @@ export const conversationIntentSchema = z.enum([
   'reject_current',
   'help',
   'chat',
+  'research_answer',
   'unknown',
 ]);
 

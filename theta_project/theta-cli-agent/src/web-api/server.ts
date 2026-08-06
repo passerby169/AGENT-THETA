@@ -412,9 +412,19 @@ const executeRunAction = async (
   }
   const store = new SQLiteConversationStore(runtimeDb);
   try {
+    const sessionId = `theta-web-${runId}`;
+    if (action.action === 'message') {
+      store.getOrCreateSession(sessionId, { activeRunId: runId });
+      store.updateSession(sessionId, {
+        languageConsent: action.useMiniMax,
+        providerMode: action.useMiniMax ? 'minimax' : 'deterministic',
+      });
+    }
     const orchestrator = new ThetaTurnOrchestrator(store, workflow);
     const command = action.action === 'answer'
       ? { kind: 'answer' as const, text: action.text }
+      : action.action === 'message'
+        ? { kind: 'natural' as const, text: action.text }
       : action.action === 'columns'
         ? { kind: 'columns' as const, text: action.text }
         : action.action === 'finishInterview'
@@ -428,7 +438,7 @@ const executeRunAction = async (
                 }
               : { kind: 'startTraining' as const };
     const result = await orchestrator.execute(command, {
-      sessionId: `theta-web-${runId}`,
+      sessionId,
       activeRunId: runId,
       runtimeDb,
     });

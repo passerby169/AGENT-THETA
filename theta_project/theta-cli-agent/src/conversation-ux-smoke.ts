@@ -266,6 +266,38 @@ if (
   throw new Error('A meaningless answer was accepted as a research question.');
 }
 
+const assistantQuestionRoute = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'classify_conversation_intent',
+  text: '你能做什么？',
+  currentState: 'ResearchClarification',
+  pendingActionRef: 'research.clarification',
+  currentQuestion: '每条记录中，哪一类文本内容是你真正希望分析的正文？',
+  recentMessages: [],
+});
+if (
+  assistantQuestionRoute.output.task !== 'classify_conversation_intent' ||
+  assistantQuestionRoute.output.intent !== 'help'
+) {
+  throw new Error('A THETA capability question was mistaken for a research answer.');
+}
+
+const researchAnswerRoute = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'classify_conversation_intent',
+  text: '每条记录中的 text 列是需要分析的完整自然语言正文。',
+  currentState: 'ResearchClarification',
+  pendingActionRef: 'research.clarification',
+  currentQuestion: '每条记录中，哪一类文本内容是你真正希望分析的正文？',
+  recentMessages: [],
+});
+if (
+  researchAnswerRoute.output.task !== 'classify_conversation_intent' ||
+  researchAnswerRoute.output.intent !== 'research_answer'
+) {
+  throw new Error('A direct research answer was not routed to the ResearchBrief.');
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'theta-conversation-ux-'));
 const store = new SQLiteConversationStore(path.join(root, 'conversation.sqlite'));
 try {
@@ -315,6 +347,8 @@ console.log(
     extractedFields: Object.keys(guarded.patch).length,
     privacyFalsePositive: 'blocked',
     unrelatedAnswers: 'blocked',
+    assistantQuestions: 'routed',
+    researchAnswers: 'routed',
     noComparisonProgression: 'verified',
     parameterDecisionUx: 'verified',
     singleSubmitColumnConfirmation: 'verified',

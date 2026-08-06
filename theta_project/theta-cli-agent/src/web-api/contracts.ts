@@ -2,6 +2,11 @@ import { z } from 'zod';
 
 export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('answer'), text: z.string().trim().min(1).max(4000) }).strict(),
+  z.object({
+    action: z.literal('message'),
+    text: z.string().trim().min(1).max(4000),
+    useMiniMax: z.boolean().default(true),
+  }).strict(),
   z.object({ action: z.literal('columns'), text: z.string().trim().min(1).max(4000) }).strict(),
   z.object({ action: z.literal('finishInterview') }).strict(),
   z.object({ action: z.literal('adjustPlan'), text: z.string().trim().min(1).max(4000) }).strict(),

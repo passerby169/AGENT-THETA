@@ -50,6 +50,7 @@ const workflowCriticalLanguageTasks = new Set<NaturalLanguageRequest['task']>([
   'interpret_research_answer',
   'generate_grilling_question',
   'interpret_column_confirmation',
+  'classify_conversation_intent',
 ]);
 
 const workflowCriticalLanguageTask = (
@@ -185,7 +186,10 @@ export class ThetaTurnOrchestrator {
           current.status.pendingActionRef ===
           THETA_APPROVAL_KEYS.researchClarification
         ) {
-          return this.answer(command.text, { ...context, activeRunId });
+          return this.researchNaturalTurn(command.text, current, {
+            ...context,
+            activeRunId,
+          });
         }
         if (
           current.status.pendingActionRef ===
@@ -356,6 +360,35 @@ export class ThetaTurnOrchestrator {
       this.store.updateTurn(turn.turnId, 'failed', errorRecord(error));
       throw error;
     }
+  }
+
+  private async researchNaturalTurn(
+    text: string,
+    current: ThetaWorkflowConversationContext,
+    context: TurnContext,
+  ): Promise<TurnResult> {
+    const runId = requiredRun(context.activeRunId);
+    const { question } = activeResearchQuestion(current);
+    const routing = await this.language(
+      {
+        schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+        task: 'classify_conversation_intent',
+        text,
+        currentState: current.status.currentState,
+        pendingActionRef: current.status.pendingActionRef,
+        currentQuestion: question.question,
+        recentMessages: recent(this.store, context.sessionId, runId),
+      },
+      context.sessionId,
+      runId,
+    );
+    if (
+      routing.output.task === 'classify_conversation_intent' &&
+      routing.output.intent !== 'research_answer'
+    ) {
+      return this.freeText(text, context, current);
+    }
+    return this.answer(text, context);
   }
 
   private async finishResearchInterview(
@@ -636,11 +669,14 @@ export class ThetaTurnOrchestrator {
   private async freeText(
     text: string,
     context: TurnContext,
+    suppliedWorkflowContext?: ThetaWorkflowConversationContext,
   ): Promise<TurnResult> {
     const runId = context.activeRunId;
-    const workflowContext = runId
-      ? await this.workflow.conversationContext(runId, context.runtimeDb)
-      : undefined;
+    const workflowContext =
+      suppliedWorkflowContext ??
+      (runId
+        ? await this.workflow.conversationContext(runId, context.runtimeDb)
+        : undefined);
     const message = this.userMessage(context, runId, 'conversation.text', text);
     const allowedToolIds = [
       ...(runId
@@ -698,11 +734,25 @@ export class ThetaTurnOrchestrator {
       }
       default:
         toolResult = {
-          message:
+          assistant: 'THETA research-training assistant',
+          capabilities: [
+            '解释 THETA 当前阶段和下一步操作',
+            '读取当前 Run 状态与审计证据',
+            '检索 THETA 本地知识库并说明模型能力',
+            '根据你的研究回答更新研究档案并调整后续问题',
+            '解释训练方案、参数取舍、结果和研究限制',
+          ],
+          boundary:
             proposal.output.intent === 'approve_current' ||
             proposal.output.intent === 'reject_current'
-              ? '审批不会由 LLM 自动执行，请使用显式审批命令。'
-              : '当前没有需要执行的安全只读工具。可使用 /help。',
+              ? '我不会代替你审批方案或启动训练；这些操作必须由你显式确认。'
+              : '我可以提供建议和只读分析，但不会代替你审批方案或启动训练。',
+          currentState: workflowContext?.status.currentState,
+          currentQuestion:
+            workflowContext?.status.pendingActionRef ===
+            THETA_APPROVAL_KEYS.researchClarification
+              ? activeResearchQuestion(workflowContext).question.question
+              : undefined,
         };
     }
     const grounding = safeGrounding(proposal.output.toolId, toolResult);
@@ -860,11 +910,12 @@ export class ThetaTurnOrchestrator {
           return naturalLanguageResultSchema.parse(value.output);
         });
       } catch (error) {
-        if (!workflowCriticalLanguageTask(request.task)) throw error;
         const fallback = await this.deterministicLanguage.generate(request);
         generated = naturalLanguageResultSchema.parse({
           ...fallback,
-          fallbackReason: 'governed_provider_failed',
+          fallbackReason: workflowCriticalLanguageTask(request.task)
+            ? 'governed_provider_failed'
+            : 'assistant_provider_failed',
           telemetry: {
             ...fallback.telemetry,
             fallback: true,

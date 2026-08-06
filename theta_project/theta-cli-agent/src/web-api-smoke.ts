@@ -46,6 +46,10 @@ const server = createThetaWebApiServer({
 
 try {
   assert.deepEqual(thetaWebRunActionSchema.parse({ action: 'poll' }), { action: 'poll' });
+  assert.deepEqual(
+    thetaWebRunActionSchema.parse({ action: 'message', text: '你能做什么？' }),
+    { action: 'message', text: '你能做什么？', useMiniMax: true },
+  );
   const analysisRequest = thetaResultAnalysisRequestSchema.parse({
     question: '这些主题之间有什么差异？',
     selection: { topicIds: ['topic-1'] },
