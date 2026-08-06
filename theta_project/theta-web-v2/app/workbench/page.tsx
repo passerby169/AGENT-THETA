@@ -430,7 +430,13 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
           <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{run ? runSubtitle(run) : '研究任务'}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{run ? runLabel(run) : presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
           <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
         </div>
-        <div className="mt-5 flex items-center gap-3"><Progress value={progress} className="h-2" /><span className="whitespace-nowrap text-xs text-slate-400">{monitoring ? `训练 ${Math.round(progress)}%` : `步骤 ${presentation.progress?.current ?? '-'} / ${presentation.progress?.total ?? 7}`}</span></div>
+        <WorkflowProgress
+          current={presentation.progress?.current}
+          total={presentation.progress?.total}
+          label={presentation.progress?.label}
+          progress={progress}
+          monitoring={monitoring}
+        />
       </section>
 
       {actionError ? <ErrorNotice message={actionError} /> : null}
@@ -721,20 +727,24 @@ function ActionPanel({ status, plan, models, busy, notice, onAction }: { status:
 
   if (state === 'ResearchClarification') return (
     <ActionShell title="完善研究设置" description="每次只回答当前问题；提交成功后，系统会立即显示下一步。">
-      {notice ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800"><p className="font-semibold">上一步已记录</p><p className="mt-1">{notice}</p></div> : null}
-      <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950"><p className="text-xs font-semibold uppercase text-blue-600">当前问题</p><p className="mt-1 font-medium">{status.pendingReason ?? '请补充当前研究设置。'}</p></div>
-      <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="在这里回答当前问题" className="mt-3 min-h-24" />
-      <p className="mt-2 text-xs text-slate-500">填写后点击“提交回答并进入下一步”。如系统仍有必要信息缺口，会在上方显示新的当前问题。</p>
+      <div className="rounded-md border border-blue-300 bg-blue-50/70 px-5 py-5 shadow-sm">
+        <p className="text-xs font-semibold text-blue-600">当前必须回答</p>
+        <p className="mt-2 text-lg font-semibold leading-8 text-slate-950">{status.pendingReason ?? '请补充当前研究设置。'}</p>
+      </div>
+      <Label htmlFor="research-answer" className="mt-4 block text-sm font-medium text-slate-700">你的回答</Label>
+      <Textarea id="research-answer" value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} placeholder="只回答上方当前问题" className="mt-2 min-h-32" />
+      <div className="mt-2 flex items-start justify-between gap-4 text-xs text-slate-500"><p>提交后会刷新为下一道必要问题；如果当前回答不明确，系统会说明需要补充的内容。</p><span className="shrink-0">{text.length} / 4000</span></div>
       <div className="mt-3 flex flex-wrap gap-2"><Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('answer')} className="bg-blue-600 hover:bg-blue-700">{busy ? '正在理解回答并生成下一步...' : '提交回答并进入下一步'}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })}>必要信息已完整，开始分析</Button></div>
+      {notice ? <ClarificationFeedback message={notice} /> : null}
     </ActionShell>
   );
 
   if (state === 'ColumnConfirmation') return (
     <ActionShell title="确认数据列" description="说明正文、时间和 ID 列；不使用的角色可以写“无”。">
-      {notice ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800"><p className="font-semibold">研究设置已确认</p><p className="mt-1">{notice}</p></div> : null}
       <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950"><p className="text-xs font-semibold uppercase text-blue-600">当前操作</p><p className="mt-1 font-medium">确认正文、时间、ID 和元数据列，然后生成模型建议。</p></div>
       <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="例如：text 是正文列，timestamp 是时间列，id 是 ID 列，source 作为分组元数据" className="min-h-28" />
       <Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('columns')} className="mt-3 bg-blue-600 hover:bg-blue-700">{busy ? '正在校验...' : '确认列并生成模型建议'}</Button>
+      {notice ? <ClarificationFeedback message={notice} /> : null}
     </ActionShell>
   );
 
@@ -779,6 +789,10 @@ function CreateResearchDialog({ open, onOpenChange, onCreated }: { open: boolean
   const [goal, setGoal] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const trimmedGoal = goal.trim();
+  const hasDataset = Boolean(filePath);
+  const goalIsValid = trimmedGoal.length >= 8 && trimmedGoal.length <= 2000;
+  const canCreate = hasDataset && goalIsValid && !busy;
 
   useEffect(() => {
     if (!open) return;
@@ -800,7 +814,82 @@ function CreateResearchDialog({ open, onOpenChange, onCreated }: { open: boolean
     }
   };
 
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>新建研究</DialogTitle><DialogDescription>选择本地数据集并说明目标。THETA 会先确认研究信息和数据列，再推荐模型。</DialogDescription></DialogHeader>{error ? <ErrorNotice message={error} /> : null}<div className="space-y-4"><div><Label htmlFor="dataset">本地数据集</Label><select id="dataset" value={filePath} onChange={(event) => setFilePath(event.target.value)} className="mt-1.5 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="">请选择数据集</option>{datasets.map((dataset) => <option key={dataset.filePath} value={dataset.filePath}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}</select>{!datasets.length ? <p className="mt-1.5 text-xs text-amber-700">允许的数据目录中没有可用 CSV、TSV、JSON、JSONL 或 TXT 文件。</p> : null}</div><div><Label htmlFor="goal">研究目标</Label><Textarea id="goal" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。" className="mt-1.5 min-h-28" /></div><Button type="button" onClick={() => void create()} disabled={busy || !filePath || goal.trim().length < 8} className="w-full bg-blue-600 hover:bg-blue-700">{busy ? '正在创建...' : '创建研究并进入设置'}</Button></div></DialogContent></Dialog>;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>新建研究</DialogTitle>
+          <DialogDescription>满足下列两个条件后才能创建。THETA 随后会确认研究信息和数据列，再推荐模型。</DialogDescription>
+        </DialogHeader>
+        {error ? <ErrorNotice message={error} /> : null}
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+          <p className="text-xs font-semibold text-slate-700">创建条件</p>
+          <ul className="mt-2 space-y-2 text-xs text-slate-600">
+            <RequirementItem met={hasDataset}>选择一个允许目录中的数据集（CSV、TSV、JSON、JSONL 或 TXT）</RequirementItem>
+            <RequirementItem met={goalIsValid}>研究目标为 8 至 2000 个字符（当前 {trimmedGoal.length} 个）</RequirementItem>
+          </ul>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="dataset">本地数据集 <span className="text-red-500">*</span></Label>
+            <select id="dataset" value={filePath} onChange={(event) => setFilePath(event.target.value)} className="mt-1.5 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm">
+              <option value="">请选择数据集</option>
+              {datasets.map((dataset) => <option key={dataset.filePath} value={dataset.filePath}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
+            </select>
+            {!datasets.length ? <p className="mt-1.5 text-xs text-amber-700">允许的数据目录中没有可用文件。请先把数据集放入 THETA/data 或配置的允许目录。</p> : <p className="mt-1.5 text-xs text-slate-500">列表只显示后端允许读取的本地数据文件，不会扫描整块磁盘。</p>}
+          </div>
+          <div>
+            <div className="flex items-center justify-between gap-3"><Label htmlFor="goal">研究目标 <span className="text-red-500">*</span></Label><span className={`text-xs ${trimmedGoal.length > 2000 ? 'text-red-600' : 'text-slate-400'}`}>{trimmedGoal.length} / 2000</span></div>
+            <Textarea id="goal" value={goal} maxLength={2000} onChange={(event) => setGoal(event.target.value)} placeholder="例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。" className="mt-1.5 min-h-28" />
+            {trimmedGoal.length > 0 && trimmedGoal.length < 8 ? <p className="mt-1.5 text-xs text-amber-700">还需输入 {8 - trimmedGoal.length} 个字符才能创建研究。</p> : null}
+          </div>
+          <Button type="button" onClick={() => void create()} disabled={!canCreate} className="w-full bg-blue-600 hover:bg-blue-700">{busy ? '正在创建...' : '创建研究并进入设置'}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RequirementItem({ met, children }: { met: boolean; children: React.ReactNode }) {
+  return <li className="flex items-start gap-2"><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${met ? 'text-emerald-600' : 'text-slate-300'}`} /><span className={met ? 'text-slate-700' : undefined}>{children}</span></li>;
+}
+
+function ClarificationFeedback({ message }: { message: string }) {
+  const isError = /失败|错误|异常|无效|拒绝/.test(message);
+  const isSuccess = /已记录|已确认|成功|已完成/.test(message) && !isError;
+  const tone = isError
+    ? { title: '处理失败', classes: 'border-red-200 bg-red-50 text-red-800' }
+    : isSuccess
+      ? { title: '上一步已记录', classes: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
+      : { title: '需要补充或确认', classes: 'border-amber-200 bg-amber-50 text-amber-800' };
+  return <div className={`mt-4 rounded-md border px-4 py-3 text-sm leading-6 ${tone.classes}`}><p className="font-semibold">{tone.title}</p><p className="mt-0.5">{message}</p></div>;
+}
+
+const workflowStages = [
+  '完善研究设置',
+  '确认数据列',
+  '生成模型建议',
+  '审批训练方案',
+  '确认启动训练',
+  '执行与跟踪训练',
+  '校验并展示结果',
+];
+
+function WorkflowProgress({ current, total, label, progress, monitoring }: { current?: number; total?: number; label?: string; progress: number; monitoring: boolean }) {
+  const safeTotal = total ?? workflowStages.length;
+  const safeCurrent = current ?? 1;
+  const stageLabel = workflowStages[safeCurrent - 1] ?? label ?? '处理研究任务';
+  return (
+    <div className="mt-5 border-t border-slate-100 pt-4">
+      <div className="flex items-end justify-between gap-4">
+        <div><p className="text-xs font-medium text-slate-400">整体工作流进度</p><p className="mt-1 text-sm font-semibold text-slate-700">当前：{monitoring ? `${stageLabel} · ${Math.round(progress)}%` : stageLabel}</p></div>
+        <span className="shrink-0 text-xs text-slate-500">第 {safeCurrent} / {safeTotal} 阶段</span>
+      </div>
+      <Progress value={progress} className="mt-3 h-2" />
+      <p className="mt-2 text-xs leading-5 text-slate-500">进度条表示从研究设置到结果展示的整体流程阶段，不代表当前阶段需要回答的问题数量。</p>
+      {safeTotal === workflowStages.length ? <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-blue-600">查看全部 7 个阶段</summary><ol className="mt-2 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">{workflowStages.map((stage, index) => <li key={stage} className={`rounded-md px-2.5 py-2 ${index + 1 === safeCurrent ? 'bg-blue-50 font-medium text-blue-700' : 'bg-slate-50'}`}>{index + 1}. {stage}</li>)}</ol></details> : null}
+    </div>
+  );
 }
 
 function ActionShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
