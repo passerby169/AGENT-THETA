@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ResearchService } from './agent/research-service.js';
+import { detectResearchGaps } from './agent/gap-rules.js';
 import { ThetaNaturalLanguageService } from './language/natural-service.js';
 import { guardCriticalResearchPatch } from './language/research-answer-guards.js';
 import {
@@ -206,6 +207,65 @@ if (biasGuard.patch.sensitiveData !== undefined) {
   throw new Error('A statement about missing biases was mistaken for privacy consent.');
 }
 
+const noComparisonAnswer = '不需要比较任何来源、群体或时间阶段。';
+const noComparisonRequest: NaturalLanguageRequest = {
+  ...request,
+  gapId: 'gap.comparison-groups',
+  field: 'comparisonGroups',
+  question: '你希望比较哪些来源、群体或时间阶段？',
+  answer: noComparisonAnswer,
+};
+const noComparison = await new ThetaNaturalLanguageService().generate(noComparisonRequest);
+if (noComparison.output.task !== 'interpret_research_answer') {
+  throw new Error('No-comparison answer did not return a research patch.');
+}
+const noComparisonGuard = guardCriticalResearchPatch(
+  noComparisonRequest.field,
+  noComparisonAnswer,
+  noComparison.output.patch,
+  noComparison.output.confidenceByField,
+);
+if (
+  noComparisonGuard.patch.comparisonIntent !== 'none' ||
+  noComparisonGuard.patch.comparisonGroups?.length !== 0
+) {
+  throw new Error('Explicit no-comparison intent was not retained by the guard.');
+}
+const noComparisonBrief = new ResearchService().createBrief({
+  filePath: 'dataset.csv',
+  research: noComparisonGuard.patch,
+});
+if (detectResearchGaps(noComparisonBrief).some((gap) => gap.field === 'comparisonGroups')) {
+  throw new Error('Explicit no-comparison intent still produced a repeated question.');
+}
+
+const irrelevantComparison = await new ThetaNaturalLanguageService().generate({
+  ...noComparisonRequest,
+  answer: '今天天气很好。',
+});
+if (
+  irrelevantComparison.output.task !== 'interpret_research_answer' ||
+  irrelevantComparison.output.patch.comparisonGroups !== undefined ||
+  !irrelevantComparison.output.unresolvedFields.includes('comparisonGroups')
+) {
+  throw new Error('An unrelated answer was accepted as comparison intent.');
+}
+
+const irrelevantGoal = await new ThetaNaturalLanguageService().generate({
+  ...request,
+  gapId: 'gap.research-question',
+  field: 'researchQuestion',
+  question: '你希望通过这批数据回答什么研究问题？',
+  answer: '随便。',
+});
+if (
+  irrelevantGoal.output.task !== 'interpret_research_answer' ||
+  irrelevantGoal.output.patch.researchQuestion !== undefined ||
+  !irrelevantGoal.output.unresolvedFields.includes('researchQuestion')
+) {
+  throw new Error('A meaningless answer was accepted as a research question.');
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'theta-conversation-ux-'));
 const store = new SQLiteConversationStore(path.join(root, 'conversation.sqlite'));
 try {
@@ -254,6 +314,8 @@ console.log(
     noRunNavigation: 'start',
     extractedFields: Object.keys(guarded.patch).length,
     privacyFalsePositive: 'blocked',
+    unrelatedAnswers: 'blocked',
+    noComparisonProgression: 'verified',
     parameterDecisionUx: 'verified',
     singleSubmitColumnConfirmation: 'verified',
     revisionEvidence: 'persisted',

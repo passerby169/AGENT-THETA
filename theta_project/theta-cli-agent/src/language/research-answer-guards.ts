@@ -6,6 +6,51 @@ export interface GuardedResearchPatch {
   confirmationFields: string[];
 }
 
+const explicitNotApplicable =
+  /^(?:不|否|no|不要|无需|不需要|没有|无|不适用|暂未发现|尚未发现)(?:比较|分组|对比|偏差|局限|限制|group|comparison)?[。.]?$/iu;
+
+export const researchAnswerSupportsField = (
+  field: string,
+  answer: string,
+): boolean => {
+  const value = answer.trim();
+  if (!value || /^(?:不知道|不清楚|随便|都可以|无所谓|跳过|略)[。.]?$/iu.test(value)) {
+    return false;
+  }
+  switch (field.split(',')[0] ?? field) {
+    case 'researchQuestion':
+      return value.length >= 8 && /研究|目标|识别|分析|比较|探索|提取|预测|分类|主题|趋势|关系|影响/iu.test(value);
+    case 'analysisUnit':
+      return /每(?:一)?(?:行|条|篇|个)|记录|文档|文章|帖子|评论|样本|文本/iu.test(value);
+    case 'textFieldIntent':
+      return /正文|文本|内容|语料|字段|列/iu.test(value);
+    case 'collectionMethod':
+      return /采集|收集|整理|汇总|导出|爬取|抓取|问卷|访谈|实验|日志|数据库|平台|人工|生成|来源/iu.test(value);
+    case 'comparisonGroups':
+      return explicitNotApplicable.test(value) || /比较|对比|来源|群体|分组|时间|阶段|月份|年份|地区|类别|source|group|category|period/iu.test(value);
+    case 'successCriteria':
+      return value.length >= 4 && /成功|标准|清晰|稳定|准确|一致|可解释|关键词|代表|占比|趋势|指标|困惑度|主题|结果/iu.test(value);
+    case 'topicGranularity':
+      return /宽泛|少量|粗粒度|细粒度|更多主题|适中|中等|medium|broad|fine|\d+\s*个?主题/iu.test(value);
+    case 'knownBiases':
+      return explicitNotApplicable.test(value) || /偏差|局限|限制|样本|不均|缺失|噪声|代表性|误差/iu.test(value);
+    case 'hardwareLimit':
+      return /CPU|GPU|显卡|CUDA|\d+(?:\.\d+)?\s*(?:GB|G)\b/iu.test(value);
+    case 'timeRange':
+      return /时间|日期|年份|月份|季度|timestamp|date|(?:19|20)\d{2}/iu.test(value);
+    case 'sensitiveData':
+      return /个人|隐私|机密|敏感|医疗|商业|合成|模拟|不包含|不含|不存在|没有|\byes\b|\bno\b/iu.test(value);
+    case 'trendAnalysis':
+      return /时间|日期|趋势|变化|temporal|trend|time/iu.test(value);
+    case 'offlineOnly':
+      return /离线|联网|远程|offline|online|remote/iu.test(value);
+    case 'language':
+      return /中文|英文|英语|汉语|language|Chinese|English/iu.test(value);
+    default:
+      return value.length >= 2;
+  }
+};
+
 const explicitlyNoGpu =
   /(?:不|不要|不用|禁止|无法|没有|无)\s*(?:使用|可用|支持)?\s*(?:GPU|显卡|CUDA)/iu;
 const explicitlyNoCpu =
@@ -21,6 +66,12 @@ export const guardCriticalResearchPatch = (
   const patch: ResearchBriefPatch = { ...providerPatch };
   const correctedFields: string[] = [];
   const confirmationFields: string[] = [];
+
+  if (!researchAnswerSupportsField(authoritativeField, answer)) {
+    delete patch[authoritativeField as keyof ResearchBriefPatch];
+    if (authoritativeField === 'comparisonGroups') delete patch.comparisonIntent;
+    confirmationFields.push(authoritativeField);
+  }
 
   const shortNo =
     authoritativeField === 'sensitiveData' &&
@@ -104,8 +155,10 @@ export const guardCriticalResearchPatch = (
       }
       patch.comparisonGroups = [];
       patch.comparisonIntent = 'none';
+      correctedFields.push('comparisonIntent');
     } else if ((patch.comparisonGroups?.length ?? 0) > 0) {
       patch.comparisonIntent = 'groups';
+      correctedFields.push('comparisonIntent');
     }
   }
 

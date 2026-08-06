@@ -17,6 +17,7 @@ import {
   sanitizeLanguageText,
   sanitizeResearchBrief,
 } from './sanitizer.js';
+import { researchAnswerSupportsField } from './research-answer-guards.js';
 
 export interface NaturalLanguageServiceOptions {
   provider?: InferenceProvider;
@@ -327,19 +328,20 @@ const deterministicResearchPatch = (
   field: string,
 ): Record<string, unknown> => {
   const patch: Record<string, unknown> = {};
-  if (field === 'trendAnalysis') {
+  const supportsActiveField = researchAnswerSupportsField(field, answer);
+  if (field === 'trendAnalysis' && supportsActiveField) {
     if (/(时间|趋势|变化|temporal|trend)/iu.test(answer)) {
       patch.trendAnalysis = !/(不|否|no|不要|无需)/iu.test(answer);
     }
-  } else if (field === 'offlineOnly') {
+  } else if (field === 'offlineOnly' && supportsActiveField) {
     patch.offlineOnly = !/(联网|远程|online|remote)/iu.test(answer);
-  } else if (field === 'topicGranularity') {
+  } else if (field === 'topicGranularity' && supportsActiveField) {
     patch.topicGranularity = /细|fine/iu.test(answer)
       ? 'fine'
       : /粗|宽|broad/iu.test(answer)
         ? 'broad'
         : 'medium';
-  } else if (field === 'timeRange') {
+  } else if (field === 'timeRange' && supportsActiveField) {
     const years = answer.match(/(?:19|20)\d{2}/gu) ?? [];
     if (years.length > 0) {
       patch.timeRange = {
@@ -347,12 +349,12 @@ const deterministicResearchPatch = (
         ...(years[1] ? { end: years[1] } : {}),
       };
     }
-  } else if (field === 'sensitiveData') {
+  } else if (field === 'sensitiveData' && supportsActiveField) {
     const sensitiveStatus = explicitSensitiveStatus(answer, true);
     if (sensitiveStatus) {
       patch.sensitiveData = { status: sensitiveStatus, categories: [] };
     }
-  } else if (field === 'hardwareLimit') {
+  } else if (field === 'hardwareLimit' && supportsActiveField) {
     const memory = answer.match(/(\d+(?:\.\d+)?)\s*(?:GB|G)/iu);
     patch.hardwareLimit = {
       device:
@@ -368,6 +370,7 @@ const deterministicResearchPatch = (
       ...(memory ? { memoryGb: Number(memory[1]) } : {}),
     };
   } else if (
+    supportsActiveField &&
     ['comparisonGroups', 'knownBiases', 'successCriteria'].includes(field)
   ) {
     patch[field] = answer
@@ -375,6 +378,7 @@ const deterministicResearchPatch = (
       .map((value) => value.trim())
       .filter(Boolean);
   } else if (
+    supportsActiveField &&
     [
       'researchQuestion',
       'collectionMethod',

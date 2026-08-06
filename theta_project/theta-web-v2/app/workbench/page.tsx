@@ -344,7 +344,12 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
     try {
       const result = await ThetaAgentV2API.act(runId, action);
       onStatusChange(result.status);
-      setActionNotice(result.result.response ?? result.result.explanation);
+      const unresolved = result.result.kind === 'research.answer.unresolved';
+      setActionNotice(
+        result.result.response ??
+        result.result.explanation ??
+        (unresolved ? '当前回答未能解决这个问题，请根据提示补充后再次提交。' : undefined),
+      );
       await loadTimeline(result.status.runId);
       if (
         action.action === 'adjustPlan' &&
@@ -352,7 +357,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       ) {
         await loadPlan(result.status.runId);
       }
-      return true;
+      return !unresolved;
     } catch (cause) {
       setActionError(errorMessage(cause));
       return false;
