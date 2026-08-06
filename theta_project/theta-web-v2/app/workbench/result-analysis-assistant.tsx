@@ -35,12 +35,22 @@ export function ResultAnalysisAssistant({
   selectionCount,
   selectedItems,
   selectedVisualizations,
+  allSelection,
+  allSelectionCount,
+  allSelectedItems,
+  allSelectedVisualizations,
+  onSelectAll,
 }: {
   runId: string;
   selection: ThetaResultAnalysisSelection;
   selectionCount: number;
   selectedItems: string[];
   selectedVisualizations: SelectedVisualization[];
+  allSelection: ThetaResultAnalysisSelection;
+  allSelectionCount: number;
+  allSelectedItems: string[];
+  allSelectedVisualizations: SelectedVisualization[];
+  onSelectAll: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState('');
@@ -118,19 +128,42 @@ export function ResultAnalysisAssistant({
     }
   };
 
-  const captureSelection = () => {
-    if (!selectionCount) return;
+  const capture = (
+    nextSelection: ThetaResultAnalysisSelection,
+    nextItems: string[],
+    nextVisualizations: SelectedVisualization[],
+  ) => {
     setAttachment({
       selection: {
-        topicIds: [...selection.topicIds],
-        metricKeys: [...selection.metricKeys],
-        visualizationIds: [...selection.visualizationIds],
-        includeGoalAssessment: selection.includeGoalAssessment,
-        includeWarnings: selection.includeWarnings,
+        topicIds: [...nextSelection.topicIds],
+        metricKeys: [...nextSelection.metricKeys],
+        visualizationIds: [...nextSelection.visualizationIds],
+        includeGoalAssessment: nextSelection.includeGoalAssessment,
+        includeWarnings: nextSelection.includeWarnings,
       },
-      items: [...selectedItems],
-      visualizations: [...selectedVisualizations],
+      items: [...nextItems],
+      visualizations: [...nextVisualizations],
     });
+    setError(undefined);
+  };
+
+  const captureSelection = () => {
+    if (!selectionCount) return;
+    capture(selection, selectedItems, selectedVisualizations);
+  };
+
+  const captureAll = () => {
+    if (!allSelectionCount) return;
+    onSelectAll();
+    capture(allSelection, allSelectedItems, allSelectedVisualizations);
+  };
+
+  const choosePrompt = (prompt: string) => {
+    if (!attachment) {
+      if (selectionCount) captureSelection();
+      else captureAll();
+    }
+    setQuestion(prompt);
     setError(undefined);
   };
 
@@ -146,7 +179,7 @@ export function ResultAnalysisAssistant({
             <ShieldCheck className="h-3 w-3 text-emerald-600" />仅包含已勾选结果
           </p>
         </div>
-        <span className={`ml-auto rounded-sm px-2 py-1 text-[11px] font-semibold ${attachment ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{attachment ? `已获取 ${attachment.items.length}` : `待获取 ${selectionCount}`}</span>
+        <span className={`ml-auto rounded-sm px-2 py-1 text-[11px] font-semibold ${attachment ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{attachment ? `已载入 ${attachment.items.length}` : selectionCount ? `已勾选 ${selectionCount}` : '未选择范围'}</span>
       </div>
 
       <div className="max-h-[52vh] min-h-80 space-y-3 overflow-y-auto bg-slate-50/60 px-4 py-4 xl:min-h-0 xl:max-h-none xl:flex-1">
@@ -161,10 +194,10 @@ export function ResultAnalysisAssistant({
           <div className="space-y-3">
             <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-3 text-xs leading-5 text-blue-900">
               <Sparkles className="mb-2 h-4 w-4 text-blue-600" />
-              先在左侧勾选结果，再点击下方“获取所勾选内容”。
+              可以直接载入全部结果进行审核，也可以先在左侧勾选指标或图表，只分析关注内容。载入不会调用 AI，点击“发送分析”后才会产生请求。
             </div>
             {['总结所选结果的主要发现', '指出这些结果的研究限制', '给出下一步验证建议'].map((prompt) => (
-              <button key={prompt} type="button" disabled={busy} onClick={() => { setQuestion(prompt); setError(undefined); }} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <button key={prompt} type="button" disabled={busy || allSelectionCount === 0} onClick={() => choosePrompt(prompt)} className="block w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs text-slate-600 hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {prompt}
               </button>
             ))}
@@ -178,9 +211,14 @@ export function ResultAnalysisAssistant({
       <div className="border-t border-slate-100 p-3">
         {messages.length === 0 ? (
           <>
-            <Button type="button" variant={attachment ? 'outline' : 'secondary'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="mb-2 w-full gap-2">
-              <ListPlus className="h-3.5 w-3.5" />{attachment ? '重新获取所勾选内容' : '获取所勾选内容'}
-            </Button>
+            <div className="mb-2 grid gap-2">
+              <Button type="button" variant={selectionCount ? 'default' : 'outline'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="w-full gap-2">
+                <ListPlus className="h-3.5 w-3.5" />{selectionCount ? `载入已勾选结果（${selectionCount} 项）` : '尚未勾选结果'}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={captureAll} disabled={busy || allSelectionCount === 0} className="w-full gap-2">
+                <Sparkles className="h-3.5 w-3.5" />载入全部可分析结果（{allSelectionCount} 项）
+              </Button>
+            </div>
             {attachment ? (
               <div className="mb-2 rounded-md border border-blue-100 bg-blue-50/70 p-2">
                 <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析附件 · {attachment.items.length} 项</p>

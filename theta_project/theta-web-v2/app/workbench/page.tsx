@@ -738,7 +738,7 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
   const selectedItems = [
     ...metricEntries
       .filter(([key]) => selection.metricKeys.includes(key))
-      .map(([key]) => `指标：${metricLabel(key)}`),
+      .map(([key, value]) => `指标：${metricLabel(key)} = ${formatResultValue(value)}`),
     ...results.visualizations
       .filter((item) => selection.visualizationIds.includes(item.id))
       .map((item) => `图表：${item.label}`),
@@ -753,13 +753,30 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
       format: item.format,
       src: ThetaAgentV2API.resultAssetUrl(runId, item.relativePath),
     }));
-  const selectAll = () => setSelection({
+  const allSelection: ThetaResultAnalysisSelection = {
     topicIds: [],
     metricKeys: metricEntries.slice(0, 12).map(([key]) => key),
     visualizationIds: results.visualizations.slice(0, 12).map((item) => item.id),
     includeGoalAssessment: results.goalAssessment.length > 0,
     includeWarnings: results.warnings.length > 0,
-  });
+  };
+  const allSelectedItems = [
+    ...metricEntries.slice(0, 12).map(([key, value]) => `指标：${metricLabel(key)} = ${formatResultValue(value)}`),
+    ...results.visualizations.slice(0, 12).map((item) => `图表：${item.label}`),
+    ...(allSelection.includeGoalAssessment ? ['研究目标核对'] : []),
+    ...(allSelection.includeWarnings ? ['结果解读提醒'] : []),
+  ];
+  const allSelectedVisualizations = results.visualizations.slice(0, 12).map((item) => ({
+    id: item.id,
+    label: item.label,
+    format: item.format,
+    src: ThetaAgentV2API.resultAssetUrl(runId, item.relativePath),
+  }));
+  const allSelectionCount = allSelection.metricKeys.length
+    + allSelection.visualizationIds.length
+    + Number(allSelection.includeGoalAssessment)
+    + Number(allSelection.includeWarnings);
+  const selectAll = () => setSelection(allSelection);
   const analysisSelection: ThetaResultAnalysisSelection = {
     ...selection,
     topicIds: [],
@@ -838,7 +855,18 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
 
       {results.resultRoot ? <details className="border-t border-slate-100 px-5 py-4"><summary className="cursor-pointer text-xs font-medium text-slate-500">查看本地结果目录</summary><p className="mt-2 break-all font-mono text-[11px] leading-5 text-slate-500">{results.resultRoot}</p></details> : null}
     </section>
-    <ResultAnalysisAssistant runId={runId} selection={analysisSelection} selectionCount={selectionCount} selectedItems={selectedItems} selectedVisualizations={selectedVisualizations} />
+    <ResultAnalysisAssistant
+      runId={runId}
+      selection={analysisSelection}
+      selectionCount={selectionCount}
+      selectedItems={selectedItems}
+      selectedVisualizations={selectedVisualizations}
+      allSelection={allSelection}
+      allSelectionCount={allSelectionCount}
+      allSelectedItems={allSelectedItems}
+      allSelectedVisualizations={allSelectedVisualizations}
+      onSelectAll={selectAll}
+    />
     </div>
   );
 }
