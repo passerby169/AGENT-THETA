@@ -612,28 +612,63 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   const progress = monitoring && typeof trainingProgress === 'number'
     ? trainingProgress
     : workflowProgress;
-  return (
-    <div>
-      <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
-      <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-          <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{run ? runSubtitle(run) : '研究任务'}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{run ? runLabel(run) : presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
-          <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
-        </div>
-        <WorkflowProgress
-          current={presentation.progress?.current}
-          total={presentation.progress?.total}
-          label={presentation.progress?.label}
-          progress={progress}
-          monitoring={monitoring}
-        />
-      </section>
-
+  const conversationMode = status.currentState === 'ResearchClarification';
+  const overviewContent = (
+    <>
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{run ? runSubtitle(run) : '研究任务'}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{run ? runLabel(run) : presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
+        <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 shrink-0 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
+      </div>
+      <WorkflowProgress
+        current={presentation.progress?.current}
+        total={presentation.progress?.total}
+        label={presentation.progress?.label}
+        progress={progress}
+        monitoring={monitoring}
+      />
+    </>
+  );
+  const actionPanel = <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} onAction={act} />;
+  const notices = (
+    <>
       {actionError ? <ErrorNotice message={actionError} /> : null}
       {actionNotice && !['ResearchClarification', 'ColumnConfirmation'].includes(status.currentState ?? '')
         ? <ActionNotice message={actionNotice} />
         : null}
-      <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} onAction={act} />
+    </>
+  );
+  return (
+    <div>
+      <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
+      {conversationMode ? (
+        <>
+          <div className="mt-3 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-blue-600">研究设置对话</p>
+              <h1 className="mt-1 truncate text-lg font-semibold text-slate-900 sm:text-xl">{run ? runLabel(run) : presentation.title}</h1>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">第 {presentation.progress?.current ?? 1} / {presentation.progress?.total ?? 7} 阶段</Badge>
+              <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md bg-white"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
+            </div>
+          </div>
+          {notices}
+          {actionPanel}
+          <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
+            <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-700 hover:bg-slate-50 sm:px-5">
+              <span>任务概览与整体流程</span>
+              <span className="text-xs font-normal text-slate-400">需要时展开</span>
+            </summary>
+            <div className="border-t border-slate-100 p-5 sm:p-6">{overviewContent}</div>
+          </details>
+        </>
+      ) : (
+        <>
+          <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">{overviewContent}</section>
+          {notices}
+          {actionPanel}
+        </>
+      )}
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
@@ -1005,7 +1040,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
   };
 
   return (
-    <section className="mt-5 overflow-hidden rounded-md border border-blue-200 bg-white">
+    <section className="mt-4 flex min-h-[70vh] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
@@ -1013,13 +1048,13 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
           </span>
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-slate-900">THETA 研究助手</h2>
-            <p className="mt-0.5 text-xs text-slate-500">通过自然对话完善研究设置，关键答案仍由 FSM 校验后写入研究档案。</p>
+            <p className="mt-0.5 text-xs text-slate-500">我会根据你的新回答更新研究档案、调整判断，并重新决定下一步。</p>
           </div>
         </div>
-        <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">设置对话进行中</Badge>
+        <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">Agent 对话进行中</Badge>
       </div>
 
-      <div className="max-h-[440px] min-h-[240px] space-y-5 overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6" aria-live="polite">
+      <div className="min-h-[360px] flex-1 space-y-5 overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6 sm:py-8" aria-live="polite">
         {loading && researchMessages.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
         ) : null}
@@ -1051,7 +1086,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
         <div ref={endRef} />
       </div>
 
-      <div className="border-t border-slate-100 bg-white p-4 sm:p-5">
+      <div className="sticky bottom-0 border-t border-slate-100 bg-white p-4 sm:p-5">
         <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
           <Textarea
             id="research-answer"
@@ -1064,8 +1099,8 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
               event.preventDefault();
               void send();
             }}
-            placeholder="直接说明你的研究需求；Enter 发送，Shift + Enter 换行"
-            className="min-h-24 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
+            placeholder="回答当前问题，也可以补充新要求、纠正前文或修改研究约束"
+            className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
           />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
             <span className="text-xs text-slate-400">{draft.length} / 4000</span>
@@ -1075,8 +1110,8 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
           </div>
         </div>
         <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <p>回答不相关或信息不足时，助手会在对话中说明原因，不会推进工作流。</p>
-          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">信息已完整，检查并继续</Button>
+          <p>你可以一次补充多项信息；系统只采纳有明确证据的内容，并据此更新后续问题。</p>
+          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">请检查现有信息并继续</Button>
         </div>
       </div>
     </section>
@@ -1085,12 +1120,21 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
 
 function ConversationBubble({ message, current = false }: { message: ThetaConversationMessage; current?: boolean }) {
   const isUser = message.role === 'user';
+  const assistantLabel = current
+    ? '当前需要确认'
+    : message.messageKind === 'research.progress'
+      ? '已更新研究设置并调整下一问'
+      : message.messageKind === 'research.clarification'
+        ? '需要补充后再继续'
+        : message.messageKind === 'research.interview.completed'
+          ? '研究设置已完成'
+          : undefined;
   return (
     <div className={`flex items-end gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser ? <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span> : null}
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? 'text-right' : 'text-left'}`}>
         <div className={`inline-block rounded-md px-4 py-3 text-left text-sm leading-6 shadow-sm ${isUser ? 'bg-blue-600 text-white' : current ? 'border border-blue-200 bg-blue-50 text-slate-900' : 'border border-slate-200 bg-white text-slate-700'}`}>
-          {current ? <p className="mb-1 text-[11px] font-semibold text-blue-600">当前需要确认</p> : null}
+          {!isUser && assistantLabel ? <p className="mb-1 text-[11px] font-semibold text-blue-600">{assistantLabel}</p> : null}
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         </div>
         <p className={`mt-1 text-[11px] text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {formatTime(message.createdAt)}</p>
