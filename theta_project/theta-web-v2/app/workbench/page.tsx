@@ -25,6 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ResultAnalysisAssistant } from './result-analysis-assistant';
+import { ThetaOneWorkbench } from './theta-one-workbench';
 import { ZoomableResultImage } from './zoomable-result-image';
 import {
   Dialog,
@@ -71,6 +72,8 @@ interface OptimisticConversationMessage extends ThetaConversationMessage {
   baselineMatches: number;
   delivery: 'sending' | 'failed';
 }
+
+type WorkspaceMode = 'agent' | 'classic';
 
 export default function WorkbenchPage() {
   const router = useRouter();
@@ -461,12 +464,32 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   const [results, setResults] = useState<ThetaRunResults>();
   const [resultsLoading, setResultsLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('agent');
   const actionInFlight = useRef(false);
   const onStatusChangeRef = useRef(onStatusChange);
 
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
+
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('mode');
+    if (requested === 'agent' || requested === 'classic') {
+      setWorkspaceMode(requested);
+      window.localStorage.setItem('theta-workbench-mode', requested);
+      return;
+    }
+    const stored = window.localStorage.getItem('theta-workbench-mode');
+    if (stored === 'agent' || stored === 'classic') setWorkspaceMode(stored);
+  }, []);
+
+  const changeWorkspaceMode = (mode: WorkspaceMode) => {
+    setWorkspaceMode(mode);
+    window.localStorage.setItem('theta-workbench-mode', mode);
+    const url = new URL(window.location.href);
+    url.searchParams.set('mode', mode);
+    window.history.replaceState({}, '', url);
+  };
 
   const loadTimeline = useCallback(async (targetRunId: string) => {
     setTimeline(await ThetaAgentV2API.timeline(targetRunId));
@@ -648,7 +671,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       />
     </>
   );
-  const actionPanel = <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} onAction={act} />;
+  const actionPanel = <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} compact={workspaceMode === 'classic'} onAction={act} />;
   const notices = (
     <>
       {actionError ? <ErrorNotice message={actionError} /> : null}
@@ -659,8 +682,28 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   );
   return (
     <div>
-      <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
-      {conversationMode ? (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 w-fit text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
+        <div className="flex w-full items-center rounded-md border border-blue-200 bg-white p-1 shadow-sm sm:w-auto" aria-label="工作模式切换">
+          <button type="button" aria-pressed={workspaceMode === 'agent'} onClick={() => changeWorkspaceMode('agent')} className={`flex min-h-9 flex-1 items-center justify-center gap-2 rounded px-4 text-xs font-semibold transition-colors sm:flex-none ${workspaceMode === 'agent' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}><MessageSquareText className="h-4 w-4" />二代 Agent</button>
+          <button type="button" aria-pressed={workspaceMode === 'classic'} onClick={() => changeWorkspaceMode('classic')} className={`flex min-h-9 flex-1 items-center justify-center gap-2 rounded px-4 text-xs font-semibold transition-colors sm:flex-none ${workspaceMode === 'classic' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}><Database className="h-4 w-4" />一代工作台</button>
+        </div>
+      </div>
+      <p className="mt-2 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
+      {workspaceMode === 'classic' ? (
+        <>
+          {notices}
+          <ThetaOneWorkbench
+            run={run}
+            status={status}
+            timeline={timeline}
+            plan={plan}
+            results={results}
+            resultsLoading={resultsLoading}
+            assistant={actionPanel}
+          />
+        </>
+      ) : conversationMode ? (
         <>
           <div className="mt-3 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -972,7 +1015,7 @@ function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTim
   );
 }
 
-function ActionPanel({ status, plan, models, conversation, conversationLoading, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; conversation: ThetaConversationMessage[]; conversationLoading: boolean; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<RunActionOutcome> }) {
+function ActionPanel({ status, plan, models, conversation, conversationLoading, busy, notice, compact = false, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; conversation: ThetaConversationMessage[]; conversationLoading: boolean; busy: boolean; notice?: string; compact?: boolean; onAction: (action: ThetaRunAction) => Promise<RunActionOutcome> }) {
   const [text, setText] = useState('');
   const [model, setModel] = useState('');
   const [topics, setTopics] = useState('');
@@ -1005,6 +1048,7 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
       loading={conversationLoading}
       busy={busy}
       notice={notice}
+      compact={compact}
       onAction={onAction}
     />
   );
@@ -1073,12 +1117,13 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
 }
 
-function ResearchConversation({ status, messages, loading, busy, notice, onAction }: {
+function ResearchConversation({ status, messages, loading, busy, notice, compact = false, onAction }: {
   status: ThetaRunStatus;
   messages: ThetaConversationMessage[];
   loading: boolean;
   busy: boolean;
   notice?: string;
+  compact?: boolean;
   onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
 }) {
   const [draft, setDraft] = useState('');
@@ -1144,7 +1189,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
   };
 
   return (
-    <section className="mt-4 flex h-[calc(100dvh-12rem)] min-h-[540px] max-h-[800px] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
+    <section className={`flex flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm ${compact ? 'h-[calc(100dvh-8.5rem)] min-h-[560px] max-h-[820px]' : 'mt-4 h-[calc(100dvh-12rem)] min-h-[540px] max-h-[800px]'}`}>
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
@@ -1152,13 +1197,13 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
           </span>
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-slate-900">THETA 研究助手</h2>
-            <p className="mt-0.5 text-xs text-slate-500">我会根据你的新回答更新研究档案、调整判断，并重新决定下一步。</p>
+            <p className={`mt-0.5 text-xs text-slate-500 ${compact ? 'line-clamp-2' : ''}`}>我会根据你的新回答更新研究档案、调整判断，并重新决定下一步。</p>
           </div>
         </div>
         <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">Agent 对话进行中</Badge>
       </div>
 
-      <div ref={scrollAreaRef} className="min-h-0 flex-1 space-y-5 overscroll-contain overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6 sm:py-8" aria-live="polite">
+      <div ref={scrollAreaRef} className={`min-h-0 flex-1 overscroll-contain overflow-y-auto bg-slate-50/60 ${compact ? 'space-y-3 px-3 py-4' : 'space-y-5 px-4 py-6 sm:px-6 sm:py-8'}`} aria-live="polite">
         {loading && researchMessages.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
         ) : null}
@@ -1192,7 +1237,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
         ) : null}
       </div>
 
-      <div className="shrink-0 border-t border-slate-100 bg-white p-4 sm:p-5">
+      <div className={`shrink-0 border-t border-slate-100 bg-white ${compact ? 'p-3' : 'p-4 sm:p-5'}`}>
         <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
           <Textarea
             id="research-answer"
@@ -1206,7 +1251,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
               void send();
             }}
             placeholder="回答研究问题，或直接询问 THETA 能力、模型、数据与当前步骤"
-            className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
+            className={`${compact ? 'min-h-20' : 'min-h-28'} min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0`}
           />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
             <span className="text-xs text-slate-400">{draft.length} / 4000</span>
@@ -1215,8 +1260,8 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
             </Button>
           </div>
         </div>
-        <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <p>THETA 会先判断你是在回答研究设置，还是在向助手咨询；只有研究答案会推进流程。</p>
+        <div className={`mt-3 flex flex-col gap-2 text-xs text-slate-500 ${compact ? '' : 'sm:flex-row sm:items-center sm:justify-between'}`}>
+          <p className={compact ? 'text-[11px] leading-5' : ''}>THETA 会先判断你是在回答研究设置，还是在向助手咨询；只有研究答案会推进流程。</p>
           <div className="text-right">
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">检查完整度并进入数据列确认</Button>
             <p className="mt-0.5 text-[11px] text-slate-400">若仍缺必填信息，系统会列出缺项，不会错误跳过。</p>
