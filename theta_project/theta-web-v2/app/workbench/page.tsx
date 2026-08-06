@@ -15,7 +15,6 @@ import {
   ImageIcon,
   MessageSquareText,
   Play,
-  Plus,
   RefreshCw,
   Send,
   Settings2,
@@ -33,7 +32,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -69,7 +67,12 @@ export default function WorkbenchPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [showCreate, setShowCreate] = useState(false);
+  const [datasets, setDatasets] = useState<ThetaDataset[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(true);
+  const [datasetsError, setDatasetsError] = useState<string>();
+  const [selectedDataset, setSelectedDataset] = useState('');
+  const [researchGoal, setResearchGoal] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -91,6 +94,28 @@ export default function WorkbenchPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const refreshDatasets = useCallback(async () => {
+    setDatasetsLoading(true);
+    setDatasetsError(undefined);
+    try {
+      const result = await ThetaAgentV2API.datasets();
+      setDatasets(result.datasets);
+      setSelectedDataset((current) =>
+        result.datasets.some((dataset) => dataset.filePath === current)
+          ? current
+          : (result.datasets[0]?.filePath ?? ''),
+      );
+    } catch (cause) {
+      setDatasetsError(errorMessage(cause));
+    } finally {
+      setDatasetsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDatasets();
+  }, [refreshDatasets]);
 
   const openRun = useCallback(async (runId: string) => {
     setActiveRunId(runId);
@@ -123,6 +148,28 @@ export default function WorkbenchPage() {
     () => runs.filter((run) => !actionableStates.has(run.currentState ?? '') && !isRunning(run)),
     [runs],
   );
+
+  const createResearch = useCallback(async () => {
+    const goal = researchGoal.trim();
+    if (!selectedDataset || goal.length < 8 || goal.length > 2000 || createBusy) return;
+    setCreateBusy(true);
+    setError(undefined);
+    try {
+      const status = await ThetaAgentV2API.createRun({
+        filePath: selectedDataset,
+        researchGoal: goal,
+        useMiniMax: true,
+      });
+      setActiveRunId(status.runId);
+      setActiveStatus(status);
+      setResearchGoal('');
+      void refresh();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [createBusy, refresh, researchGoal, selectedDataset]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -170,19 +217,29 @@ export default function WorkbenchPage() {
               <div>
                 <p className="text-xs font-semibold text-blue-600">THETA 2.0</p>
                 <h1 className="mt-1 text-2xl font-semibold">我的研究</h1>
-                <p className="mt-2 text-sm text-slate-500">先完成最上方的下一步，再进入模型训练。</p>
+                <p className="mt-2 text-sm text-slate-500">选择本地数据集，直接说明研究目标，再由 THETA 通过对话完善设置。</p>
               </div>
               <div className="flex gap-2">
                 <Button type="button" variant="outline" size="icon" onClick={() => void refresh()} disabled={loading} title="刷新" className="h-9 w-9 rounded-md bg-white">
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
-                <Button type="button" onClick={() => setShowCreate(true)} className="h-9 gap-2 rounded-md bg-blue-600 px-4 hover:bg-blue-700">
-                  <Plus className="h-4 w-4" />新建研究
-                </Button>
               </div>
             </section>
 
-            <section className="mt-7">
+            <ResearchStartPanel
+              datasets={datasets}
+              datasetsLoading={datasetsLoading}
+              datasetsError={datasetsError}
+              selectedDataset={selectedDataset}
+              researchGoal={researchGoal}
+              busy={createBusy}
+              onDatasetChange={setSelectedDataset}
+              onGoalChange={setResearchGoal}
+              onRefreshDatasets={refreshDatasets}
+              onCreate={createResearch}
+            />
+
+            <section className="mt-8">
               <SectionHeading title="现在需要你做" subtitle={actionable.length ? `${actionable.length} 个任务停在人工确认点` : '没有等待确认的任务'} />
               {loading ? <LoadingBlock /> : actionable.length ? (
                 <div>
@@ -227,16 +284,6 @@ export default function WorkbenchPage() {
           </>
         )}
       </main>
-
-      <CreateResearchDialog
-        open={showCreate}
-        onOpenChange={setShowCreate}
-        onCreated={(status) => {
-          setShowCreate(false);
-          setActiveRunId(status.runId);
-          setActiveStatus(status);
-        }}
-      />
     </div>
   );
 }
@@ -265,6 +312,118 @@ function RunRow({ run, onOpen }: { run: ThetaRunSummary; onOpen: () => void }) {
       <span className="hidden text-xs text-slate-400 sm:block">{formatDate(run.lastEventAt ?? run.updatedAt)}</span>
       <ChevronRight className="h-4 w-4 text-slate-300" />
     </button>
+  );
+}
+
+function ResearchStartPanel({
+  datasets,
+  datasetsLoading,
+  datasetsError,
+  selectedDataset,
+  researchGoal,
+  busy,
+  onDatasetChange,
+  onGoalChange,
+  onRefreshDatasets,
+  onCreate,
+}: {
+  datasets: ThetaDataset[];
+  datasetsLoading: boolean;
+  datasetsError?: string;
+  selectedDataset: string;
+  researchGoal: string;
+  busy: boolean;
+  onDatasetChange: (filePath: string) => void;
+  onGoalChange: (goal: string) => void;
+  onRefreshDatasets: () => Promise<void>;
+  onCreate: () => Promise<void>;
+}) {
+  const goal = researchGoal.trim();
+  const selected = datasets.find((dataset) => dataset.filePath === selectedDataset);
+  const datasetReady = Boolean(selected);
+  const goalReady = goal.length >= 8 && goal.length <= 2000;
+  const canCreate = datasetReady && goalReady && !busy;
+
+  return (
+    <section className="mt-7 overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
+      <div className="flex items-start gap-3 border-b border-slate-100 bg-blue-50/50 px-5 py-4 sm:px-6">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
+          <MessageSquareText className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-slate-900">开始一项新研究</p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">先选择要分析的数据集，再直接告诉我你希望研究什么。创建后，THETA 会在对话中补全必要信息。</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-0 lg:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.2fr)]">
+        <div className="min-w-0 border-b border-slate-100 p-5 lg:border-b-0 lg:border-r sm:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold text-blue-600">1 / 2 · 选择数据集</p>
+              <p className="mt-1 text-sm font-medium text-slate-800">允许目录中的本地文件</p>
+            </div>
+            <Button type="button" variant="ghost" size="icon" onClick={() => void onRefreshDatasets()} disabled={datasetsLoading} title="重新读取数据集" className="h-8 w-8 rounded-md">
+              <RefreshCw className={`h-4 w-4 ${datasetsLoading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+
+          {datasetsError ? (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">读取数据集失败：{datasetsError}</div>
+          ) : datasetsLoading ? (
+            <div className="mt-4 flex min-h-20 items-center gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 text-sm text-slate-500"><RefreshCw className="h-4 w-4 animate-spin text-blue-600" />正在读取 THETA 允许目录...</div>
+          ) : datasets.length ? (
+            <>
+              <select value={selectedDataset} onChange={(event) => onDatasetChange(event.target.value)} className="mt-4 h-11 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+                {datasets.map((dataset) => <option key={dataset.filePath} value={dataset.filePath}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
+              </select>
+              {selected ? (
+                <div className="mt-3 rounded-md bg-slate-50 px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-xs font-medium text-slate-700"><Database className="h-3.5 w-3.5 text-blue-600" />已选择 {selected.name}</div>
+                  <p className="mt-1 max-w-full break-all font-mono text-[10px] leading-4 text-slate-400">{selected.filePath}</p>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">没有找到可用数据集。请把 CSV、TSV、JSON、JSONL 或 TXT 文件放入 `THETA/data` 后重新读取。</div>
+          )}
+          <p className="mt-3 text-xs leading-5 text-slate-500">只读取 `theta-cli-agent/fixtures` 与 `THETA/data` 的文件列表，不会扫描整块磁盘，也不会在此步骤读取文件正文。</p>
+        </div>
+
+        <div className="min-w-0 p-5 sm:p-6">
+          <div>
+            <p className="text-xs font-semibold text-blue-600">2 / 2 · 说明研究目标</p>
+            <p className="mt-1 text-sm font-medium text-slate-800">你希望从这批数据中得到什么？</p>
+          </div>
+          <div className="mt-4 rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
+            <Textarea
+              value={researchGoal}
+              maxLength={2000}
+              disabled={busy}
+              onChange={(event) => onGoalChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || !canCreate) return;
+                event.preventDefault();
+                void onCreate();
+              }}
+              placeholder="例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。"
+              className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
+            />
+            <div className="flex flex-col items-stretch gap-2 border-t border-slate-100 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <span className={`text-xs ${goal.length > 0 && !goalReady ? 'text-amber-700' : 'text-slate-400'}`}>{goal.length} / 2000 · 至少 8 个字符</span>
+              <Button type="button" disabled={!canCreate} onClick={() => void onCreate()} className="h-9 w-full gap-2 rounded-md bg-blue-600 px-4 hover:bg-blue-700 sm:w-auto">
+                {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {busy ? '正在创建...' : '开始研究对话'}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
+            <RequirementItem met={datasetReady}>已选择数据集</RequirementItem>
+            <RequirementItem met={goalReady}>研究目标信息充分</RequirementItem>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -875,7 +1034,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
               messageKind: 'research.question',
               content: currentPrompt,
               sequenceNumber: Number.MAX_SAFE_INTEGER,
-              createdAt: status.lastEventAt,
+              createdAt: validIsoTimestamp(status.lastEventAt) ?? new Date().toISOString(),
             }}
             current
           />
@@ -906,7 +1065,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
               void send();
             }}
             placeholder="直接说明你的研究需求；Enter 发送，Shift + Enter 换行"
-            className="min-h-24 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+            className="min-h-24 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
           />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
             <span className="text-xs text-slate-400">{draft.length} / 4000</span>
@@ -937,73 +1096,6 @@ function ConversationBubble({ message, current = false }: { message: ThetaConver
         <p className={`mt-1 text-[11px] text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {formatTime(message.createdAt)}</p>
       </div>
     </div>
-  );
-}
-
-function CreateResearchDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (status: ThetaRunStatus) => void }) {
-  const [datasets, setDatasets] = useState<ThetaDataset[]>([]);
-  const [filePath, setFilePath] = useState('');
-  const [goal, setGoal] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const trimmedGoal = goal.trim();
-  const hasDataset = Boolean(filePath);
-  const goalIsValid = trimmedGoal.length >= 8 && trimmedGoal.length <= 2000;
-  const canCreate = hasDataset && goalIsValid && !busy;
-
-  useEffect(() => {
-    if (!open) return;
-    void ThetaAgentV2API.datasets().then(({ datasets: values }) => {
-      setDatasets(values);
-      setFilePath((current) => current || values[0]?.filePath || '');
-    }).catch((cause) => setError(errorMessage(cause)));
-  }, [open]);
-
-  const create = async () => {
-    setBusy(true);
-    setError(undefined);
-    try {
-      onCreated(await ThetaAgentV2API.createRun({ filePath, researchGoal: goal.trim(), useMiniMax: true }));
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>新建研究</DialogTitle>
-          <DialogDescription>满足下列两个条件后才能创建。THETA 随后会确认研究信息和数据列，再推荐模型。</DialogDescription>
-        </DialogHeader>
-        {error ? <ErrorNotice message={error} /> : null}
-        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
-          <p className="text-xs font-semibold text-slate-700">创建条件</p>
-          <ul className="mt-2 space-y-2 text-xs text-slate-600">
-            <RequirementItem met={hasDataset}>选择一个允许目录中的数据集（CSV、TSV、JSON、JSONL 或 TXT）</RequirementItem>
-            <RequirementItem met={goalIsValid}>研究目标为 8 至 2000 个字符（当前 {trimmedGoal.length} 个）</RequirementItem>
-          </ul>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <Label htmlFor="dataset">本地数据集 <span className="text-red-500">*</span></Label>
-            <select id="dataset" value={filePath} onChange={(event) => setFilePath(event.target.value)} className="mt-1.5 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm">
-              <option value="">请选择数据集</option>
-              {datasets.map((dataset) => <option key={dataset.filePath} value={dataset.filePath}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
-            </select>
-            {!datasets.length ? <p className="mt-1.5 text-xs text-amber-700">允许的数据目录中没有可用文件。请先把数据集放入 THETA/data 或配置的允许目录。</p> : <p className="mt-1.5 text-xs text-slate-500">列表只显示后端允许读取的本地数据文件，不会扫描整块磁盘。</p>}
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-3"><Label htmlFor="goal">研究目标 <span className="text-red-500">*</span></Label><span className={`text-xs ${trimmedGoal.length > 2000 ? 'text-red-600' : 'text-slate-400'}`}>{trimmedGoal.length} / 2000</span></div>
-            <Textarea id="goal" value={goal} maxLength={2000} onChange={(event) => setGoal(event.target.value)} placeholder="例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。" className="mt-1.5 min-h-28" />
-            {trimmedGoal.length > 0 && trimmedGoal.length < 8 ? <p className="mt-1.5 text-xs text-amber-700">还需输入 {8 - trimmedGoal.length} 个字符才能创建研究。</p> : null}
-          </div>
-          <Button type="button" onClick={() => void create()} disabled={!canCreate} className="w-full bg-blue-600 hover:bg-blue-700">{busy ? '正在创建...' : '创建研究并进入设置'}</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -1135,8 +1227,24 @@ const planSettingsDirty = (plan: ThetaPlan, model: string, topics: string): bool
   return Number(topics) !== currentTopics;
 };
 const uniquePath = (path: string[]): string[] => path.filter((state, index) => index === 0 || path[index - 1] !== state);
-const formatDate = (value: string): string => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-const formatTime = (value: string): string => new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value));
+const validDate = (value?: string): Date | undefined => {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+};
+const validIsoTimestamp = (value?: string): string | undefined => validDate(value)?.toISOString();
+const formatDate = (value?: string): string => {
+  const date = validDate(value);
+  return date
+    ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date)
+    : '时间未知';
+};
+const formatTime = (value?: string): string => {
+  const date = validDate(value);
+  return date
+    ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date)
+    : '刚刚';
+};
 const formatBytes = (value: number): string => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const errorMessage = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
 const trainingStepLabel = (step?: string): string => ({
