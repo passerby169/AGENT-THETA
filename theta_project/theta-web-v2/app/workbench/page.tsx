@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   AlertCircle,
   Activity,
@@ -1142,11 +1144,36 @@ function ConversationBubble({ message, current = false }: { message: ThetaConver
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? 'text-right' : 'text-left'}`}>
         <div className={`inline-block rounded-md px-4 py-3 text-left text-sm leading-6 shadow-sm ${isUser ? 'bg-blue-600 text-white' : current ? 'border border-blue-200 bg-blue-50 text-slate-900' : 'border border-slate-200 bg-white text-slate-700'}`}>
           {!isUser && assistantLabel ? <p className="mb-1 text-[11px] font-semibold text-blue-600">{assistantLabel}</p> : null}
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          {isUser ? (
+            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          ) : (
+            <AssistantMessageContent content={message.content} />
+          )}
         </div>
         <p className={`mt-1 text-[11px] text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {formatTime(message.createdAt)}</p>
       </div>
     </div>
+  );
+}
+
+function AssistantMessageContent({ content }: { content: string }) {
+  const normalized = content.replace(/\s+(?=\d+\.\s+\*\*)/gu, '\n');
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      skipHtml
+      components={{
+        p: ({ children }) => <p className="mb-2 whitespace-pre-wrap break-words last:mb-0">{children}</p>,
+        ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+        ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+        li: ({ children }) => <li className="pl-1">{children}</li>,
+        strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
+        code: ({ children }) => <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.9em]">{children}</code>,
+      }}
+    >
+      {normalized}
+    </ReactMarkdown>
   );
 }
 
