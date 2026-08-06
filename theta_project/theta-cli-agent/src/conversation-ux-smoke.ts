@@ -314,6 +314,50 @@ if (
   throw new Error('A direct research answer was not routed to the ResearchBrief.');
 }
 
+const shortCategoryRoute = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'classify_conversation_intent',
+  text: '日常词汇',
+  currentState: 'ResearchClarification',
+  pendingActionRef: 'research.clarification',
+  currentQuestion: '每条记录中，哪一类文本内容是你真正希望分析的正文？',
+  recentMessages: [],
+});
+if (
+  shortCategoryRoute.output.task !== 'classify_conversation_intent' ||
+  shortCategoryRoute.output.intent !== 'research_answer'
+) {
+  throw new Error('A short content category was not routed as a research answer.');
+}
+
+const shortCategoryAnswer = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'interpret_research_answer',
+  gapId: 'research.text-field-intent',
+  field: 'textFieldIntent',
+  question: '每条记录中，哪一类文本内容是你真正希望分析的正文？',
+  answer: '日常词汇',
+  currentBrief: {},
+  recentMessages: [],
+  nextGapCandidates: [],
+});
+if (
+  shortCategoryAnswer.output.task !== 'interpret_research_answer' ||
+  shortCategoryAnswer.output.patch.textFieldIntent !== '日常词汇' ||
+  shortCategoryAnswer.output.unresolvedFields.includes('textFieldIntent')
+) {
+  throw new Error('A meaningful short content category was not accepted for textFieldIntent.');
+}
+const guardedShortCategory = guardCriticalResearchPatch(
+  'textFieldIntent',
+  '日常词汇',
+  { textFieldIntent: '日常词汇' },
+  { textFieldIntent: 0.72 },
+);
+if (guardedShortCategory.patch.textFieldIntent !== '日常词汇') {
+  throw new Error('The research answer guard removed a meaningful short content category.');
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'theta-conversation-ux-'));
 const store = new SQLiteConversationStore(path.join(root, 'conversation.sqlite'));
 try {

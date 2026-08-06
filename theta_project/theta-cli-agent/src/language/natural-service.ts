@@ -148,6 +148,8 @@ const shape = (request: NaturalLanguageRequest): string => {
         'Allowed patch keys are researchQuestion, collectionMethod, analysisUnit, timeRange, language, comparisonGroups, comparisonIntent, topicGranularity, knownBiases, sensitiveData, successCriteria, hardwareLimit, textFieldIntent, trendAnalysis, offlineOnly, requestedEmbedding, and timeLimitHours.',
         'Return exactly: {"task":"interpret_research_answer","patch":{"FIELD":VALUE},"answeredFields":["FIELD"],"unresolvedFields":[],"confidenceByField":{"FIELD":0.0},"evidenceSpans":{"FIELD":["exact quote from answer"]},"remainingQuestions":[],"needsConfirmation":false,"explanation":"简短中文说明","questionSuggestions":[{"gapId":"candidate gapId","field":"candidate field","question":"自然的中文追问","examples":[],"answerHint":"如何回答"}]}.',
         'answeredFields, confidenceByField, and evidenceSpans must use exactly the keys present in patch. Every evidence span must be an exact substring of the answer.',
+        'For textFieldIntent, a short noun phrase that names the content category, such as 日常词汇、客服对话、新闻正文、商品评论, is a valid answer. Preserve the user wording instead of requiring words such as 正文、字段, or 列.',
+        'Reject only content-free acknowledgements or placeholders. When a category phrase is broad but still meaningful, record it and let the FSM ask the next gap instead of repeating the same question.',
         'If the answer cannot resolve the currently asked field, include that field in unresolvedFields and set needsConfirmation to true, but retain other explicitly supported high-confidence fields in patch.',
         'Never infer sensitiveData from silence, politeness, a research objective, or unrelated wording. Only return sensitiveData when the answer explicitly says whether sensitive or confidential data exists.',
         'For each supplied nextGapCandidates item, you may provide one bounded questionSuggestion. Never change its gapId or field. These are candidate phrasings only; the FSM decides which one is actually next.',
@@ -160,6 +162,7 @@ const shape = (request: NaturalLanguageRequest): string => {
       return [
         'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|research_answer|unknown","response":"..."}.',
         'When currentQuestion is supplied, use research_answer only when the user supplies information that answers or corrects that question.',
+        'Short category phrases may be complete research answers when the currentQuestion asks for a category, content type, comparison group, language, granularity, or other bounded value.',
         'Questions about THETA capabilities, models, data handling, the current workflow, or how to answer are assistant requests, not research_answer.',
         'A short uncertainty answer such as 不知道 or 不确定 is still research_answer when it responds to currentQuestion.',
       ].join(' ');

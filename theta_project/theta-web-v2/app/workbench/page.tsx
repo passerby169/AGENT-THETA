@@ -1043,8 +1043,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
     const answer = draft.trim();
     if (!answer || busy) return;
     setDraft('');
-    const accepted = await onAction({ action: 'message', text: answer, useMiniMax: true });
-    if (!accepted) setDraft((current) => current || answer);
+    await onAction({ action: 'message', text: answer, useMiniMax: true });
   };
 
   return (

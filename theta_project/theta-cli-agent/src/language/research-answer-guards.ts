@@ -9,6 +9,14 @@ export interface GuardedResearchPatch {
 const explicitNotApplicable =
   /^(?:不|否|no|不要|无需|不需要|没有|无|不适用|暂未发现|尚未发现)(?:比较|分组|对比|偏差|局限|限制|group|comparison)?[。.]?$/iu;
 
+const meaningfulCategoryPhrase = (value: string): boolean =>
+  value.length >= 2 &&
+  value.length <= 120 &&
+  /[\p{L}\p{N}]/u.test(value) &&
+  !/[？?]$/u.test(value) &&
+  !/^(?:你|THETA|系统|助手).*(?:能|可以|怎么|如何|为什么|什么)/iu.test(value) &&
+  !/^(?:测试|test|正常|好的|好|可以|确认|继续|下一步|日常|普通|一般)[。.]?$/iu.test(value);
+
 export const researchAnswerSupportsField = (
   field: string,
   answer: string,
@@ -23,7 +31,10 @@ export const researchAnswerSupportsField = (
     case 'analysisUnit':
       return /每(?:一)?(?:行|条|篇|个)|记录|文档|文章|帖子|评论|样本|文本/iu.test(value);
     case 'textFieldIntent':
-      return /正文|文本|内容|语料|字段|列/iu.test(value);
+      return (
+        /正文|文本|内容|语料|字段|列|词汇|短语|句子|对话|评论|帖子|新闻|报告|记录|文章|标题|摘要/iu.test(value) ||
+        meaningfulCategoryPhrase(value)
+      );
     case 'collectionMethod':
       return /采集|收集|整理|汇总|导出|爬取|抓取|问卷|访谈|实验|日志|数据库|平台|人工|生成|来源/iu.test(value);
     case 'comparisonGroups':
