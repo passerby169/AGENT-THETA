@@ -10,6 +10,10 @@ import {
   type NaturalLanguageRequest,
 } from './conversation/natural-contracts.js';
 import { ThetaConversationWorkflowExecutor } from './conversation/workflow-executor.js';
+import {
+  fastReadonlyToolProposal,
+  isObviousAssistantRequest,
+} from './conversation/turn-orchestrator.js';
 import { buildHumanResponse } from './presentation/human-response-builder.js';
 import { SQLiteConversationStore } from './storage/sqlite-conversation-store.js';
 
@@ -280,6 +284,18 @@ if (
   assistantQuestionRoute.output.intent !== 'help'
 ) {
   throw new Error('A THETA capability question was mistaken for a research answer.');
+}
+if (!isObviousAssistantRequest('你能做什么？')) {
+  throw new Error('An obvious THETA assistant request did not use the fast route.');
+}
+if (isObviousAssistantRequest('每条记录中的 text 列是需要分析的正文。')) {
+  throw new Error('A research answer was incorrectly sent through the assistant fast route.');
+}
+if (fastReadonlyToolProposal('查看当前训练进度', true).toolId !== 'theta.status.read') {
+  throw new Error('A status request did not select the governed status reader.');
+}
+if (fastReadonlyToolProposal('列出支持的模型', true).toolId !== 'theta.model.catalog') {
+  throw new Error('A model request did not select the governed model catalog.');
 }
 
 const researchAnswerRoute = await new ThetaNaturalLanguageService().generate({

@@ -52,7 +52,10 @@ export class ThetaNaturalLanguageService {
         stepId: request.task,
         modelAlias: this.options.modelAlias ?? 'configured-language-model',
         input: { messages: promptMessages(request) },
-        options: { temperature: 0.1, maxTokens: 1400 },
+        options: {
+          temperature: 0.1,
+          maxTokens: maxTokensForTask(request.task),
+        },
         trace: true,
         metadata: {
           purpose: request.task,
@@ -102,6 +105,23 @@ export class ThetaNaturalLanguageService {
     }
   }
 }
+
+const maxTokensForTask = (task: NaturalLanguageRequest['task']): number => {
+  switch (task) {
+    case 'classify_conversation_intent':
+      return 180;
+    case 'propose_readonly_tool':
+      return 220;
+    case 'generate_grilling_question':
+      return 420;
+    case 'compose_grounded_response':
+      return 800;
+    case 'interpret_column_confirmation':
+      return 800;
+    case 'interpret_research_answer':
+      return 1200;
+  }
+};
 
 const promptMessages = (request: NaturalLanguageRequest): PromptMessage[] => [
   {

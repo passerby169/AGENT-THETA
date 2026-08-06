@@ -1157,7 +1157,10 @@ function ConversationBubble({ message, current = false }: { message: ThetaConver
 }
 
 function AssistantMessageContent({ content }: { content: string }) {
-  const normalized = content.replace(/\s+(?=\d+\.\s+\*\*)/gu, '\n');
+  const normalized = content
+    .replace(/\s+(?=\d+\.\s+(?:\*\*|[\p{L}\p{N}]))/gu, '\n')
+    .replace(/\s+(?=\*\s+\S)/gu, '\n')
+    .replace(/([。！？；])\s+(?=\*\*[^*]+\*\*[：:])/gu, '$1\n\n');
 
   return (
     <ReactMarkdown
@@ -1169,6 +1172,7 @@ function AssistantMessageContent({ content }: { content: string }) {
         ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
         li: ({ children }) => <li className="pl-1">{children}</li>,
         strong: ({ children }) => <strong className="font-semibold text-slate-900">{children}</strong>,
+        em: ({ children }) => <em className="italic text-slate-800">{children}</em>,
         code: ({ children }) => <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.9em]">{children}</code>,
       }}
     >

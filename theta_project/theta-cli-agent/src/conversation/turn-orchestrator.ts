@@ -19,8 +19,10 @@ import { sanitizeLanguageText } from '../language/sanitizer.js';
 import {
   NATURAL_LANGUAGE_CONTRACT_VERSION,
   naturalLanguageResultSchema,
+  type ConversationIntent,
   type NaturalLanguageRequest,
   type NaturalLanguageResult,
+  type ReadonlyToolProposal,
 } from './natural-contracts.js';
 import type {
   ConversationMessage,
@@ -368,6 +370,9 @@ export class ThetaTurnOrchestrator {
     context: TurnContext,
   ): Promise<TurnResult> {
     const runId = requiredRun(context.activeRunId);
+    if (isObviousAssistantRequest(text)) {
+      return this.freeText(text, context, current);
+    }
     const { question } = activeResearchQuestion(current);
     const routing = await this.language(
       {
@@ -678,32 +683,9 @@ export class ThetaTurnOrchestrator {
         ? await this.workflow.conversationContext(runId, context.runtimeDb)
         : undefined);
     const message = this.userMessage(context, runId, 'conversation.text', text);
-    const allowedToolIds = [
-      ...(runId
-        ? (['theta.status.read', 'theta.evidence.read'] as const)
-        : []),
-      'theta.rag.search' as const,
-      'theta.model.catalog' as const,
-    ];
-    const proposal = await this.language(
-      {
-        schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
-        task: 'propose_readonly_tool',
-        text,
-        ...(workflowContext?.status.currentState
-          ? { currentState: workflowContext.status.currentState }
-          : {}),
-        allowedToolIds,
-      },
-      context.sessionId,
-      runId,
-      message.messageId,
-    );
-    if (proposal.output.task !== 'propose_readonly_tool') {
-      throw new Error('Unexpected language result for free-form turn.');
-    }
+    const proposal = fastReadonlyToolProposal(text, Boolean(runId));
     let toolResult: unknown;
-    switch (proposal.output.toolId) {
+    switch (proposal.toolId) {
       case 'theta.status.read':
         toolResult = await this.workflow.status(
           requiredRun(runId),
@@ -743,8 +725,8 @@ export class ThetaTurnOrchestrator {
             '解释训练方案、参数取舍、结果和研究限制',
           ],
           boundary:
-            proposal.output.intent === 'approve_current' ||
-            proposal.output.intent === 'reject_current'
+            proposal.intent === 'approve_current' ||
+            proposal.intent === 'reject_current'
               ? '我不会代替你审批方案或启动训练；这些操作必须由你显式确认。'
               : '我可以提供建议和只读分析，但不会代替你审批方案或启动训练。',
           currentState: workflowContext?.status.currentState,
@@ -755,16 +737,16 @@ export class ThetaTurnOrchestrator {
               : undefined,
         };
     }
-    const grounding = safeGrounding(proposal.output.toolId, toolResult);
+    const grounding = safeGrounding(proposal.toolId, toolResult);
     const composed = await this.language(
       {
         schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
         task: 'compose_grounded_response',
         userText: text,
-        toolId: proposal.output.toolId,
+        toolId: proposal.toolId,
         facts: grounding.facts,
         evidence: grounding.evidence,
-        recentMessages: recent(this.store, context.sessionId, runId),
+        recentMessages: recent(this.store, context.sessionId, runId).slice(-6),
       },
       context.sessionId,
       runId,
@@ -778,7 +760,7 @@ export class ThetaTurnOrchestrator {
     return {
       value: {
         kind: 'conversation.turn',
-        proposal: proposal.output,
+        proposal,
         result: toolResult,
         response,
         hasActiveRun: Boolean(runId),
@@ -1186,6 +1168,68 @@ const currentPlanAdjustmentValues = (
         asRecord(candidate.columns)?.covariateColumns,
     ),
     ...(protocol ? { experimentProtocol: protocol } : {}),
+  };
+};
+
+export const isObviousAssistantRequest = (text: string): boolean => {
+  const normalized = text.trim();
+  if (/^(?:你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用)(?:[？?。！!]|$)/iu.test(normalized)) {
+    return true;
+  }
+  const asksForHelp =
+    /[？?]$/u.test(normalized) ||
+    /^(?:请|帮我|告诉我|解释|查看|列出|搜索|检索|为什么|怎么|如何|能否|可以)/u.test(normalized);
+  const thetaTopic =
+    /THETA|模型|训练|任务状态|运行状态|进度|审计|证据|知识库|助手能力|当前步骤/iu.test(normalized);
+  return asksForHelp && thetaTopic;
+};
+
+export const fastReadonlyToolProposal = (
+  text: string,
+  hasActiveRun: boolean,
+): ReadonlyToolProposal => {
+  const normalized = text.trim();
+  let intent: ConversationIntent = 'chat';
+  let toolId: ReadonlyToolProposal['toolId'] = null;
+
+  if (
+    hasActiveRun &&
+    /(?:当前|任务|训练|运行|run).{0,12}(?:状态|进度|阶段)|(?:状态|进度).{0,12}(?:怎样|如何|多少|是什么)/iu.test(normalized)
+  ) {
+    intent = 'read_status';
+    toolId = 'theta.status.read';
+  } else if (
+    hasActiveRun &&
+    /(?:运行|审计|事件|失败|结论).{0,12}(?:证据|依据|记录)|(?:证据|审计记录)/u.test(normalized)
+  ) {
+    intent = 'read_evidence';
+    toolId = 'theta.evidence.read';
+  } else if (/(?:有哪些|支持|可用|推荐|选择|查看|列出).{0,12}模型|模型.{0,12}(?:能力|参数|适用|列表|目录)/u.test(normalized)) {
+    intent = 'list_models';
+    toolId = 'theta.model.catalog';
+  } else if (/知识库|本地文档|研究方法|模型依据|适用场景|检索|搜索/u.test(normalized)) {
+    intent = 'search_evidence';
+    toolId = 'theta.rag.search';
+  } else if (/批准|同意|开始训练/u.test(normalized)) {
+    intent = 'approve_current';
+  } else if (/拒绝|不同意|取消/u.test(normalized)) {
+    intent = 'reject_current';
+  } else if (/你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用/u.test(normalized)) {
+    intent = 'help';
+  } else if (/为什么|解释|当前步骤/u.test(normalized)) {
+    intent = 'explain_current';
+  }
+
+  return {
+    task: 'propose_readonly_tool',
+    intent,
+    toolId,
+    arguments: toolId === 'theta.rag.search' ? { query: normalized } : {},
+    reason: toolId
+      ? '由本地确定性意图路由选择受治理的只读工具。'
+      : '当前问题可直接依据 THETA 会话上下文回答。',
+    confidence: toolId ? 0.94 : 0.86,
+    requiresConfirmation: false,
   };
 };
 
