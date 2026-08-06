@@ -62,9 +62,10 @@ export class ThetaNaturalLanguageService {
           schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
         },
       });
-      const output = naturalLanguageProviderOutputSchema.parse(
+      const parsedOutput = naturalLanguageProviderOutputSchema.parse(
         sanitizeUnknown(response.output),
       );
+      const output = preferSafeDeterministicResolution(request, parsedOutput);
       validateOutput(request, output);
       return result(request, output, factsHash, 'minimax', undefined, {
         providerId:
@@ -157,7 +158,7 @@ const shape = (request: NaturalLanguageRequest): string => {
     case 'generate_grilling_question':
       return `Shape: {"task":"generate_grilling_question","gapId":${JSON.stringify(request.gapId)},"field":${JSON.stringify(request.field)},"question":"...","reason":"...","examples":[],"answerHint":"..."}.`;
     case 'interpret_column_confirmation':
-      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. The columns command and Web submit button are explicit confirmation, so accept one clear, type-valid assignment without asking the user to repeat it. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft only when a required role is missing or genuinely ambiguous.';
+      return 'Shape: {"task":"interpret_column_confirmation","draft":{"textColumns":[],"timeColumn":null,"idColumn":null,"covariateColumns":[],"metadataColumns":[],"groupingColumns":[],"evaluationLabelColumns":[]},"unknownMentions":[],"ambiguousMentions":[],"confidence":0.0,"needsClarification":false,"explanation":"..."}. The columns command and Web submit button are explicit confirmation, so accept one clear, type-valid assignment without asking the user to repeat it. If the answer is exactly the single supplied text candidate, treat it as the confirmed text column and leave optional roles empty. covariateColumns are training inputs for STM; metadataColumns are descriptive only; groupingColumns are post-hoc display groups; evaluationLabelColumns are held-out labels. Never treat a display group as an STM covariate unless the user explicitly assigns both roles. Omit draft only when a required role is missing or genuinely ambiguous.';
     case 'classify_conversation_intent':
       return [
         'Shape: {"task":"classify_conversation_intent","intent":"read_status|read_evidence|search_evidence|list_models|explain_current|approve_current|reject_current|help|chat|research_answer|unknown","response":"..."}.',
@@ -345,6 +346,79 @@ const deterministicResearchAnswer = (
       examples: deterministicExamples(candidate.field),
       answerHint: '请直接用自然语言回答；如果不确定，也可以说明“不知道”。',
     })),
+  };
+};
+
+const preferDeterministicColumnConfirmation = (
+  request: NaturalLanguageRequest,
+  output: NaturalLanguageProviderOutput,
+): NaturalLanguageProviderOutput => {
+  if (
+    request.task !== 'interpret_column_confirmation' ||
+    output.task !== 'interpret_column_confirmation' ||
+    !output.needsClarification
+  ) {
+    return output;
+  }
+  const deterministic = deterministicColumns(request);
+  return deterministic.task === 'interpret_column_confirmation' &&
+    !deterministic.needsClarification
+    ? deterministic
+    : output;
+};
+
+const preferSafeDeterministicResolution = (
+  request: NaturalLanguageRequest,
+  output: NaturalLanguageProviderOutput,
+): NaturalLanguageProviderOutput =>
+  preferDeterministicColumnConfirmation(
+    request,
+    preferDeterministicResearchResolution(request, output),
+  );
+
+const preferDeterministicResearchResolution = (
+  request: NaturalLanguageRequest,
+  output: NaturalLanguageProviderOutput,
+): NaturalLanguageProviderOutput => {
+  if (
+    request.task !== 'interpret_research_answer' ||
+    output.task !== 'interpret_research_answer'
+  ) {
+    return output;
+  }
+  const activeField = request.field.split(',')[0] ?? request.field;
+  if (Object.prototype.hasOwnProperty.call(output.patch, activeField)) {
+    return output;
+  }
+  const deterministic = deterministicResearchAnswer(request);
+  if (
+    deterministic.task !== 'interpret_research_answer' ||
+    !Object.prototype.hasOwnProperty.call(deterministic.patch, activeField)
+  ) {
+    return output;
+  }
+  const answeredFields = Array.from(
+    new Set([...output.answeredFields, ...deterministic.answeredFields]),
+  );
+  const unresolvedFields = output.unresolvedFields.filter(
+    (field) => field !== activeField,
+  );
+  return {
+    ...output,
+    patch: { ...output.patch, ...deterministic.patch },
+    answeredFields,
+    unresolvedFields,
+    confidenceByField: {
+      ...output.confidenceByField,
+      ...deterministic.confidenceByField,
+    },
+    evidenceSpans: {
+      ...output.evidenceSpans,
+      ...deterministic.evidenceSpans,
+    },
+    remainingQuestions:
+      unresolvedFields.length === 0 ? [] : output.remainingQuestions,
+    needsConfirmation: unresolvedFields.length > 0,
   };
 };
 
@@ -545,7 +619,18 @@ const deterministicColumns = (
           roleLabels.some((label) => clause.includes(label)),
       );
   };
-  const text = mentioned.find((column) => linked(column, '正文|文本内容|待分析文本|语料'));
+  const uniqueTextCandidate = request.candidates.text.length === 1
+    ? request.candidates.text[0]
+    : undefined;
+  const shorthandText =
+    mentioned.length === 1 &&
+    uniqueTextCandidate &&
+    mentioned[0]?.toLowerCase() === uniqueTextCandidate.toLowerCase()
+      ? uniqueTextCandidate
+      : undefined;
+  const text =
+    mentioned.find((column) => linked(column, '正文|文本内容|待分析文本|语料')) ??
+    shorthandText;
   const time = mentioned.find((column) => linked(column, '时间列|日期列|时间戳')) ?? null;
   const id = mentioned.find((column) => linked(column, 'ID列|ID 列|标识列|标识 列|编号列|编号 列|唯一标识')) ?? null;
   const covariates = mentioned.filter((column) =>

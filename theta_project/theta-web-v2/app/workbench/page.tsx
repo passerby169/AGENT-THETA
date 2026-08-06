@@ -43,6 +43,7 @@ import {
   type ThetaHealth,
   type ThetaModel,
   type ThetaPlan,
+  type ThetaActionResult,
   type ThetaRunAction,
   type ThetaRunStatus,
   type ThetaRunSummary,
@@ -59,6 +60,17 @@ const actionableStates = new Set([
 ]);
 
 const terminalStates = new Set(['Completed', 'Failed', 'Quarantined', 'Cancelled']);
+
+interface RunActionOutcome {
+  requestSucceeded: boolean;
+  advanced: boolean;
+  result?: ThetaActionResult;
+}
+
+interface OptimisticConversationMessage extends ThetaConversationMessage {
+  baselineMatches: number;
+  delivery: 'sending' | 'failed';
+}
 
 export default function WorkbenchPage() {
   const router = useRouter();
@@ -518,8 +530,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       .catch((cause) => setActionError(errorMessage(cause)));
   }, [loadPlan, runId, status?.currentState]);
 
-  const act = async (action: ThetaRunAction): Promise<boolean> => {
-    if (actionInFlight.current) return false;
+  const act = async (action: ThetaRunAction): Promise<RunActionOutcome> => {
+    if (actionInFlight.current) {
+      return { requestSucceeded: false, advanced: false };
+    }
     actionInFlight.current = true;
     setBusy(true);
     setActionError(undefined);
@@ -543,10 +557,14 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       ) {
         await loadPlan(result.status.runId);
       }
-      return !unresolved;
+      return {
+        requestSucceeded: true,
+        advanced: !unresolved,
+        result: result.result,
+      };
     } catch (cause) {
       setActionError(errorMessage(cause));
-      return false;
+      return { requestSucceeded: false, advanced: false };
     } finally {
       actionInFlight.current = false;
       setBusy(false);
@@ -926,7 +944,7 @@ function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTim
   );
 }
 
-function ActionPanel({ status, plan, models, conversation, conversationLoading, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; conversation: ThetaConversationMessage[]; conversationLoading: boolean; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<boolean> }) {
+function ActionPanel({ status, plan, models, conversation, conversationLoading, busy, notice, onAction }: { status: ThetaRunStatus; plan?: ThetaPlan; models: ThetaModel[]; conversation: ThetaConversationMessage[]; conversationLoading: boolean; busy: boolean; notice?: string; onAction: (action: ThetaRunAction) => Promise<RunActionOutcome> }) {
   const [text, setText] = useState('');
   const [model, setModel] = useState('');
   const [topics, setTopics] = useState('');
@@ -948,8 +966,8 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   const state = status.currentState;
   const submitText = async (action: 'answer' | 'columns') => {
     if (!text.trim()) return;
-    const completed = await onAction({ action, text: text.trim() });
-    if (completed) setText('');
+    const outcome = await onAction({ action, text: text.trim() });
+    if (outcome.advanced) setText('');
   };
 
   if (state === 'ResearchClarification') return (
@@ -964,9 +982,29 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   );
 
   if (state === 'ColumnConfirmation') return (
-    <ActionShell title="确认数据列" description="说明正文、时间和 ID 列；不使用的角色可以写“无”。">
-      <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950"><p className="text-xs font-semibold uppercase text-blue-600">当前操作</p><p className="mt-1 font-medium">确认正文、时间、ID 和元数据列，然后生成模型建议。</p></div>
-      <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="例如：text 是正文列，timestamp 是时间列，id 是 ID 列，source 作为分组元数据" className="min-h-28" />
+    <ActionShell title="确认数据列" description="正文列必须确认；时间、ID 和元数据列不使用时可以明确写“无”。">
+      <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950">
+        <p className="text-xs font-semibold text-blue-600">本步骤只确认列的用途</p>
+        <p className="mt-1 font-medium">请使用数据文件中的真实列名。正文列用于模型训练，其余三类仅在研究需要时填写。</p>
+      </div>
+      <div className="mb-4 grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-2">
+        {[
+          ['正文列（必填）', '每条记录中需要分析的完整文本，例如 text。'],
+          ['时间列（可选）', '只有分析时间趋势时使用，例如 timestamp；否则写无。'],
+          ['ID 列（可选）', '每条记录的唯一标识，例如 id；没有就写无。'],
+          ['元数据列（可选）', '用于分组或描述的类别，例如 source；没有就写无。'],
+        ].map(([label, description]) => (
+          <div key={label} className="bg-white px-4 py-3">
+            <p className="text-xs font-semibold text-slate-700">{label}</p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setText('正文列：text\n时间列：无\nID 列：无\n元数据列：无')}>填入仅正文模板</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setText('正文列：text\n时间列：timestamp\nID 列：id\n元数据列：source')}>填入时间趋势模板</Button>
+      </div>
+      <Textarea value={text} onChange={(event) => setText(event.target.value)} placeholder={'正文列：text\n时间列：无\nID 列：无\n元数据列：无'} className="min-h-36" />
       <Button type="button" disabled={busy || !text.trim()} onClick={() => void submitText('columns')} className="mt-3 bg-blue-600 hover:bg-blue-700">{busy ? '正在校验...' : '确认列并生成模型建议'}</Button>
       {notice ? <ClarificationFeedback message={notice} /> : null}
     </ActionShell>
@@ -1013,9 +1051,10 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
   loading: boolean;
   busy: boolean;
   notice?: string;
-  onAction: (action: ThetaRunAction) => Promise<boolean>;
+  onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
 }) {
   const [draft, setDraft] = useState('');
+  const [optimisticMessages, setOptimisticMessages] = useState<OptimisticConversationMessage[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const researchMessages = useMemo(
     () => messages.filter((message) =>
@@ -1025,25 +1064,55 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
     [messages],
   );
   const currentPrompt = status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
-  const latestAssistant = [...researchMessages]
-    .reverse()
-    .find((message) => message.role === 'assistant');
-  const showCurrentPrompt = !latestAssistant?.content.includes(currentPrompt);
+  const showCurrentPrompt = !researchMessages.some(
+    (message) => message.role === 'assistant' && message.content.includes(currentPrompt),
+  );
   const noticeAlreadyShown = notice
     ? researchMessages.some((message) => message.content.includes(notice))
     : false;
 
   useEffect(() => {
+    setOptimisticMessages((pending) => pending.filter((message) => {
+      const persistedMatches = researchMessages.filter(
+        (candidate) => candidate.role === 'user' && candidate.content === message.content,
+      ).length;
+      return persistedMatches <= message.baselineMatches;
+    }));
+  }, [researchMessages]);
+
+  useEffect(() => {
     const area = scrollAreaRef.current;
     if (!area) return;
     area.scrollTo({ top: area.scrollHeight, behavior: 'smooth' });
-  }, [busy, currentPrompt, researchMessages.length]);
+  }, [busy, currentPrompt, optimisticMessages.length, researchMessages.length]);
 
   const send = async () => {
     const answer = draft.trim();
     if (!answer || busy) return;
+    const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const baselineMatches = researchMessages.filter(
+      (message) => message.role === 'user' && message.content === answer,
+    ).length;
     setDraft('');
-    await onAction({ action: 'message', text: answer, useMiniMax: true });
+    setOptimisticMessages((current) => [
+      ...current,
+      {
+        messageId: optimisticId,
+        role: 'user',
+        messageKind: 'conversation.optimistic',
+        content: answer,
+        sequenceNumber: Number.MAX_SAFE_INTEGER,
+        createdAt: new Date().toISOString(),
+        baselineMatches,
+        delivery: 'sending',
+      },
+    ]);
+    const outcome = await onAction({ action: 'message', text: answer, useMiniMax: true });
+    if (!outcome.requestSucceeded) {
+      setOptimisticMessages((current) => current.map((message) =>
+        message.messageId === optimisticId ? { ...message, delivery: 'failed' } : message,
+      ));
+    }
   };
 
   return (
@@ -1067,6 +1136,9 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
         ) : null}
         {researchMessages.map((message) => (
           <ConversationBubble key={message.messageId} message={message} />
+        ))}
+        {optimisticMessages.map((message) => (
+          <ConversationBubble key={message.messageId} message={message} delivery={message.delivery} />
         ))}
         {showCurrentPrompt ? (
           <ConversationBubble
@@ -1117,15 +1189,27 @@ function ResearchConversation({ status, messages, loading, busy, notice, onActio
         </div>
         <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <p>THETA 会先判断你是在回答研究设置，还是在向助手咨询；只有研究答案会推进流程。</p>
-          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">请检查现有信息并继续</Button>
+          <div className="text-right">
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">检查完整度并进入数据列确认</Button>
+            <p className="mt-0.5 text-[11px] text-slate-400">若仍缺必填信息，系统会列出缺项，不会错误跳过。</p>
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-function ConversationBubble({ message, current = false }: { message: ThetaConversationMessage; current?: boolean }) {
+function ConversationBubble({ message, current = false, delivery }: { message: ThetaConversationMessage; current?: boolean; delivery?: 'sending' | 'failed' }) {
   const isUser = message.role === 'user';
+  const isAttachedNote = !isUser && message.messageKind === 'research.note';
+  if (isAttachedNote) {
+    return (
+      <div className="-mt-3 ml-11 max-w-[76%] rounded-md border border-slate-200 bg-slate-100 px-3 py-2 text-xs leading-5 text-slate-600">
+        <p className="font-semibold text-slate-500">研究档案记录</p>
+        <p className="mt-0.5 whitespace-pre-wrap break-words">{message.content}</p>
+      </div>
+    );
+  }
   const assistantLabel = current
     ? '当前需要确认'
     : message.messageKind === 'research.progress'
@@ -1149,7 +1233,7 @@ function ConversationBubble({ message, current = false }: { message: ThetaConver
             <AssistantMessageContent content={message.content} />
           )}
         </div>
-        <p className={`mt-1 text-[11px] text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {formatTime(message.createdAt)}</p>
+        <p className={`mt-1 text-[11px] ${delivery === 'failed' ? 'text-red-500' : 'text-slate-400'} ${isUser ? 'text-right' : 'text-left'}`}>{isUser ? '你' : 'THETA'} · {delivery === 'sending' ? '发送中' : delivery === 'failed' ? '发送失败，请重试' : formatTime(message.createdAt)}</p>
       </div>
     </div>
   );

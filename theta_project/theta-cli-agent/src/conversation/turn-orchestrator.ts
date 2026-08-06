@@ -262,12 +262,22 @@ export class ThetaTurnOrchestrator {
       );
       const merged = this.merger.merge(brief, guarded.patch);
       if (merged.changedFields.length === 0) {
-        const response = `${interpretation.explanation} 请补充回答：${question.question}`;
+        const response = unresolvedResearchClarification(
+          gap.field,
+          text,
+          question.question,
+        );
         this.assistantMessage(
           context,
           runId,
           'research.clarification',
           response,
+        );
+        this.assistantMessage(
+          context,
+          runId,
+          'research.note',
+          `本轮没有修改研究档案：${interpretation.explanation}`,
         );
         this.store.updateTurn(turn.turnId, 'responded');
         return {
@@ -322,7 +332,7 @@ export class ThetaTurnOrchestrator {
         next,
         interpretation.questionSuggestions,
       );
-      const response = [
+      const note = [
         `已记录：${merged.changedFields.map(researchFieldLabel).join('、')}。`,
         guarded.correctedFields.length > 0
           ? `我按你的明确表述校正了${guarded.correctedFields
@@ -339,11 +349,12 @@ export class ThetaTurnOrchestrator {
               .map(researchFieldLabel)
               .join('、')}。`
           : '',
-        nextQuestion,
       ]
         .filter(Boolean)
         .join(' ');
-      this.assistantMessage(context, runId, 'research.progress', response);
+      const response = nextQuestion || '研究设置已更新，系统正在进入下一步。';
+      this.assistantMessage(context, runId, 'research.question', response);
+      this.assistantMessage(context, runId, 'research.note', note);
       this.store.updateTurn(turn.turnId, 'responded');
       return {
         value: {
@@ -420,9 +431,29 @@ export class ThetaTurnOrchestrator {
           )
       : [];
     if (blocking.length > 0) {
-      throw new Error(
-        `还有 ${blocking.length} 项必填信息未确认，暂时不能结束访谈。`,
+      const { question } = activeResearchQuestion(current);
+      const response = `研究设置还缺 ${blocking.length} 项必填信息，暂时不会进入数据列确认。请先回答：${question.question}`;
+      this.assistantMessage(
+        context,
+        runId,
+        'research.clarification',
+        response,
       );
+      this.assistantMessage(
+        context,
+        runId,
+        'research.note',
+        `完整度检查未修改研究档案；当前仍有 ${blocking.length} 项阻塞信息。`,
+      );
+      return {
+        value: {
+          kind: 'research.answer.unresolved',
+          explanation: `还有 ${blocking.length} 项必填信息未确认。`,
+          activeQuestion: question.question,
+          response,
+        },
+        activeRunId: runId,
+      };
     }
     const message = this.userMessage(
       context,
@@ -1115,7 +1146,7 @@ const questionAttempt = (
     .filter(
       (message) =>
         message.runId === runId &&
-        message.messageKind === 'research.progress',
+        ['research.progress', 'research.note'].includes(message.messageKind),
     ).length;
 
 const requiredRun = (runId: string | undefined): string => {
@@ -1399,6 +1430,28 @@ const researchFieldLabel = (field: string): string =>
     timeLimitHours: '可用训练时间',
     interviewComplete: '研究访谈状态',
   })[field] ?? '研究设置';
+
+const unresolvedResearchClarification = (
+  field: string,
+  answer: string,
+  fallbackQuestion: string,
+): string => {
+  const delegated = /(?:按|按照).{0,8}(?:你的|系统的|建议).{0,8}(?:想法|判断|决定|标准)|你.{0,6}(?:判断|决定)|都可以|随便/u.test(
+    answer,
+  );
+  if (field === 'successCriteria') {
+    return delegated
+      ? '成功标准需要由你最终确认。我建议采用：主题清晰可解释；每个主题提供关键词和代表文本；结果能够回答研究目标。你可以直接发送这段标准，或按需要修改。'
+      : '我还不能把这句话作为可验证的成功标准。请至少说明你希望结果具备什么，例如：主题清晰可解释；每个主题提供关键词和代表文本；结果能够回答研究目标。';
+  }
+  if (field === 'comparisonGroups') {
+    return '请明确要比较的来源、群体或时间阶段；如果不需要比较，可以直接回答“本次不做分组比较”。';
+  }
+  if (field === 'textFieldIntent') {
+    return '请说明每条记录中真正需要分析的文本类型，例如商品评论、客服对话、新闻正文或日常词汇。只写内容类型即可。';
+  }
+  return `我还不能安全地把这句话写入研究档案。${fallbackQuestion}`;
+};
 
 const hash = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');

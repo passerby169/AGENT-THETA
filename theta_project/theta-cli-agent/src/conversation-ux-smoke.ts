@@ -1,6 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type {
+  InferenceProvider,
+  InferenceRequest,
+  InferenceResponse,
+} from '@hypha/inference';
 import { ResearchService } from './agent/research-service.js';
 import { detectResearchGaps } from './agent/gap-rules.js';
 import { ThetaNaturalLanguageService } from './language/natural-service.js';
@@ -16,6 +21,13 @@ import {
 } from './conversation/turn-orchestrator.js';
 import { buildHumanResponse } from './presentation/human-response-builder.js';
 import { SQLiteConversationStore } from './storage/sqlite-conversation-store.js';
+
+const fakeNaturalProvider = (output: unknown): InferenceProvider => ({
+  id: 'fake-natural-provider',
+  async infer(_request: InferenceRequest): Promise<InferenceResponse> {
+    return { id: 'fake-natural-response', output };
+  },
+});
 
 const noRun = await new ThetaConversationWorkflowExecutor().execute(
   { kind: 'status' },
@@ -200,6 +212,28 @@ if (
 ) {
   throw new Error('A clear column assignment did not pass in one submission.');
 }
+const shorthandColumns = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'interpret_column_confirmation',
+  answer: 'text',
+  datasetSha256: 'a'.repeat(64),
+  columns: ['id', 'text', 'timestamp', 'source'],
+  candidates: { text: ['text'], time: ['timestamp'], metadata: ['source'] },
+  columnProfiles: [
+    { name: 'id', inferredType: 'string', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 8, maxLength: 8 },
+    { name: 'text', inferredType: 'text', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 64, maxLength: 120 },
+    { name: 'timestamp', inferredType: 'datetime', nonEmptySampleCount: 10, uniqueSampleCount: 10, avgLength: 10, maxLength: 10 },
+    { name: 'source', inferredType: 'string', nonEmptySampleCount: 10, uniqueSampleCount: 2, avgLength: 5, maxLength: 8 },
+  ],
+  recentMessages: [],
+});
+if (
+  shorthandColumns.output.task !== 'interpret_column_confirmation' ||
+  shorthandColumns.output.needsClarification ||
+  shorthandColumns.output.draft?.textColumns[0] !== 'text'
+) {
+  throw new Error('The unique text candidate was not accepted from a concise confirmation.');
+}
 const biasAnswer = '目前没有发现其他明确偏差，但样本量可能较小。';
 const biasGuard = guardCriticalResearchPatch(
   'sensitiveData',
@@ -358,6 +392,66 @@ if (guardedShortCategory.patch.textFieldIntent !== '日常词汇') {
   throw new Error('The research answer guard removed a meaningful short content category.');
 }
 
+const explicitSuccessCriteria = '主题清晰可解释；每个主题提供关键词和代表文本；结果能够回答研究目标。';
+const successCriteriaAnswer = await new ThetaNaturalLanguageService().generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'interpret_research_answer',
+  gapId: 'research.success-criteria',
+  field: 'successCriteria',
+  question: '什么样的结果会让你认为这次分析是成功的？',
+  answer: explicitSuccessCriteria,
+  currentBrief: {},
+  recentMessages: [],
+  nextGapCandidates: [],
+});
+if (successCriteriaAnswer.output.task !== 'interpret_research_answer') {
+  throw new Error('Success criteria did not return a research patch.');
+}
+const guardedSuccessCriteria = guardCriticalResearchPatch(
+  'successCriteria',
+  explicitSuccessCriteria,
+  successCriteriaAnswer.output.patch,
+  successCriteriaAnswer.output.confidenceByField,
+);
+if (!guardedSuccessCriteria.patch.successCriteria?.length) {
+  throw new Error('The explicit success-criteria example was not accepted.');
+}
+const providerRejectedSuccessCriteria = await new ThetaNaturalLanguageService({
+  provider: fakeNaturalProvider({
+    task: 'interpret_research_answer',
+    patch: {},
+    answeredFields: [],
+    unresolvedFields: ['successCriteria'],
+    confidenceByField: {},
+    evidenceSpans: {},
+    remainingQuestions: ['什么样的结果会让你认为这次分析是成功的？'],
+    needsConfirmation: true,
+    explanation: '需要进一步确认。',
+    questionSuggestions: [],
+  }),
+}).generate({
+  schemaVersion: NATURAL_LANGUAGE_CONTRACT_VERSION,
+  task: 'interpret_research_answer',
+  gapId: 'research.success-criteria',
+  field: 'successCriteria',
+  question: '什么样的结果会让你认为这次分析是成功的？',
+  answer: explicitSuccessCriteria,
+  currentBrief: {},
+  recentMessages: [],
+  nextGapCandidates: [],
+});
+if (
+  providerRejectedSuccessCriteria.output.task !== 'interpret_research_answer' ||
+  !providerRejectedSuccessCriteria.output.patch.successCriteria?.length ||
+  providerRejectedSuccessCriteria.output.unresolvedFields.includes(
+    'successCriteria',
+  )
+) {
+  throw new Error(
+    'A safe deterministic research answer did not recover from provider rejection.',
+  );
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'theta-conversation-ux-'));
 const store = new SQLiteConversationStore(path.join(root, 'conversation.sqlite'));
 try {
@@ -412,6 +506,7 @@ console.log(
     noComparisonProgression: 'verified',
     parameterDecisionUx: 'verified',
     singleSubmitColumnConfirmation: 'verified',
+    providerResearchRecovery: 'verified',
     revisionEvidence: 'persisted',
   }),
 );
