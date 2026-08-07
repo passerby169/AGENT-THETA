@@ -628,6 +628,7 @@ try {
   const clarificationWait = await service.run({
     input: {
       filePath: input.filePath,
+      workflowVersion: '1.0.0',
       researchGoal: input.researchGoal,
     },
     runId: clarificationRunId,
@@ -750,6 +751,7 @@ try {
   const rejectedWait = await service.run({
     input: {
       filePath: input.filePath,
+      workflowVersion: '1.0.0',
       researchGoal: input.researchGoal,
     },
     runId: rejectedRunId,

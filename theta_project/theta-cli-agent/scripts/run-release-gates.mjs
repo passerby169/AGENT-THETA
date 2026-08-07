@@ -16,6 +16,7 @@ const checks = [
   "smoke:theta-domain",
   "smoke:research-agent",
   "smoke:recommendation-golden",
+  "smoke:golden-transcripts",
   "smoke:planning-chain",
   "smoke:hypha-runner",
   "smoke:hypha-training-controls",

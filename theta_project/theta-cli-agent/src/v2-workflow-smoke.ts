@@ -99,12 +99,16 @@ try {
   let result = await service.run({
     runId,
     runtimeDb,
-    input: { filePath, workflowVersion: '2.0.0' },
+    input: { filePath },
   });
   assert.equal(
     result.pendingActionRef,
     THETA_APPROVAL_KEYS.datasetUnderstanding,
   );
+  const initialStatus = await service.status(runId, runtimeDb);
+  assert.equal(initialStatus.workflowVersion, '2.0.0');
+  assert.equal(initialStatus.metrics?.datasetExploreToolCalls, 1);
+  assert.equal(initialStatus.metrics?.datasetUnderstandingValidationFailures, 0);
 
   result = await service.resume({
     runId,

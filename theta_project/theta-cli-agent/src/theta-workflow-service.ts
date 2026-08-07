@@ -115,6 +115,13 @@ import {
   type PlanEvidenceQueryInput,
 } from "./rag/evidence-bundle.js";
 import type { RetrievalTrace } from "./rag/fts-index.js";
+import {
+  deriveWorkflowMetricsV2,
+  resolveWorkflowVersion,
+  workflowVersionSchema,
+  type WorkflowMetricsV2,
+  type WorkflowVersion,
+} from './acceptance/v2-acceptance.js';
 
 const USER_ID = "local_user";
 const WORKSPACE_ID = "local_workspace";
@@ -205,6 +212,8 @@ export interface ThetaWorkflowStatus {
   lastEventAt: string;
   output?: RuntimeJsonValue;
   trainingReceipt?: RuntimeJsonValue;
+  workflowVersion?: WorkflowVersion;
+  metrics?: WorkflowMetricsV2;
 }
 
 export interface ThetaWorkflowEvidence {
@@ -522,6 +531,14 @@ export class ThetaWorkflowService {
           streamScope(scope),
         )
       ).state;
+      const variables = await hydrateVariables(runtime.events, scope);
+      const storedVersion = workflowVersionSchema.safeParse(
+        stringProperty(variables.input, 'workflowVersion'),
+      );
+      const workflowVersion = resolveWorkflowVersion({
+        isNewRun: false,
+        ...(storedVersion.success ? { storedVersion: storedVersion.data } : {}),
+      });
       const status = toStatusResult(
         resolvedRunId,
         resolvedDb,
@@ -531,13 +548,18 @@ export class ThetaWorkflowService {
         last.timestamp,
         await terminalOutput(runtime, scope),
       );
-      const variables = await hydrateVariables(runtime.events, scope);
       const liveTrainingReceipt =
         projection.pendingWait?.type === "timer"
           ? latestTimerReceipt(events) ?? variables.trainingReceipt
           : variables.trainingReceipt;
       return {
         ...status,
+        workflowVersion,
+        metrics: deriveWorkflowMetricsV2({
+          workflowVersion,
+          events,
+          variables,
+        }),
         ...(liveTrainingReceipt === undefined
           ? {}
           : {
@@ -3200,7 +3222,12 @@ const prepareWorkflowInput = async (
   input: ThetaWorkflowInput,
   runtimeDb: string,
 ): Promise<ThetaWorkflowInput> => {
-  const workflowVersion = input.workflowVersion ?? "1.0.0";
+  const workflowVersion = resolveWorkflowVersion({
+    isNewRun: true,
+    ...(input.workflowVersion
+      ? { requestedVersion: input.workflowVersion }
+      : {}),
+  });
   if (workflowVersion !== "2.0.0" || input.datasetRef) {
     return { ...input, workflowVersion };
   }

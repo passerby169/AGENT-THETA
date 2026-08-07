@@ -61,7 +61,8 @@ for (const file of files) {
   }
   if (
     ((source.includes('fetch(') || source.includes('fetch (')) &&
-      !isMiniMaxProvider) ||
+      !isMiniMaxProvider &&
+      !isSmoke) ||
     (source.includes('api.minimax.io') &&
       !isMiniMaxProvider &&
       !isSmoke)
