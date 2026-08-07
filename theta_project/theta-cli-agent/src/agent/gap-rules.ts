@@ -30,6 +30,20 @@ export const detectResearchQuestionGap: GapRule = (brief) =>
         100,
       );
 
+export const detectDomainConfirmationGap: GapRule = (brief) =>
+  brief.domainConfirmed
+    ? null
+    : gap(
+        'gap.00-domain-confirmation',
+        'domainConfirmed',
+        'blocking',
+        brief.researchDomain
+          ? `我初步判断这批数据属于“${brief.researchDomain}”方向。这个判断符合你的数据背景吗？`
+          : '这批数据主要属于哪个领域或方向？',
+        '先确认领域方向，THETA 才能用贴近业务的语言解释数据并减少后续提问。',
+        100,
+      );
+
 export const detectDataSourceGap: GapRule = (brief) =>
   brief.dataSources.length > 0
     ? null
@@ -166,6 +180,7 @@ export const detectKnownBiasesGap: GapRule = (brief) =>
       );
 
 export const researchGapRules: readonly GapRule[] = [
+  detectDomainConfirmationGap,
   detectResearchQuestionGap,
   detectDataSourceGap,
   detectAnalysisUnitGap,

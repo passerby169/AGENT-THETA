@@ -146,7 +146,7 @@ const shape = (request: NaturalLanguageRequest): string => {
       return [
         `The currently asked field is ${JSON.stringify(request.field.split(',')[0] ?? request.field)}, but extract every ResearchBrief field explicitly supported by this answer in one patch.`,
         researchFieldValueRule(request.field.split(',')[0] ?? request.field),
-        'Allowed patch keys are researchQuestion, collectionMethod, analysisUnit, timeRange, language, comparisonGroups, comparisonIntent, topicGranularity, knownBiases, sensitiveData, successCriteria, hardwareLimit, textFieldIntent, trendAnalysis, offlineOnly, requestedEmbedding, and timeLimitHours.',
+        'Allowed patch keys are researchQuestion, researchDomain, domainConfirmed, collectionMethod, analysisUnit, timeRange, language, comparisonGroups, comparisonIntent, topicGranularity, knownBiases, sensitiveData, successCriteria, hardwareLimit, textFieldIntent, trendAnalysis, offlineOnly, requestedEmbedding, and timeLimitHours.',
         'Return exactly: {"task":"interpret_research_answer","patch":{"FIELD":VALUE},"answeredFields":["FIELD"],"unresolvedFields":[],"confidenceByField":{"FIELD":0.0},"evidenceSpans":{"FIELD":["exact quote from answer"]},"remainingQuestions":[],"needsConfirmation":false,"explanation":"简短中文说明","questionSuggestions":[{"gapId":"candidate gapId","field":"candidate field","question":"自然的中文追问","examples":[],"answerHint":"如何回答"}]}.',
         'answeredFields, confidenceByField, and evidenceSpans must use exactly the keys present in patch. Every evidence span must be an exact substring of the answer.',
         'For textFieldIntent, a short noun phrase that names the content category, such as 日常词汇、客服对话、新闻正文、商品评论, is a valid answer. Preserve the user wording instead of requiring words such as 正文、字段, or 列.',
@@ -428,7 +428,13 @@ const deterministicResearchPatch = (
 ): Record<string, unknown> => {
   const patch: Record<string, unknown> = {};
   const supportsActiveField = researchAnswerSupportsField(field, answer);
-  if (field === 'trendAnalysis' && supportsActiveField) {
+  if (field === 'domainConfirmed' && supportsActiveField) {
+    const correction = answer.match(/(?:不是|不对|更准确|应该是|属于)\s*[“"']?([^，。；;！!？?]{2,40})/u)?.[1]?.trim();
+    patch.domainConfirmed = true;
+    if (correction && !/^(?:这个|该|上述|系统判断)$/u.test(correction)) {
+      patch.researchDomain = correction;
+    }
+  } else if (field === 'trendAnalysis' && supportsActiveField) {
     if (/(时间|趋势|变化|temporal|trend)/iu.test(answer)) {
       patch.trendAnalysis = !/(不|否|no|不要|无需)/iu.test(answer);
     }
@@ -480,6 +486,7 @@ const deterministicResearchPatch = (
     supportsActiveField &&
     [
       'researchQuestion',
+      'researchDomain',
       'collectionMethod',
       'analysisUnit',
       'language',
@@ -569,6 +576,8 @@ const evidenceForField = (answer: string, field: string): string =>
 const fieldEvidencePattern = (field: string): RegExp =>
   ({
     researchQuestion: /研究|目标|识别|分析|比较|探索/iu,
+    researchDomain: /领域|方向|法律|教育|医疗|金融|科技|新闻|商品|文学|生活/iu,
+    domainConfirmed: /是|准确|符合|不对|不是|领域|方向/iu,
     analysisUnit: /每一|每行|每条|每篇|分析单位/iu,
     textFieldIntent: /正文|文本内容|自然语言内容/iu,
     sensitiveData: /个人|隐私|机密|敏感|合成|模拟/iu,
@@ -585,6 +594,7 @@ const sameSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean
 const deterministicExamples = (field: string): string[] => {
   const examples: Readonly<Record<string, string>> = {
     researchQuestion: '我想比较不同来源的风险主题，并观察它们随时间的变化。',
+    domainConfirmed: '是，这个领域判断准确。',
     analysisUnit: '每一行是一条独立文档，正文位于 text 列。',
     textFieldIntent: '分析 text 列中的正文，不分析编号和时间。',
     sensitiveData: '这是人工模拟数据，不包含个人或机密信息。',
@@ -1043,6 +1053,8 @@ const fallbackReason = (error: unknown): string => {
 const researchFieldValueRule = (field: string): string => {
   const rules: Readonly<Record<string, string>> = {
     researchQuestion: 'VALUE must be a non-empty string.',
+    researchDomain: 'VALUE must be a non-empty string.',
+    domainConfirmed: 'VALUE must be a boolean.',
     collectionMethod: 'VALUE must be a non-empty string.',
     analysisUnit: 'VALUE must be a non-empty string.',
     language: 'VALUE must be a non-empty string.',

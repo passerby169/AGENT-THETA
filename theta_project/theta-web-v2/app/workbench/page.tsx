@@ -678,9 +678,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
     <div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 w-fit text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
-        <div className="flex w-full items-center rounded-md border border-blue-200 bg-white p-1 shadow-sm sm:w-auto" aria-label="工作模式切换">
-          <button type="button" aria-pressed={workspaceMode === 'agent'} onClick={() => changeWorkspaceMode('agent')} className={`flex min-h-9 flex-1 items-center justify-center gap-2 rounded px-4 text-xs font-semibold transition-colors sm:flex-none ${workspaceMode === 'agent' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}><MessageSquareText className="h-4 w-4" />二代 Agent</button>
-          <button type="button" aria-pressed={workspaceMode === 'classic'} onClick={() => changeWorkspaceMode('classic')} className={`flex min-h-9 flex-1 items-center justify-center gap-2 rounded px-4 text-xs font-semibold transition-colors sm:flex-none ${workspaceMode === 'classic' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}><Database className="h-4 w-4" />一代工作台</button>
+        <div className="relative grid w-full grid-cols-2 items-center overflow-hidden rounded-md border border-blue-200 bg-white p-1 shadow-sm sm:w-[260px]" aria-label="工作模式切换">
+          <span aria-hidden="true" className={`absolute bottom-1 left-1 top-1 w-[calc(50%-4px)] rounded bg-blue-600 shadow-sm transition-transform duration-500 ease-in-out ${workspaceMode === 'classic' ? 'translate-x-full' : 'translate-x-0'}`} />
+          <button type="button" aria-pressed={workspaceMode === 'agent'} onClick={() => changeWorkspaceMode('agent')} className={`relative z-10 flex min-h-9 items-center justify-center gap-2 rounded px-3 text-xs font-semibold transition-colors duration-300 ${workspaceMode === 'agent' ? 'text-white' : 'text-slate-600 hover:text-slate-900'}`}><MessageSquareText className="h-4 w-4" />二代 Agent</button>
+          <button type="button" aria-pressed={workspaceMode === 'classic'} onClick={() => changeWorkspaceMode('classic')} className={`relative z-10 flex min-h-9 items-center justify-center gap-2 rounded px-3 text-xs font-semibold transition-colors duration-300 ${workspaceMode === 'classic' ? 'text-white' : 'text-slate-600 hover:text-slate-900'}`}><Database className="h-4 w-4" />一代工作台</button>
         </div>
       </div>
       <p className="mt-2 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
@@ -1182,7 +1183,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
   };
 
   return (
-    <section className={`flex flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm ${compact ? 'h-[calc(100dvh-8.5rem)] min-h-[560px] max-h-[820px]' : 'mt-4 h-[calc(100dvh-12rem)] min-h-[540px] max-h-[800px]'}`}>
+    <section className="flex h-[calc(100dvh-12rem)] min-h-[560px] max-h-[820px] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm transition-[height,margin] duration-500 ease-in-out">
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
@@ -1272,6 +1273,7 @@ function DatasetProfileSummary({ status, compact }: { status: ThetaRunStatus; co
         <span className="rounded-sm bg-slate-100 px-2 py-1">格式：{profile.format.toUpperCase()}</span>
         <span className="rounded-sm bg-slate-100 px-2 py-1">正文候选：{primaryText ?? '需要确认'}</span>
         <span className="rounded-sm bg-slate-100 px-2 py-1">时间候选：{primaryTime ?? '未识别'}</span>
+        <span className="rounded-sm bg-blue-50 px-2 py-1 text-blue-700">领域预判：{profile.inferredDomain?.label ?? '通用文本分析'}</span>
         <span className="rounded-sm bg-slate-100 px-2 py-1">缺失率：{Math.round(profile.missingRatio * 100)}%</span>
       </div>
       <p className="mt-2 text-xs leading-5 text-slate-500">THETA 已依据结构和样本统计建立初步判断；后续只会询问无法可靠推断的领域含义与必要授权。</p>

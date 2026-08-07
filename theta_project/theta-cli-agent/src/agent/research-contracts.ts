@@ -8,6 +8,8 @@ export const researchBriefSchema = z
   .object({
     schemaVersion: z.literal(RESEARCH_CONTRACT_VERSION),
     researchQuestion: optionalText,
+    researchDomain: optionalText,
+    domainConfirmed: z.boolean().optional(),
     dataSources: z.array(z.string().trim().min(1)).default([]),
     collectionMethod: optionalText,
     analysisUnit: optionalText,
@@ -157,6 +159,14 @@ export const datasetProfileSchema = z
       })
       .strict(),
     sensitiveRiskCodes: z.array(z.string().min(1)),
+    inferredDomain: z
+      .object({
+        label: z.string().trim().min(1),
+        confidence: z.number().min(0).max(1),
+        evidence: z.array(z.string().trim().min(1)).max(8).default([]),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

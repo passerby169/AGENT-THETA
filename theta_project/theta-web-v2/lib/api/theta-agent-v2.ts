@@ -49,6 +49,8 @@ export interface ThetaRunStatus {
   datasetProfile?: ThetaDatasetProfile;
   researchBrief?: {
     researchQuestion?: string;
+    researchDomain?: string;
+    domainConfirmed?: boolean;
     analysisUnit?: string;
     textFieldIntent?: string;
     sensitiveData?: { status: 'yes' | 'no' | 'unknown'; categories: string[] };
@@ -83,6 +85,11 @@ export interface ThetaDatasetProfile {
     metadata: Array<{ name: string; score: number; reason: string }>;
   };
   sensitiveRiskCodes: string[];
+  inferredDomain?: {
+    label: string;
+    confidence: number;
+    evidence: string[];
+  };
 }
 
 export interface ThetaTrainingReceipt {

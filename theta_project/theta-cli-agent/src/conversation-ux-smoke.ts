@@ -17,6 +17,7 @@ import {
 import { ThetaConversationWorkflowExecutor } from './conversation/workflow-executor.js';
 import {
   fastReadonlyToolProposal,
+  inferableUncertaintyAnswer,
   isObviousAssistantRequest,
 } from './conversation/turn-orchestrator.js';
 import { buildHumanResponse } from './presentation/human-response-builder.js';
@@ -456,6 +457,47 @@ if (
   throw new Error(
     'A safe deterministic research answer did not recover from provider rejection.',
   );
+}
+
+const inferredUnknownDomain = inferableUncertaintyAnswer(
+  'domainConfirmed',
+  '不知道',
+  {
+    rowCount: 80,
+    columnCandidates: {
+      text: [{ name: 'text', score: 0.98, reason: 'primary text candidate' }],
+      time: [],
+      metadata: [],
+    },
+    languageDistribution: [{ language: 'zh', ratio: 1 }],
+    inferredDomain: {
+      label: 'news and public discussion',
+      confidence: 0.86,
+      evidence: ['keyword: policy'],
+    },
+  },
+);
+if (!isObviousAssistantRequest('你想要什么答案？')) {
+  throw new Error('A request for answer guidance was routed as a research answer.');
+}
+if (!inferredUnknownDomain?.includes('领域判断')) {
+  throw new Error('An uncertain domain answer did not fall back to dataset inference.');
+}
+const inferredUnknownUnit = inferableUncertaintyAnswer(
+  'analysisUnit',
+  '不清楚',
+  {
+    rowCount: 80,
+    columnCandidates: {
+      text: [{ name: 'text', score: 0.98, reason: 'primary text candidate' }],
+      time: [],
+      metadata: [],
+    },
+    languageDistribution: [{ language: 'zh', ratio: 1 }],
+  },
+);
+if (!inferredUnknownUnit) {
+  throw new Error('An uncertain analysis-unit answer did not use dataset preflight.');
 }
 
 const root = mkdtempSync(path.join(tmpdir(), 'theta-conversation-ux-'));

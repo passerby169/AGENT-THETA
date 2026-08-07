@@ -26,6 +26,11 @@ export const researchAnswerSupportsField = (
     return false;
   }
   switch (field.split(',')[0] ?? field) {
+    case 'domainConfirmed':
+      return /^(?:是|对|准确|符合|可以|确认|没错)[。.]?$/u.test(value) ||
+        /不是|不对|更准确|应该是|属于|领域|方向/u.test(value);
+    case 'researchDomain':
+      return meaningfulCategoryPhrase(value);
     case 'researchQuestion':
       return value.length >= 8 && /研究|目标|识别|分析|比较|探索|提取|预测|分类|主题|趋势|关系|影响/iu.test(value);
     case 'analysisUnit':
@@ -82,6 +87,15 @@ export const guardCriticalResearchPatch = (
     delete patch[authoritativeField as keyof ResearchBriefPatch];
     if (authoritativeField === 'comparisonGroups') delete patch.comparisonIntent;
     confirmationFields.push(authoritativeField);
+  }
+
+  if (authoritativeField === 'domainConfirmed') {
+    const accepted = /^(?:是|对|准确|符合|可以|确认|没错)[。.]?$/u.test(answer.trim());
+    const corrected = /不是|不对|更准确|应该是|属于|领域|方向/u.test(answer);
+    if (accepted || corrected) {
+      patch.domainConfirmed = true;
+      correctedFields.push('domainConfirmed');
+    }
   }
 
   const shortNo =

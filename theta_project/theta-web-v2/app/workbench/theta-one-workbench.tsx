@@ -94,7 +94,7 @@ export function ThetaOneWorkbench({
 
   return (
     <section className="mt-4">
-      <div className={`overflow-hidden transition-all duration-300 ease-out ${assistantExpanded ? 'max-h-0 border-transparent opacity-0' : 'max-h-24 border-y border-slate-200 bg-white px-2 py-3 opacity-100'}`}>
+      <div className={`overflow-hidden transition-all duration-500 ease-in-out ${assistantExpanded ? 'max-h-0 border-transparent opacity-0' : 'max-h-24 border-y border-slate-200 bg-white px-2 py-3 opacity-100'}`}>
         <div className="flex min-w-[820px] items-center justify-between">
           {stages.map((stage, index) => {
             const Icon = stage.icon;
@@ -123,8 +123,8 @@ export function ThetaOneWorkbench({
         </div>
       </div>
 
-      <div className={`grid items-start transition-[grid-template-columns,gap] duration-300 ease-out ${assistantExpanded ? 'mt-0 grid-cols-[0_minmax(0,1fr)] gap-0' : 'mt-4 gap-4 xl:grid-cols-[minmax(0,1fr)_390px]'}`}>
-        <div className={`min-w-0 overflow-hidden transition-all duration-300 ease-out ${assistantExpanded ? 'pointer-events-none -translate-x-4 opacity-0' : 'translate-x-0 space-y-4 opacity-100'}`} aria-hidden={assistantExpanded}>
+      <div className={`grid grid-cols-1 items-start transition-[grid-template-columns,gap,margin] duration-500 ease-in-out lg:grid-cols-[minmax(0,1fr)_minmax(340px,390px)] ${assistantExpanded ? 'mt-0 gap-0 lg:grid-cols-[0fr_minmax(0,1fr)]' : 'mt-4 gap-4'}`}>
+        <div className={`min-w-0 overflow-hidden transition-[opacity,transform] duration-500 ease-in-out ${assistantExpanded ? 'pointer-events-none -translate-x-6 opacity-0' : 'translate-x-0 space-y-4 opacity-100'}`} aria-hidden={assistantExpanded}>
           <div className="rounded-md border border-slate-200 bg-white p-5 sm:p-6">
             <div className="flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-start sm:justify-between">
               <div>
@@ -187,7 +187,7 @@ export function ThetaOneWorkbench({
           </div>
         </div>
 
-        <aside className={`min-w-0 transition-all duration-300 ease-out ${assistantExpanded ? 'translate-x-0' : 'xl:sticky xl:top-20'}`}>
+        <aside className={`min-w-0 transition-[transform,width] duration-500 ease-in-out ${assistantExpanded ? 'translate-x-0' : 'lg:sticky lg:top-20'}`}>
           <div className={`flex items-center justify-between px-1 transition-all duration-200 ${assistantExpanded ? 'max-h-0 overflow-hidden opacity-0' : 'mb-2 max-h-14 opacity-100'}`}>
             <div><p className="text-xs font-semibold text-slate-700">THETA AI 助手</p><p className="mt-0.5 text-[11px] text-slate-400">当前任务操作与对话</p></div>
             <span className="rounded-sm bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700">动态同步</span>

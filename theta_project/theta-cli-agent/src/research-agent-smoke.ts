@@ -20,6 +20,7 @@ const blockingFields = incomplete.gaps
   .filter((gap) => gap.severity === 'blocking')
   .map((gap) => gap.field);
 for (const expected of [
+  'domainConfirmed',
   'analysisUnit',
   'textFieldIntent',
   'sensitiveData',
@@ -38,11 +39,18 @@ if (
 }
 
 const completeBrief = service.applyAnswers(incomplete.brief, {
+  researchDomain: 'public news and social discussion',
+  domainConfirmed: true,
+  collectionMethod: 'existing CSV records collected from public sources',
   analysisUnit: 'one research document',
   textFieldIntent: 'analyze the primary document body',
   sensitiveData: { status: 'no', categories: [] },
   successCriteria: ['Produce stable, interpretable topics.'],
   hardwareLimit: { device: 'cpu', memoryGb: 16 },
+  comparisonIntent: 'none',
+  comparisonGroups: [],
+  topicGranularity: 'medium',
+  knownBiases: ['No additional known biases beyond the small sample size.'],
 });
 const complete = service.assess(completeBrief);
 if (complete.blocking) {
@@ -116,11 +124,36 @@ const datasetProfile: DatasetProfile = {
     metadata: [{ name: 'source', score: 0.82, reason: 'categorical values' }],
   },
   sensitiveRiskCodes: [],
+  inferredDomain: {
+    label: 'news and public discussion',
+    confidence: 0.86,
+    evidence: ['keyword: news', 'keyword: policy'],
+  },
 };
-const dataAware = service.assess(incomplete.brief, {
+const domainFirst = service.assess(incomplete.brief, {
   currentState: 'ResearchClarification',
   datasetProfile,
 });
+const domainQuestion = domainFirst.questions.find(
+  (question) => question.field === 'domainConfirmed',
+);
+if (
+  !domainQuestion?.question.includes('news and public discussion') ||
+  domainFirst.questions[0]?.field !== 'domainConfirmed'
+) {
+  throw new Error('The inferred dataset domain was not presented as the first confirmation.');
+}
+const dataAware = service.assess(
+  service.applyAnswers(incomplete.brief, {
+    researchDomain: datasetProfile.inferredDomain?.label,
+    domainConfirmed: true,
+    sensitiveData: { status: 'no', categories: [] },
+  }),
+  {
+    currentState: 'ResearchClarification',
+    datasetProfile,
+  },
+);
 const analysisUnitQuestion = dataAware.questions.find(
   (question) => question.field === 'analysisUnit',
 );

@@ -1017,6 +1017,9 @@ const executeThetaState = async (
               : {
                   language: datasetProfile.languageDistribution[0]?.language,
                 }),
+            ...(currentBrief.researchDomain || !datasetProfile.inferredDomain
+              ? {}
+              : { researchDomain: datasetProfile.inferredDomain.label }),
           },
         );
         const observedAssessment = researchService.assess(observedBrief, {
@@ -2235,6 +2238,20 @@ const sanitizeDatasetProfile = (
       metadata: sanitizeCandidates(columns.metadataColumns),
     },
     sensitiveRiskCodes: sensitiveRiskCodes(columnNames),
+    ...(isRecord(inspection.inferredDomain)
+      ? {
+          inferredDomain: {
+            label:
+              stringValue(inspection.inferredDomain.label) ?? '通用文本分析',
+            confidence:
+              numberValue(inspection.inferredDomain.confidence) ?? 0.35,
+            evidence: arrayValue(inspection.inferredDomain.evidence)
+              .map(stringValue)
+              .filter((value): value is string => Boolean(value))
+              .slice(0, 8),
+          },
+        }
+      : {}),
   });
 };
 

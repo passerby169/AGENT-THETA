@@ -49,6 +49,11 @@ export interface ThetaDatasetInspectOutput {
   columnProfiles: ThetaDatasetColumnProfile[];
   sampleRows: Array<Record<string, unknown>>;
   textColumnCandidates: ThetaDatasetColumnCandidate[];
+  inferredDomain: {
+    label: string;
+    confidence: number;
+    evidence: string[];
+  };
 }
 
 export const thetaDatasetFileInputSchema: JsonSchema = {
@@ -121,6 +126,7 @@ const thetaDatasetInspectOutputSchema: JsonSchema = {
     'columnProfiles',
     'sampleRows',
     'textColumnCandidates',
+    'inferredDomain',
   ],
   properties: {
     filePath: { type: 'string' },
@@ -164,6 +170,20 @@ const thetaDatasetInspectOutputSchema: JsonSchema = {
     textColumnCandidates: {
       type: 'array',
       items: thetaDatasetColumnCandidateSchema,
+    },
+    inferredDomain: {
+      type: 'object',
+      required: ['label', 'confidence', 'evidence'],
+      properties: {
+        label: { type: 'string', minLength: 1 },
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        evidence: {
+          type: 'array',
+          items: { type: 'string', minLength: 1 },
+          maxItems: 8,
+        },
+      },
+      additionalProperties: false,
     },
   },
   additionalProperties: false,
@@ -244,6 +264,62 @@ export const thetaDatasetInspectHandler: ToolHandler<unknown, ThetaDatasetInspec
     sampleDuplicateRatio: sampleDuplicateRatio(output.sampleRows, textColumn),
     languageDistribution: sampleLanguageDistribution(output.sampleRows, textColumn),
     timeCoverage: sampleTimeCoverage(output.sampleRows, output.columnProfiles),
+    inferredDomain: inferDatasetDomain(output.sampleRows, textColumn, output.columns),
+  };
+};
+
+const domainDictionaries: ReadonlyArray<{
+  label: string;
+  keywords: readonly string[];
+}> = [
+  { label: '法律与司法', keywords: ['法律', '法院', '合同', '犯罪', '刑法', '民法', '判决', '诉讼', '律师', '权利'] },
+  { label: '教育与学习', keywords: ['学习', '教育', '课程', '学生', '教师', '考试', '知识', '作业', '课堂', '学校'] },
+  { label: '医疗与健康', keywords: ['医疗', '健康', '患者', '疾病', '治疗', '医院', '医生', '症状', '药物', '诊断'] },
+  { label: '金融与商业', keywords: ['金融', '市场', '投资', '股票', '基金', '银行', '交易', '公司', '客户', '销售'] },
+  { label: '科技与互联网', keywords: ['技术', '软件', '代码', '算法', '模型', '人工智能', '网络', '数据', '系统', '平台'] },
+  { label: '新闻与公共议题', keywords: ['新闻', '报道', '社会', '政策', '政府', '事件', '公众', '媒体', '舆论', '国家'] },
+  { label: '商品与用户反馈', keywords: ['商品', '产品', '评价', '评论', '购买', '客服', '质量', '价格', '服务', '用户'] },
+  { label: '文学叙事与日常生活', keywords: ['故事', '小说', '人物', '孩子', '母亲', '父亲', '老师', '生活', '回家', '说道'] },
+];
+
+const inferDatasetDomain = (
+  rows: Array<Record<string, unknown>>,
+  textColumn: string | undefined,
+  columns: readonly string[],
+): ThetaDatasetInspectOutput['inferredDomain'] => {
+  const corpus = rows
+    .flatMap((row) => textColumn ? [row[textColumn]] : Object.values(row))
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .slice(0, 120_000)
+    .toLowerCase();
+  const columnCorpus = columns.join(' ').toLowerCase();
+  const ranked = domainDictionaries
+    .map((domain) => {
+      const matched = domain.keywords.filter(
+        (keyword) => corpus.includes(keyword.toLowerCase()) || columnCorpus.includes(keyword.toLowerCase()),
+      );
+      const occurrences = matched.reduce(
+        (total, keyword) => total + Math.min(5, corpus.split(keyword.toLowerCase()).length - 1),
+        0,
+      );
+      return { ...domain, matched, score: matched.length * 2 + occurrences };
+    })
+    .sort((left, right) => right.score - left.score);
+  const winner = ranked[0];
+  const runnerUp = ranked[1];
+  if (!winner || winner.score === 0) {
+    return {
+      label: '通用文本分析',
+      confidence: 0.35,
+      evidence: textColumn ? [`正文候选列：${textColumn}`] : ['未发现稳定的领域关键词'],
+    };
+  }
+  const separation = winner.score / Math.max(1, winner.score + (runnerUp?.score ?? 0));
+  return {
+    label: winner.label,
+    confidence: Math.min(0.92, Math.max(0.5, separation)),
+    evidence: winner.matched.slice(0, 6),
   };
 };
 

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   researchBriefSchema,
+  type DatasetProfile,
   type InformationGap,
   type PlannedQuestion,
 } from '../agent/research-contracts.js';
@@ -232,6 +233,12 @@ export class ThetaTurnOrchestrator {
     const { gap, question } = activeResearchQuestion(current);
     const message = this.userMessage(context, runId, 'research.answer', text);
     const turn = this.startTurn(context, runId, message);
+    const inferredAnswer = inferableUncertaintyAnswer(
+      gap.field,
+      text,
+      current.datasetProfile,
+    );
+    const answerForInterpretation = inferredAnswer ?? text;
     try {
       const language = await this.language(
         {
@@ -240,7 +247,7 @@ export class ThetaTurnOrchestrator {
           gapId: gap.id,
           field: gap.field,
           question: question.question,
-          answer: text,
+          answer: answerForInterpretation,
           currentBrief: brief,
           nextGapCandidates: researchGapCandidates(current, gap.id),
           recentMessages: recent(this.store, context.sessionId, runId),
@@ -256,7 +263,7 @@ export class ThetaTurnOrchestrator {
       }
       const guarded = guardCriticalResearchPatch(
         gap.field,
-        text,
+        answerForInterpretation,
         interpretation.patch,
         interpretation.confidenceByField,
       );
@@ -264,7 +271,7 @@ export class ThetaTurnOrchestrator {
       if (merged.changedFields.length === 0) {
         const response = unresolvedResearchClarification(
           gap.field,
-          text,
+          answerForInterpretation,
           question.question,
         );
         this.assistantMessage(
@@ -311,13 +318,15 @@ export class ThetaTurnOrchestrator {
           merged.changedFields.map((field) => [
             field,
             {
-              sourceText: message.content,
+              sourceText: inferredAnswer
+                ? `${message.content}（采用本地数据预检结论：${inferredAnswer}）`
+                : message.content,
               confidence:
                 guarded.correctedFields.includes(field)
                   ? 1
                   : (interpretation.confidenceByField[field] ?? 0),
               evidenceSpans:
-                interpretation.evidenceSpans[field] ?? [message.content],
+                interpretation.evidenceSpans[field] ?? [answerForInterpretation],
             },
           ]),
         ),
@@ -343,6 +352,9 @@ export class ThetaTurnOrchestrator {
           ? `本次回答更新了之前的${merged.conflictingFields
               .map(researchFieldLabel)
               .join('、')}。`
+          : '',
+        inferredAnswer
+          ? '你表示暂不确定，因此我采用了本地数据预检中可验证的初步结论；之后仍可更正。'
           : '',
         guarded.confirmationFields.length > 0
           ? `仍需明确确认：${guarded.confirmationFields
@@ -714,6 +726,34 @@ export class ThetaTurnOrchestrator {
         ? await this.workflow.conversationContext(runId, context.runtimeDb)
         : undefined);
     const message = this.userMessage(context, runId, 'conversation.text', text);
+    if (
+      workflowContext?.status.pendingActionRef ===
+        THETA_APPROVAL_KEYS.researchClarification &&
+      asksHowToAnswer(text)
+    ) {
+      const active = activeResearchQuestion(workflowContext);
+      const response = explainResearchQuestion(active.gap, active.question);
+      this.assistantMessage(context, runId, 'conversation.response', response);
+      return {
+        value: {
+          kind: 'conversation.turn',
+          proposal: {
+            task: 'propose_readonly_tool',
+            intent: 'chat',
+            toolId: null,
+            arguments: {},
+            reason: '解释当前待确认信息',
+            confidence: 1,
+            requiresConfirmation: false,
+          },
+          result: { currentQuestion: active.question.question },
+          response,
+          hasActiveRun: true,
+          evidenceRefs: [],
+        },
+        activeRunId: runId,
+      };
+    }
     const proposal = fastReadonlyToolProposal(text, Boolean(runId));
     let toolResult: unknown;
     switch (proposal.toolId) {
@@ -1204,7 +1244,7 @@ const currentPlanAdjustmentValues = (
 
 export const isObviousAssistantRequest = (text: string): boolean => {
   const normalized = text.trim();
-  if (/^(?:你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用|现在我需要做什么|我现在需要做什么|下一步(?:做什么)?|我该做什么)(?:[？?。！!]|$)/iu.test(normalized)) {
+  if (/^(?:你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用|现在我需要做什么|我现在需要做什么|下一步(?:做什么)?|我该做什么|你想要什么答案|我要怎么回答|我该怎么回答|这个问题是什么意思|为什么要问)(?:[？?。！!]|$)/iu.test(normalized)) {
     return true;
   }
   const asksForHelp =
@@ -1411,6 +1451,8 @@ const experimentProtocolAdjustmentLabel = (
 const researchFieldLabel = (field: string): string =>
   ({
     researchQuestion: '研究问题',
+    researchDomain: '研究领域',
+    domainConfirmed: '领域方向',
     dataSources: '数据来源',
     collectionMethod: '数据产生方式',
     analysisUnit: '分析单位',
@@ -1450,7 +1492,74 @@ const unresolvedResearchClarification = (
   if (field === 'textFieldIntent') {
     return '请说明每条记录中真正需要分析的文本类型，例如商品评论、客服对话、新闻正文或日常词汇。只写内容类型即可。';
   }
+  if (field === 'domainConfirmed') {
+    return '我已经根据本地样本给出了一个初步领域判断。你只需回答“是”，或用“不是，更接近……”告诉我更合适的方向；如果确实不确定，我会先采用预判结果继续。';
+  }
+  if (/^(?:不知道|不清楚|不确定|无法判断|不了解)[。.]?$/u.test(answer.trim())) {
+    return explainResearchQuestion(
+      { field, question: fallbackQuestion } as InformationGap,
+      { question: fallbackQuestion } as PlannedQuestion,
+    );
+  }
   return `我还不能安全地把这句话写入研究档案。${fallbackQuestion}`;
+};
+
+const uncertainAnswer = /^(?:不知道|不清楚|不确定|无法判断|不了解|你来判断|按你的判断)[。.]?$/u;
+
+export const inferableUncertaintyAnswer = (
+  field: string,
+  answer: string,
+  profile:
+    | Pick<
+        DatasetProfile,
+        'rowCount' | 'columnCandidates' | 'languageDistribution' | 'inferredDomain'
+      >
+    | undefined,
+): string | undefined => {
+  if (!uncertainAnswer.test(answer.trim())) return undefined;
+  const primaryText = profile?.columnCandidates.text[0]?.name;
+  switch (field.split(',')[0] ?? field) {
+    case 'domainConfirmed':
+      return profile?.inferredDomain
+        ? '是，这个领域判断可以作为当前分析的初步方向。'
+        : undefined;
+    case 'analysisUnit':
+      return profile ? '每一行是一条独立文本记录。' : undefined;
+    case 'textFieldIntent':
+      return primaryText
+        ? `分析 ${primaryText} 列中的主要文本内容。`
+        : undefined;
+    case 'language':
+      return profile?.languageDistribution[0]?.language
+        ? `数据语言为 ${profile.languageDistribution[0].language}。`
+        : undefined;
+    case 'successCriteria':
+      return '主题清晰可解释，每个主题提供关键词和代表文本，并能够回答研究目标。';
+    default:
+      return undefined;
+  }
+};
+
+const asksHowToAnswer = (text: string): boolean =>
+  /你想要什么答案|(?:我|这个问题).{0,8}(?:怎么|如何|该怎样).{0,6}(?:回答|说明)|为什么要问|什么意思|要确认什么|需要我提供什么/u.test(
+    text.trim(),
+  );
+
+const explainResearchQuestion = (
+  gap: Pick<InformationGap, 'field' | 'question'>,
+  question: Pick<PlannedQuestion, 'question'>,
+): string => {
+  const field = gap.field.split(',')[0] ?? gap.field;
+  const guidance: Readonly<Record<string, string>> = {
+    domainConfirmed: '我想先确认数据所属的大方向，以便后续使用贴近领域的词汇。回答“是”即可接受预判；不准确时直接说“不是，更接近……”。',
+    sensitiveData: '我只需要确认数据里是否有个人信息、机密或敏感内容。回答“有”或“没有”即可；这会决定能否使用外部语言服务。',
+    analysisUnit: '我想知道一行数据代表一条评论、一篇文章，还是其他对象。若你不确定，我会按本地结构预判继续。',
+    textFieldIntent: '我想确认真正需要分析的文本内容是哪一列、属于什么类型；如果结构足够明确，我会使用正文候选列继续。',
+    researchQuestion: '请用一句话说明你最终希望从数据中得到什么，例如识别主题、比较群体或观察时间变化。',
+    comparisonGroups: '如果要比较不同来源、群体或时间阶段，请告诉我比较对象；不需要时直接说“不做分组比较”。',
+    successCriteria: '请说明什么结果算成功；也可以让我采用“主题清晰、提供关键词和代表文本、能回答研究目标”的默认标准。',
+  };
+  return `${guidance[field] ?? '我只需要你补充当前无法从数据结构可靠判断的业务含义。'} 当前需要确认的是：${question.question}`;
 };
 
 const hash = (value: unknown): string =>

@@ -391,6 +391,8 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
             type: "object",
             properties: {
               researchQuestion: { type: "string", minLength: 1 },
+              researchDomain: { type: "string", minLength: 1 },
+              domainConfirmed: { type: "boolean" },
               dataSources: {
                 type: "array",
                 items: { type: "string", minLength: 1 },

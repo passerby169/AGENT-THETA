@@ -438,6 +438,8 @@ const input = {
   datasetId: "research-smoke",
   researchGoal: "Discover stable research topics.",
   research: {
+    researchDomain: "general text research",
+    domainConfirmed: true,
     analysisUnit: "one research document",
     textFieldIntent: "analyze the primary document body",
     sensitiveData: { status: "no" as const, categories: [] },
