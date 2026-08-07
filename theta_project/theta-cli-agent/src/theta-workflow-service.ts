@@ -32,6 +32,30 @@ import {
   type ResearchAssessment,
 } from "./agent/research-service.js";
 import {
+  applyDecisionGapAnswer,
+  createInitialResearchIntent,
+  deriveDecisionGaps,
+  emptyInterviewMemory,
+  interviewMemorySchema,
+  selectNextDecisionGap,
+  type DecisionGap,
+} from "./agent/decision-gap.js";
+import {
+  datasetConfirmationDraftSchema,
+  datasetConfirmationSchema,
+  datasetFactsSchema,
+  datasetUnderstandingDraftSchema,
+  researchIntentSchema,
+  type DatasetConfirmationDraft,
+  type DatasetFacts,
+  type DatasetUnderstandingDraft,
+  type ResearchIntent,
+} from "./dataset-understanding/contracts.js";
+import {
+  buildDatasetFacts,
+  buildDeterministicUnderstanding,
+} from "./dataset-understanding/service.js";
+import {
   approvalReceiptSchema,
   canonicalExperimentProtocolSchema,
   dryRunReceiptSchema,
@@ -65,7 +89,10 @@ import {
   createThetaToolCallContext,
 } from "./tools/hypha-runner.js";
 import type { ThetaTrainingPlan } from "./tools/plan-validate-tool.js";
+import type { ThetaDatasetExploreOutput } from "./tools/dataset-explore-tool.js";
 import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
+import { SQLiteDatasetRegistry } from "./storage/dataset-registry.js";
+import { SQLiteV2ResearchStore } from "./storage/v2-research-store.js";
 import { recommendationResultSchema } from "./recommendation/contracts.js";
 import { planProposalResultSchema } from "./planner/contracts.js";
 import { comparePlannerInputSnapshots } from './planner/input-snapshot.js';
@@ -94,6 +121,8 @@ const MAX_STEPS = 64;
 
 export interface ThetaWorkflowInput {
   filePath: string;
+  datasetRef?: string;
+  workflowVersion?: "1.0.0" | "2.0.0";
   datasetId?: string;
   researchGoal?: string;
   research?: Record<string, unknown>;
@@ -122,6 +151,8 @@ export interface ThetaWorkflowResumeRequest {
   approvalKeys?: readonly string[];
   researchAnswers?: Record<string, unknown>;
   columnConfirmation?: ColumnConfirmationDraft;
+  datasetConfirmation?: DatasetConfirmationDraft;
+  decisionAnswer?: string;
   planAdjustment?: Record<string, unknown>;
 }
 
@@ -298,22 +329,29 @@ export class ThetaWorkflowService {
   }
 
   async run(request: ThetaWorkflowRunRequest): Promise<ThetaWorkflowRunResult> {
-    validateInput(request.input);
     const runId = request.runId?.trim() || `theta-run-${randomUUID()}`;
     const runtimeDb = path.resolve(
       request.runtimeDb ?? defaultThetaWorkflowDb(),
     );
+    const input = await prepareWorkflowInput(request.input, runtimeDb);
+    validateInput(input);
     const scope = runtimeScope(runId);
     const runtime = await createThetaWorkflowRuntime({ filename: runtimeDb });
     try {
-      await seedRun(runtime.events, scope, request.input, this.now());
-      return await this.drive(
+      await seedRun(runtime.events, scope, input, this.now());
+      const result = await this.drive(
         runtime,
         scope,
         this.toolPort(runtimeDb, runId),
         request.approvalKeys ?? [],
         request.approvedBy ?? USER_ID,
       );
+      await syncV2ResearchReadModel(
+        runtimeDb,
+        runId,
+        await hydrateVariables(runtime.events, scope),
+      );
+      return result;
     } finally {
       runtime.close();
     }
@@ -339,17 +377,29 @@ export class ThetaWorkflowService {
       let result = await this.runDriver(runtime, scope, tools);
       const hasResearchAnswers = request.researchAnswers !== undefined;
       const hasColumnConfirmation = request.columnConfirmation !== undefined;
+      const hasDatasetConfirmation = request.datasetConfirmation !== undefined;
+      const hasDecisionAnswer = request.decisionAnswer !== undefined;
       const hasPlanAdjustment = request.planAdjustment !== undefined;
       if (
-        [hasResearchAnswers, hasColumnConfirmation, hasPlanAdjustment].filter(
-          Boolean,
-        ).length > 1
+        [
+          hasResearchAnswers,
+          hasColumnConfirmation,
+          hasDatasetConfirmation,
+          hasDecisionAnswer,
+          hasPlanAdjustment,
+        ].filter(Boolean).length > 1
       ) {
         throw new Error(
           "A resume command can submit only one structured response.",
         );
       }
-      if (hasResearchAnswers || hasColumnConfirmation || hasPlanAdjustment) {
+      if (
+        hasResearchAnswers ||
+        hasColumnConfirmation ||
+        hasDatasetConfirmation ||
+        hasDecisionAnswer ||
+        hasPlanAdjustment
+      ) {
         await this.recordStructuredResumeInput(
           runtime,
           scope,
@@ -361,6 +411,8 @@ export class ThetaWorkflowService {
         request.approve &&
         !hasResearchAnswers &&
         !hasColumnConfirmation &&
+        !hasDatasetConfirmation &&
+        !hasDecisionAnswer &&
         !hasPlanAdjustment &&
         requiresStructuredHumanInput(
           result.projection.pendingWait?.pendingActionRef,
@@ -377,6 +429,8 @@ export class ThetaWorkflowService {
           request.reject ||
           hasResearchAnswers ||
           hasColumnConfirmation ||
+          hasDatasetConfirmation ||
+          hasDecisionAnswer ||
           hasPlanAdjustment)
       ) {
         await this.resolveHumanWait(
@@ -403,6 +457,7 @@ export class ThetaWorkflowService {
         await terminalOutput(runtime, scope),
       );
       const variables = await hydrateVariables(runtime.events, scope);
+      await syncV2ResearchReadModel(runtimeDb, runId, variables);
       const currentEvents = await runtime.events.read({ scope: streamScope(scope) });
       const liveTrainingReceipt =
         result.projection.pendingWait?.type === "timer"
@@ -798,6 +853,35 @@ export class ThetaWorkflowService {
         datasetSha256: profile.datasetSha256,
       };
     }
+    if (request.datasetConfirmation !== undefined) {
+      if (
+        pending.pendingActionRef !== THETA_APPROVAL_KEYS.datasetUnderstanding
+      ) {
+        throw new Error(
+          `Dataset understanding confirmation cannot resolve ${pending.pendingActionRef}.`,
+        );
+      }
+      const variables = await hydrateVariables(runtime.events, scope);
+      const facts = datasetFactsSchema.parse(variables.datasetFacts);
+      payload.datasetConfirmation = {
+        draft: datasetConfirmationDraftSchema.parse(
+          request.datasetConfirmation,
+        ),
+        datasetHash: facts.datasetHash,
+      };
+    }
+    if (request.decisionAnswer !== undefined) {
+      if (pending.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntent) {
+        throw new Error(
+          `Research intent answer cannot resolve ${pending.pendingActionRef}.`,
+        );
+      }
+      const decisionAnswer = request.decisionAnswer.trim();
+      if (!decisionAnswer) {
+        throw new Error("Research intent answer cannot be empty.");
+      }
+      payload.decisionAnswer = decisionAnswer;
+    }
     if (request.planAdjustment !== undefined) {
       if (pending.pendingActionRef !== THETA_APPROVAL_KEYS.planReview) {
         throw new Error(
@@ -892,6 +976,23 @@ const executeThetaState = async (
           "workflow input",
         ) as unknown as ThetaWorkflowInput;
         validateInput(input);
+        if (input.workflowVersion === "2.0.0") {
+          const initialIntent = createInitialResearchIntent();
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            researchIntent: researchIntentSchema.parse({
+              ...initialIntent,
+              ...(input.researchGoal?.trim()
+                ? {
+                    researchQuestion: input.researchGoal.trim(),
+                    unknowns: initialIntent.unknowns.filter(
+                      (item) => item !== "research_goal",
+                    ),
+                  }
+                : {}),
+            }),
+            interviewMemory: emptyInterviewMemory(),
+          });
+        }
         const assessment = researchService.assess(
           researchService.createBrief(input),
           { currentState: execution.state.id },
@@ -983,6 +1084,37 @@ const executeThetaState = async (
       }
       case THETA_WORKFLOW_STATES.inspectDataset: {
         const input = requireRecord(variables.input, "workflow input");
+        if (input.workflowVersion === "2.0.0") {
+          const datasetRef = requiredString(input.datasetRef, "input.datasetRef");
+          const explored = (await invoke(THETA_TOOL_IDS.datasetExplore, {
+            datasetRef,
+            views: ["schema", "profiles", "quality"],
+            sampleSize: Math.min(numberValue(input.sampleSize) ?? 20, 100),
+          })) as unknown as ThetaDatasetExploreOutput;
+          const facts = buildDatasetFacts(explored);
+          const previousFacts = datasetFactsSchema.safeParse(
+            variables.datasetFacts,
+          );
+          const hashChanged =
+            previousFacts.success &&
+            previousFacts.data.datasetHash !== facts.datasetHash;
+          return transition(THETA_WORKFLOW_STATES.analyzeDataset, {
+            datasetFacts: facts,
+            ...(hashChanged
+              ? {
+                  datasetUnderstanding: null,
+                  datasetConfirmation: null,
+                  researchIntent: createInitialResearchIntent(),
+                  interviewMemory: emptyInterviewMemory(),
+                  datasetInvalidation: {
+                    reason: "dataset_hash_changed",
+                    previousDatasetHash: previousFacts.data.datasetHash,
+                    detectedDatasetHash: facts.datasetHash,
+                  },
+                }
+              : {}),
+          });
+        }
         const toolInput = {
           filePath: requiredString(input.filePath, "input.filePath"),
           sampleSize: numberValue(input.sampleSize) ?? 500,
@@ -1036,6 +1168,151 @@ const executeThetaState = async (
             researchAssessment: sanitizeResearchAssessment(observedAssessment),
           },
         );
+      }
+      case THETA_WORKFLOW_STATES.analyzeDataset: {
+        const facts = datasetFactsSchema.parse(variables.datasetFacts);
+        const explored = (await invoke(THETA_TOOL_IDS.datasetExplore, {
+          datasetRef: facts.datasetRef,
+          views: ["schema", "head", "sample", "profiles", "quality"],
+          sampleSize: 20,
+          sampleSeed: facts.datasetHash.slice(0, 16),
+        })) as unknown as ThetaDatasetExploreOutput;
+        if (explored.datasetHash !== facts.datasetHash) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            datasetUnderstanding: null,
+            datasetConfirmation: null,
+            datasetInvalidation: {
+              reason: "dataset_hash_changed_during_understanding",
+              previousDatasetHash: facts.datasetHash,
+              detectedDatasetHash: explored.datasetHash,
+            },
+          });
+        }
+        const understanding = buildDeterministicUnderstanding(facts, explored);
+        return transition(
+          THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+          { datasetUnderstanding: understanding },
+        );
+      }
+      case THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation: {
+        const facts = datasetFactsSchema.parse(variables.datasetFacts);
+        const understanding = datasetUnderstandingDraftSchema.parse(
+          variables.datasetUnderstanding,
+        );
+        const lastResume = execution.projection.lastResume;
+        const resume = isRecord(lastResume?.payload)
+          ? lastResume.payload
+          : undefined;
+        if (
+          resume?.pendingActionRef !==
+            THETA_APPROVAL_KEYS.datasetUnderstanding ||
+          !lastResume?.commandId ||
+          stringValue(variables.processedDatasetConfirmationCommandId) ===
+            lastResume.commandId
+        ) {
+          return datasetUnderstandingWait(understanding);
+        }
+        if (resume.decision === "rejected") {
+          return failed(
+            "RUNTIME_CANCELLED",
+            "Human rejected the dataset understanding.",
+            execution.state.id,
+          );
+        }
+        const submission = requireRecord(
+          variables.datasetConfirmationSubmission,
+          "dataset understanding confirmation",
+        );
+        if (
+          requiredString(submission.datasetHash, "submitted datasetHash") !==
+          facts.datasetHash
+        ) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            datasetUnderstanding: null,
+            datasetConfirmation: null,
+            processedDatasetConfirmationCommandId: lastResume.commandId,
+          });
+        }
+        const draft = datasetConfirmationDraftSchema.parse(submission.draft);
+        validateV2ConfirmedColumns(draft, facts);
+        const confirmation = datasetConfirmationSchema.parse({
+          schemaVersion: "2.0.0",
+          datasetRef: facts.datasetRef,
+          datasetHash: facts.datasetHash,
+          ...draft,
+          confirmedBy: lastResume.principalId ?? USER_ID,
+          confirmedAt: lastResume.resumedAt ?? now(),
+        });
+        return transition(THETA_WORKFLOW_STATES.researchIntentInterview, {
+          datasetConfirmation: confirmation,
+          researchIntent: researchIntentSchema.parse(
+            variables.researchIntent ?? createInitialResearchIntent(),
+          ),
+          interviewMemory: interviewMemorySchema.parse(
+            variables.interviewMemory ?? emptyInterviewMemory(),
+          ),
+          processedDatasetConfirmationCommandId: lastResume.commandId,
+        });
+      }
+      case THETA_WORKFLOW_STATES.researchIntentInterview: {
+        const understanding = datasetUnderstandingDraftSchema.parse(
+          variables.datasetUnderstanding,
+        );
+        const confirmation = datasetConfirmationSchema.parse(
+          variables.datasetConfirmation,
+        );
+        const intent = researchIntentSchema.parse(
+          variables.researchIntent ?? createInitialResearchIntent(),
+        );
+        const memory = interviewMemorySchema.parse(
+          variables.interviewMemory ?? emptyInterviewMemory(),
+        );
+        const gaps = deriveDecisionGaps(understanding, confirmation, intent);
+        const nextGap = selectNextDecisionGap(gaps, memory);
+        if (!nextGap) {
+          return transition(THETA_WORKFLOW_STATES.recommendModel, {
+            ...v2PlanningCompatibility(
+              datasetFactsSchema.parse(variables.datasetFacts),
+              understanding,
+              confirmation,
+              intent,
+            ),
+          });
+        }
+        const lastResume = execution.projection.lastResume;
+        const resume = isRecord(lastResume?.payload)
+          ? lastResume.payload
+          : undefined;
+        if (
+          resume?.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntent ||
+          !lastResume?.commandId ||
+          stringValue(variables.processedDecisionAnswerCommandId) ===
+            lastResume.commandId
+        ) {
+          return researchIntentWait(nextGap);
+        }
+        if (resume.decision === "rejected") {
+          return failed(
+            "RUNTIME_CANCELLED",
+            "Human cancelled the research intent interview.",
+            execution.state.id,
+          );
+        }
+        const answer = requiredString(
+          variables.decisionAnswer,
+          "research intent answer",
+        );
+        const turn = applyDecisionGapAnswer(intent, nextGap, answer, memory);
+        return transition(THETA_WORKFLOW_STATES.researchIntentInterview, {
+          researchIntent: turn.intent,
+          interviewMemory: turn.memory,
+          lastDecisionGapTurn: {
+            gapId: nextGap.id,
+            appliedDefaults: turn.appliedDefaults,
+            extractedFields: turn.extractedFields,
+          },
+          processedDecisionAnswerCommandId: lastResume.commandId,
+        });
       }
       case THETA_WORKFLOW_STATES.awaitColumnConfirmation: {
         const datasetProfile = datasetProfileSchema.parse(
@@ -1735,7 +2012,38 @@ const requiresStructuredHumanInput = (
   pendingActionRef: string | undefined,
 ): boolean =>
   pendingActionRef === THETA_APPROVAL_KEYS.researchClarification ||
-  pendingActionRef === THETA_APPROVAL_KEYS.columnConfirmation;
+  pendingActionRef === THETA_APPROVAL_KEYS.columnConfirmation ||
+  pendingActionRef === THETA_APPROVAL_KEYS.datasetUnderstanding ||
+  pendingActionRef === THETA_APPROVAL_KEYS.researchIntent;
+
+const datasetUnderstandingWait = (
+  understanding: DatasetUnderstandingDraft,
+): BoundedStateExecutionDecision => ({
+  result: {
+    kind: "waiting",
+    wait: {
+      type: "human",
+      pendingActionRef: THETA_APPROVAL_KEYS.datasetUnderstanding,
+      reason:
+        "请确认系统对数据领域、分析单位和列角色的理解；如有错误，请在一次提交中更正。",
+      metadata: understanding as unknown as Record<string, RuntimeJsonValue>,
+    },
+  },
+});
+
+const researchIntentWait = (
+  gap: DecisionGap,
+): BoundedStateExecutionDecision => ({
+  result: {
+    kind: "waiting",
+    wait: {
+      type: "human",
+      pendingActionRef: THETA_APPROVAL_KEYS.researchIntent,
+      reason: gap.question,
+      metadata: gap as unknown as Record<string, RuntimeJsonValue>,
+    },
+  },
+});
 
 const researchClarificationWait = (
   assessment: ResearchAssessment,
@@ -2045,6 +2353,17 @@ const hydrateVariables = async (
       if (columnConfirmation) {
         variables.columnConfirmation = columnConfirmation;
       }
+      const datasetConfirmation = recordProperty(
+        event.payload,
+        "datasetConfirmation",
+      );
+      if (datasetConfirmation) {
+        variables.datasetConfirmationSubmission = datasetConfirmation;
+      }
+      const decisionAnswer = stringProperty(event.payload, "decisionAnswer");
+      if (decisionAnswer) {
+        variables.decisionAnswer = decisionAnswer;
+      }
       const planAdjustment = recordProperty(event.payload, "planAdjustment");
       if (planAdjustment) {
         variables.planAdjustment = planAdjustment;
@@ -2253,6 +2572,159 @@ const sanitizeDatasetProfile = (
         }
       : {}),
   });
+};
+
+const validateV2ConfirmedColumns = (
+  confirmation: DatasetConfirmationDraft,
+  facts: DatasetFacts,
+): void => {
+  const available = new Set(facts.columns.map((column) => column.name));
+  const selected = [
+    ...confirmation.textColumns,
+    ...confirmation.timeColumns,
+    ...confirmation.idColumns,
+    ...confirmation.metadataColumns,
+  ];
+  const unknown = selected.filter((column) => !available.has(column));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Dataset confirmation references unknown columns: ${[...new Set(unknown)].join(", ")}.`,
+    );
+  }
+};
+
+const v2PlanningCompatibility = (
+  facts: DatasetFacts,
+  understanding: DatasetUnderstandingDraft,
+  confirmation: ReturnType<typeof datasetConfirmationSchema.parse>,
+  intent: ResearchIntent,
+): Record<string, RuntimeJsonValue> => {
+  const textColumnSet = new Set(confirmation.textColumns);
+  const textFacts = facts.columns.filter((column) =>
+    textColumnSet.has(column.name),
+  );
+  const averageTextLength =
+    textFacts.length === 0
+      ? 0
+      : textFacts.reduce((sum, column) => sum + column.averageLength, 0) /
+        textFacts.length;
+  const maximumTextLength = Math.max(
+    0,
+    ...textFacts.map((column) => Math.ceil(column.averageLength)),
+  );
+  const datasetProfile = datasetProfileSchema.parse({
+    schemaVersion: RESEARCH_CONTRACT_VERSION,
+    datasetSha256: facts.datasetHash,
+    fileName: facts.fileName,
+    fileSizeBytes: facts.sizeBytes,
+    format: facts.format,
+    encoding: "utf8",
+    rowCount: facts.rowCount,
+    sampledRowCount: 0,
+    profileScope: "full",
+    estimationWarnings: understanding.qualityWarnings,
+    columnCount: facts.columns.length,
+    columns: facts.columns.map((column) => column.name),
+    columnProfiles: facts.columns.map((column) => ({
+      name: column.name,
+      inferredType: column.inferredType,
+      nonEmptySampleCount: Math.max(
+        0,
+        Math.round(facts.rowCount * (1 - column.missingRatio)),
+      ),
+      uniqueSampleCount: column.uniqueCount,
+      avgLength: column.averageLength,
+      maxLength: Math.ceil(column.averageLength),
+    })),
+    missingRatio:
+      facts.columns.length === 0
+        ? 0
+        : facts.columns.reduce(
+            (sum, column) => sum + column.missingRatio,
+            0,
+          ) / facts.columns.length,
+    duplicateRatio: facts.duplicateRatio,
+    textLengthDistribution: {
+      average: averageTextLength,
+      maximum: maximumTextLength,
+    },
+    languageDistribution: facts.languageDistribution,
+    timeCoverage: facts.timeCoverage,
+    columnCandidates: {
+      text: understanding.textColumns.map((column) => ({
+        name: column.column,
+        score: column.confidence,
+        reason: column.reason,
+      })),
+      time: understanding.timeColumns.map((column) => ({
+        name: column.column,
+        score: column.confidence,
+        reason: column.reason,
+      })),
+      metadata: understanding.metadataColumns.map((column) => ({
+        name: column.column,
+        score: column.confidence,
+        reason: column.reason,
+      })),
+    },
+    sensitiveRiskCodes: [],
+    inferredDomain: understanding.domain,
+  });
+  const legacyConfirmation = columnConfirmationSchema.parse({
+    schemaVersion: RESEARCH_CONTRACT_VERSION,
+    datasetSha256: facts.datasetHash,
+    textColumns: confirmation.textColumns,
+    timeColumn: confirmation.timeColumns[0] ?? null,
+    idColumn: confirmation.idColumns[0] ?? null,
+    covariateColumns: [],
+    metadataColumns: confirmation.metadataColumns,
+    groupingColumns: confirmation.metadataColumns,
+    evaluationLabelColumns: [],
+    confirmedBy: confirmation.confirmedBy,
+    confirmedAt: confirmation.confirmedAt,
+  });
+  const researchBrief = researchBriefSchema.parse({
+    schemaVersion: RESEARCH_CONTRACT_VERSION,
+    researchQuestion: intent.researchQuestion,
+    researchDomain: confirmation.domainLabel,
+    domainConfirmed: true,
+    dataSources: [facts.fileName],
+    analysisUnit: confirmation.analysisUnit,
+    ...(facts.timeCoverage.start || facts.timeCoverage.end
+      ? {
+          timeRange: {
+            ...(facts.timeCoverage.start ? { start: facts.timeCoverage.start } : {}),
+            ...(facts.timeCoverage.end ? { end: facts.timeCoverage.end } : {}),
+          },
+        }
+      : {}),
+    language: facts.languageDistribution[0]?.language,
+    comparisonGroups: intent.comparisonDimensions,
+    comparisonIntent:
+      intent.comparisonDimensions.length > 0 ? "groups" : "none",
+    topicGranularity:
+      intent.topicGranularity === "coarse"
+        ? "broad"
+        : intent.topicGranularity,
+    knownBiases: [],
+    sensitiveData: { status: "unknown", categories: [] },
+    successCriteria: intent.successCriteria,
+    hardwareLimit: { device: "unknown" },
+    textFieldIntent: `分析 ${confirmation.textColumns.join(", ")} 列中的正文`,
+    trendAnalysis: intent.temporalAnalysis,
+    offlineOnly: true,
+    requestedEmbedding: "unknown",
+    expectedRowCount: facts.rowCount,
+    candidateTimeColumns: confirmation.timeColumns,
+    candidateGroupColumns: confirmation.metadataColumns,
+    interviewComplete: true,
+    unknownFields: [],
+  });
+  return {
+    datasetProfile: datasetProfile as unknown as RuntimeJsonValue,
+    columnConfirmation: legacyConfirmation as unknown as RuntimeJsonValue,
+    researchBrief: researchBrief as unknown as RuntimeJsonValue,
+  };
 };
 
 const sanitizeCandidates = (
@@ -2573,10 +3045,94 @@ const streamScope = (scope: RuntimeScope) => ({
   runId: scope.runId,
 });
 
+const prepareWorkflowInput = async (
+  input: ThetaWorkflowInput,
+  runtimeDb: string,
+): Promise<ThetaWorkflowInput> => {
+  const workflowVersion = input.workflowVersion ?? "1.0.0";
+  if (workflowVersion !== "2.0.0" || input.datasetRef) {
+    return { ...input, workflowVersion };
+  }
+  const registry = new SQLiteDatasetRegistry(runtimeDb);
+  try {
+    const dataset = await registry.registerLocalFile(input.filePath, {
+      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
+    });
+    return {
+      ...input,
+      workflowVersion,
+      datasetRef: dataset.datasetRef,
+    };
+  } finally {
+    registry.close();
+  }
+};
+
+const syncV2ResearchReadModel = async (
+  runtimeDb: string,
+  runId: string,
+  variables: Record<string, unknown>,
+): Promise<void> => {
+  const input = isRecord(variables.input) ? variables.input : undefined;
+  if (input?.workflowVersion !== "2.0.0") return;
+  const store = new SQLiteV2ResearchStore(runtimeDb);
+  try {
+    const facts = datasetFactsSchema.safeParse(variables.datasetFacts);
+    if (facts.success) {
+      const previous = store.latestFacts(runId);
+      if (!previous || canonicalJson(previous.value) !== canonicalJson(facts.data)) {
+        if (previous && previous.value.datasetHash !== facts.data.datasetHash) {
+          store.invalidateAfterDatasetHashChange(runId, facts.data.datasetHash);
+        }
+        store.appendFacts(runId, facts.data);
+      }
+    }
+    const understanding = datasetUnderstandingDraftSchema.safeParse(
+      variables.datasetUnderstanding,
+    );
+    if (understanding.success) {
+      const previous = store.latestUnderstanding(runId);
+      if (
+        !previous ||
+        canonicalJson(previous.value) !== canonicalJson(understanding.data)
+      ) {
+        store.appendUnderstanding(runId, understanding.data);
+      }
+    }
+    const confirmation = datasetConfirmationSchema.safeParse(
+      variables.datasetConfirmation,
+    );
+    if (confirmation.success) {
+      store.saveConfirmation(runId, confirmation.data);
+    }
+    const intent = researchIntentSchema.safeParse(variables.researchIntent);
+    if (intent.success) {
+      const previous = store.latestIntent(runId);
+      if (!previous || canonicalJson(previous.value) !== canonicalJson(intent.data)) {
+        store.appendIntent(runId, intent.data);
+      }
+    }
+    const memory = interviewMemorySchema.safeParse(variables.interviewMemory);
+    if (memory.success) {
+      store.saveInterviewMemory(runId, memory.data);
+    }
+  } finally {
+    store.close();
+  }
+};
+
 const validateInput = (input: ThetaWorkflowInput): void => {
   if (!input || typeof input !== "object")
     throw new Error("Workflow input must be an object.");
   required(input.filePath, "input.filePath");
+  if (
+    input.workflowVersion !== undefined &&
+    input.workflowVersion !== "1.0.0" &&
+    input.workflowVersion !== "2.0.0"
+  ) {
+    throw new Error("input.workflowVersion must be 1.0.0 or 2.0.0.");
+  }
   if (input.plannerMode !== undefined && input.plannerMode !== "deterministic" && input.plannerMode !== "minimax") {
     throw new Error("input.plannerMode must be deterministic or minimax.");
   }

@@ -15,7 +15,7 @@ export interface DatasetUnderstandingLanguageLoopOptions {
   provider?: InferenceProvider;
   explore: (input: {
     datasetRef: string;
-    view: 'schema' | 'profile' | 'samples' | 'roles';
+    view: 'schema' | 'head' | 'sample' | 'profiles' | 'quality';
   }) => Promise<ThetaDatasetExploreOutput>;
   modelAlias?: string;
 }
@@ -138,7 +138,7 @@ const datasetExploreDescriptor = {
     additionalProperties: false,
     properties: {
       datasetRef: { type: 'string' },
-      view: { enum: ['schema', 'profile', 'samples', 'roles'] },
+      view: { enum: ['schema', 'head', 'sample', 'profiles', 'quality'] },
     },
     required: ['datasetRef', 'view'],
   },
@@ -180,8 +180,14 @@ const boundedObservation = (
 
 const exploreView = (
   value: unknown,
-): 'schema' | 'profile' | 'samples' | 'roles' => {
-  if (value === 'schema' || value === 'profile' || value === 'samples' || value === 'roles') {
+): 'schema' | 'head' | 'sample' | 'profiles' | 'quality' => {
+  if (
+    value === 'schema' ||
+    value === 'head' ||
+    value === 'sample' ||
+    value === 'profiles' ||
+    value === 'quality'
+  ) {
     return value;
   }
   throw new Error('Unsupported dataset exploration view.');

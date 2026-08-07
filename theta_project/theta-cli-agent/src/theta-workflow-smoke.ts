@@ -435,6 +435,7 @@ const replayFixture = JSON.parse(
 };
 const input = {
   filePath: path.join(root, "research.csv"),
+  workflowVersion: "1.0.0" as const,
   datasetId: "research-smoke",
   researchGoal: "Discover stable research topics.",
   research: {

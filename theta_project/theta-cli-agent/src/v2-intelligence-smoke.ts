@@ -24,7 +24,7 @@ const output = {
 const facts = buildDatasetFacts(output);
 const provider: InferenceProvider = {
   id: 'fake',
-  infer: async () => ({ id: 'fake', output: { kind: 'tool_calls', toolCalls: [{ id: '1', name: 'theta.dataset.explore', arguments: { datasetRef: 'ignored', view: 'samples' } }] } }),
+  infer: async () => ({ id: 'fake', output: { kind: 'tool_calls', toolCalls: [{ id: '1', name: 'theta.dataset.explore', arguments: { datasetRef: 'ignored', view: 'sample' } }] } }),
 };
 let calls = 0;
 const loop = new DatasetUnderstandingLanguageLoop({ provider, explore: async () => { calls += 1; return output; } });

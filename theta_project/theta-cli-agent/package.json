@@ -30,6 +30,7 @@
     "smoke:dataset-understanding-v2": "node dist/dataset-understanding-v2-smoke.js",
     "smoke:v2-intelligence": "node dist/v2-intelligence-smoke.js",
     "smoke:v2-research-store": "node dist/v2-research-store-smoke.js",
+    "smoke:v2-workflow": "node dist/v2-workflow-smoke.js",
     "smoke:hypha-import": "node dist/hypha-import-smoke.js",
     "smoke:hypha-registry": "node dist/hypha-registry-smoke.js",
     "smoke:hypha-runner": "node dist/hypha-runner-smoke.js",

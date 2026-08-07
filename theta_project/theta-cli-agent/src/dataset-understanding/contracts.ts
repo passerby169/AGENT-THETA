@@ -62,6 +62,16 @@ export const datasetUnderstandingDraftSchema = z.object({
   }),
 });
 
+export const datasetConfirmationDraftSchema = z.object({
+  status: z.enum(['confirmed', 'corrected']),
+  domainLabel: z.string().min(1),
+  analysisUnit: z.string().min(1),
+  textColumns: z.array(z.string().min(1)).min(1),
+  timeColumns: z.array(z.string().min(1)),
+  idColumns: z.array(z.string().min(1)),
+  metadataColumns: z.array(z.string().min(1)),
+});
+
 export const datasetConfirmationSchema = z.object({
   schemaVersion: z.literal('2.0.0'),
   datasetRef: z.string().min(1),
@@ -91,6 +101,9 @@ export const researchIntentSchema = z.object({
 export type DatasetFacts = z.infer<typeof datasetFactsSchema>;
 export type DatasetUnderstandingDraft = z.infer<
   typeof datasetUnderstandingDraftSchema
+>;
+export type DatasetConfirmationDraft = z.infer<
+  typeof datasetConfirmationDraftSchema
 >;
 export type DatasetConfirmation = z.infer<typeof datasetConfirmationSchema>;
 export type ResearchIntent = z.infer<typeof researchIntentSchema>;
