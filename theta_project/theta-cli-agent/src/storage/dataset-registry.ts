@@ -96,6 +96,17 @@ export class SQLiteDatasetRegistry {
     return rowToRecord(row);
   }
 
+  list(owner: { userId: string; workspaceId: string }): DatasetRecord[] {
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM theta_datasets
+          WHERE user_id = ? AND workspace_id = ?
+          ORDER BY created_at DESC`,
+      )
+      .all(owner.userId, owner.workspaceId) as unknown as Row[];
+    return rows.map(rowToRecord);
+  }
+
   close(): void {
     this.database.close();
   }

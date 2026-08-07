@@ -20,11 +20,12 @@ async function proxy(request: NextRequest, context: RouteContext) {
   target.search = request.nextUrl.search;
 
   try {
+    const requestContentType = request.headers.get('content-type');
     const response = await fetch(target, {
       method: request.method,
       cache: 'no-store',
-      headers: request.method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
-      body: request.method === 'POST' ? await request.text() : undefined,
+      headers: request.method === 'POST' && requestContentType ? { 'Content-Type': requestContentType } : undefined,
+      body: request.method === 'POST' ? await request.arrayBuffer() : undefined,
     });
     const body = await response.arrayBuffer();
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream';

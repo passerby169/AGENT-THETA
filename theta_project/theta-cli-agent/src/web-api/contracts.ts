@@ -31,10 +31,14 @@ export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
 ]);
 
 export const thetaWebCreateRunSchema = z.object({
-  filePath: z.string().trim().min(1),
+  datasetRef: z.string().trim().min(1).optional(),
+  filePath: z.string().trim().min(1).optional(),
   researchGoal: z.string().trim().min(8).max(2000).optional(),
   useMiniMax: z.boolean().default(true),
-}).strict();
+}).strict().refine(
+  (input) => Boolean(input.datasetRef || input.filePath),
+  { message: 'datasetRef 或 filePath 至少提供一项。' },
+);
 
 const thetaResultAnalysisSelectionSchema = z.object({
   topicIds: z.array(z.string().trim().min(1).max(120)).max(12).default([]),

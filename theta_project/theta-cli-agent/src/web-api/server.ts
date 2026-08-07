@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { ThetaTurnOrchestrator } from '../conversation/turn-orchestrator.js';
@@ -12,6 +13,7 @@ import { ResultAnalysisService } from '../results/result-analysis-service.js';
 import { ResultService } from '../results/result-service.js';
 import { listLocalRuns } from '../storage/run-catalog.js';
 import { SQLiteConversationStore } from '../storage/sqlite-conversation-store.js';
+import { SQLiteDatasetRegistry, type DatasetRecord } from '../storage/dataset-registry.js';
 import { ThetaWorkflowService } from '../theta-workflow-service.js';
 import { resolveDatasetFile } from '../tools/dataset-path-policy.js';
 import { runThetaModelCatalog } from '../tools/hypha-runner.js';
@@ -30,6 +32,10 @@ import {
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultAgentRoot = path.resolve(moduleDirectory, '..', '..');
 const resultRootCache = new Map<string, string>();
+const localOwner = { userId: 'local_user', workspaceId: 'local_workspace' } as const;
+const supportedUploadSuffixes = new Set([
+  '.csv', '.tsv', '.json', '.jsonl', '.txt', '.xlsx', '.xls', '.parquet',
+]);
 
 loadThetaProjectEnvironment();
 
@@ -107,10 +113,20 @@ const routeRequest = async (
   if (url.pathname === '/api/v2/runs') {
     if (method === 'POST') {
       const input = thetaWebCreateRunSchema.parse(await readJsonBody(request));
-      const dataset = await resolveDatasetFile(input.filePath);
+      const registry = new SQLiteDatasetRegistry(options.runtimeDb);
+      let datasetRecord: DatasetRecord;
+      try {
+        datasetRecord = input.datasetRef
+          ? registry.require(input.datasetRef, localOwner)
+          : await registry.registerLocalFile(input.filePath!, localOwner);
+      } finally {
+        registry.close();
+      }
+      const dataset = await resolveDatasetFile(datasetRecord.managedPath);
       const result = await workflow.run({
         input: {
           filePath: dataset.filePath,
+          datasetRef: datasetRecord.datasetRef,
           workflowVersion: '2.0.0',
           ...(input.researchGoal ? { researchGoal: input.researchGoal } : {}),
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
@@ -164,8 +180,15 @@ const routeRequest = async (
   if (url.pathname === '/api/v2/datasets' && method === 'GET') {
     writeJson(response, 200, {
       ok: true,
-      data: { datasets: await listDatasets(options.agentRoot) },
+      data: { datasets: await listDatasets(options.agentRoot, options.runtimeDb) },
     });
+    return;
+  }
+
+  if (url.pathname === '/api/v2/datasets/upload') {
+    if (method !== 'POST') return methodNotAllowed(response);
+    const uploaded = await storeUploadedDataset(request, options.agentRoot, options.runtimeDb);
+    writeJson(response, 201, { ok: true, data: presentDataset(uploaded) });
     return;
   }
 
@@ -628,13 +651,12 @@ const stringField = (value: unknown, key: string): string | undefined => {
   return typeof field === 'string' && field.length > 0 ? field : undefined;
 };
 
-const listDatasets = async (agentRoot: string): Promise<Array<{
-  name: string;
-  filePath: string;
-  sizeBytes: number;
-}>> => {
+const listDatasets = async (
+  agentRoot: string,
+  runtimeDb: string,
+): Promise<Array<ReturnType<typeof presentDataset>>> => {
   const roots = [path.join(agentRoot, 'fixtures'), path.join(agentRoot, '..', 'THETA', 'data')];
-  const datasets: Array<{ name: string; filePath: string; sizeBytes: number }> = [];
+  const registry = new SQLiteDatasetRegistry(runtimeDb);
   for (const [rootIndex, root] of roots.entries()) {
     let entries;
     try {
@@ -643,13 +665,93 @@ const listDatasets = async (agentRoot: string): Promise<Array<{
       continue;
     }
     for (const entry of entries) {
-      if (!entry.isFile() || !/\.(csv|tsv|json|jsonl|txt)$/iu.test(entry.name)) continue;
+      if (!entry.isFile() || !/\.(csv|tsv|json|jsonl|txt|xlsx|xls|parquet)$/iu.test(entry.name)) continue;
       if (rootIndex === 0 && entry.name.toLowerCase().endsWith('.json')) continue;
       const resolved = await resolveDatasetFile(path.join(root, entry.name));
-      datasets.push({ name: entry.name, filePath: resolved.filePath, sizeBytes: resolved.sizeBytes });
+      await registry.registerLocalFile(resolved.filePath, localOwner);
     }
   }
-  return datasets.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  try {
+    return registry.list(localOwner)
+      .map(presentDataset)
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  } finally {
+    registry.close();
+  }
+};
+
+const presentDataset = (dataset: DatasetRecord) => ({
+  datasetRef: dataset.datasetRef,
+  name: dataset.displayName,
+  sizeBytes: dataset.sizeBytes,
+  suffix: dataset.suffix,
+  createdAt: dataset.createdAt,
+});
+
+const storeUploadedDataset = async (
+  request: IncomingMessage,
+  agentRoot: string,
+  runtimeDb: string,
+): Promise<DatasetRecord> => {
+  const maxBytes = configuredUploadLimit();
+  const contentLength = Number.parseInt(request.headers['content-length'] ?? '0', 10);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes + 1024 * 1024) {
+    throw new SyntaxError(`上传内容超过 ${Math.round(maxBytes / 1024 / 1024)}MB 限制。`);
+  }
+  const file = await multipartFile(request);
+  if (file.size === 0) throw new SyntaxError('上传的数据集为空。');
+  if (file.size > maxBytes) {
+    throw new SyntaxError(`数据集超过 ${Math.round(maxBytes / 1024 / 1024)}MB 限制。`);
+  }
+  const originalName = safeDatasetName(file.name);
+  const suffix = path.extname(originalName).toLowerCase();
+  if (!supportedUploadSuffixes.has(suffix)) {
+    throw new SyntaxError(`不支持 ${suffix || '无扩展名'} 数据集。`);
+  }
+  const content = Buffer.from(await file.arrayBuffer());
+  const digest = createHash('sha256').update(content).digest('hex');
+  const uploadRoot = path.resolve(agentRoot, '..', 'THETA', 'data', '.theta_uploads');
+  await mkdir(uploadRoot, { recursive: true });
+  const managedPath = path.join(uploadRoot, `${digest.slice(0, 16)}-${originalName}`);
+  await writeFile(managedPath, content, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EEXIST') throw error;
+  });
+  const registry = new SQLiteDatasetRegistry(runtimeDb);
+  try {
+    return await registry.registerLocalFile(managedPath, localOwner);
+  } catch (error) {
+    await rm(managedPath, { force: true });
+    throw error;
+  } finally {
+    registry.close();
+  }
+};
+
+const multipartFile = async (request: IncomingMessage): Promise<File> => {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  const webRequest = new Request('http://theta.local/upload', {
+    method: 'POST',
+    headers,
+    body: Readable.toWeb(request) as unknown as BodyInit,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' });
+  const value = (await webRequest.formData()).get('file');
+  if (!(value instanceof File)) throw new SyntaxError('multipart 请求必须包含 file 字段。');
+  return value;
+};
+
+const safeDatasetName = (value: string): string => {
+  const normalized = path.basename(value).replace(/[^\p{L}\p{N}._-]+/gu, '-');
+  return normalized.slice(-180) || `dataset-${randomUUID()}.csv`;
+};
+
+const configuredUploadLimit = (): number => {
+  const parsed = Number.parseInt(process.env.THETA_MAX_DATASET_BYTES ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 100 * 1024 * 1024;
 };
 
 const readJsonBody = async (request: IncomingMessage): Promise<unknown> => {

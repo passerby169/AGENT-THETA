@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Upload,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -97,6 +98,8 @@ export default function WorkbenchPage() {
   const [selectedDataset, setSelectedDataset] = useState('');
   const [researchGoal, setResearchGoal] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -126,9 +129,9 @@ export default function WorkbenchPage() {
       const result = await ThetaAgentV2API.datasets();
       setDatasets(result.datasets);
       setSelectedDataset((current) =>
-        result.datasets.some((dataset) => dataset.filePath === current)
+        result.datasets.some((dataset) => dataset.datasetRef === current)
           ? current
-          : (result.datasets[0]?.filePath ?? ''),
+          : (result.datasets[0]?.datasetRef ?? ''),
       );
     } catch (cause) {
       setDatasetsError(errorMessage(cause));
@@ -136,6 +139,22 @@ export default function WorkbenchPage() {
       setDatasetsLoading(false);
     }
   }, []);
+
+  const uploadDataset = useCallback(async (file: File) => {
+    if (uploadBusy) return;
+    setUploadBusy(true);
+    setUploadError(undefined);
+    try {
+      const uploaded = await ThetaAgentV2API.uploadDataset(file);
+      const result = await ThetaAgentV2API.datasets();
+      setDatasets(result.datasets);
+      setSelectedDataset(uploaded.datasetRef);
+    } catch (cause) {
+      setUploadError(errorMessage(cause));
+    } finally {
+      setUploadBusy(false);
+    }
+  }, [uploadBusy]);
 
   useEffect(() => {
     void refreshDatasets();
@@ -180,7 +199,7 @@ export default function WorkbenchPage() {
     setError(undefined);
     try {
       const status = await ThetaAgentV2API.createRun({
-        filePath: selectedDataset,
+        datasetRef: selectedDataset,
         ...(goal ? { researchGoal: goal } : {}),
         useMiniMax: true,
       });
@@ -258,9 +277,12 @@ export default function WorkbenchPage() {
               selectedDataset={selectedDataset}
               researchGoal={researchGoal}
               busy={createBusy}
+              uploadBusy={uploadBusy}
+              uploadError={uploadError}
               onDatasetChange={setSelectedDataset}
               onGoalChange={setResearchGoal}
               onRefreshDatasets={refreshDatasets}
+              onUpload={uploadDataset}
               onCreate={createResearch}
             />
 
@@ -347,9 +369,12 @@ function ResearchStartPanel({
   selectedDataset,
   researchGoal,
   busy,
+  uploadBusy,
+  uploadError,
   onDatasetChange,
   onGoalChange,
   onRefreshDatasets,
+  onUpload,
   onCreate,
 }: {
   datasets: ThetaDataset[];
@@ -358,13 +383,16 @@ function ResearchStartPanel({
   selectedDataset: string;
   researchGoal: string;
   busy: boolean;
-  onDatasetChange: (filePath: string) => void;
+  uploadBusy: boolean;
+  uploadError?: string;
+  onDatasetChange: (datasetRef: string) => void;
   onGoalChange: (goal: string) => void;
   onRefreshDatasets: () => Promise<void>;
+  onUpload: (file: File) => Promise<void>;
   onCreate: () => Promise<void>;
 }) {
   const goal = researchGoal.trim();
-  const selected = datasets.find((dataset) => dataset.filePath === selectedDataset);
+  const selected = datasets.find((dataset) => dataset.datasetRef === selectedDataset);
   const datasetReady = Boolean(selected);
   const goalReady = (goal.length === 0 || goal.length >= 8) && goal.length <= 2000;
   const canCreate = datasetReady && goalReady && !busy;
@@ -386,12 +414,29 @@ function ResearchStartPanel({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold text-blue-600">1 / 2 · 选择数据集</p>
-              <p className="mt-1 text-sm font-medium text-slate-800">允许目录中的本地文件</p>
+              <p className="mt-1 text-sm font-medium text-slate-800">上传文件或选择已登记数据集</p>
             </div>
             <Button type="button" variant="ghost" size="icon" onClick={() => void onRefreshDatasets()} disabled={datasetsLoading} title="重新读取数据集" className="h-8 w-8 rounded-md">
               <RefreshCw className={`h-4 w-4 ${datasetsLoading ? 'animate-spin' : ''}`} />
             </Button>
           </div>
+
+          <label className={`mt-4 flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed px-3 text-sm font-medium transition ${uploadBusy ? 'cursor-wait border-blue-200 bg-blue-50 text-blue-500' : 'border-blue-300 bg-blue-50/50 text-blue-700 hover:bg-blue-50'}`}>
+            <input
+              type="file"
+              className="sr-only"
+              disabled={uploadBusy || busy}
+              accept=".csv,.tsv,.json,.jsonl,.txt,.xlsx,.xls,.parquet"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void onUpload(file);
+              }}
+            />
+            {uploadBusy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            {uploadBusy ? '正在受控上传...' : '上传本地数据集'}
+          </label>
+          {uploadError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">上传失败：{uploadError}</div> : null}
 
           {datasetsError ? (
             <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">读取数据集失败：{datasetsError}</div>
@@ -400,19 +445,19 @@ function ResearchStartPanel({
           ) : datasets.length ? (
             <>
               <select value={selectedDataset} onChange={(event) => onDatasetChange(event.target.value)} className="mt-4 h-11 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
-                {datasets.map((dataset) => <option key={dataset.filePath} value={dataset.filePath}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
+                {datasets.map((dataset) => <option key={dataset.datasetRef} value={dataset.datasetRef}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
               </select>
               {selected ? (
                 <div className="mt-3 rounded-md bg-slate-50 px-3 py-2.5">
                   <div className="flex items-center gap-2 text-xs font-medium text-slate-700"><Database className="h-3.5 w-3.5 text-blue-600" />已选择 {selected.name}</div>
-                  <p className="mt-1 max-w-full break-all font-mono text-[10px] leading-4 text-slate-400">{selected.filePath}</p>
+                  <p className="mt-1 text-[11px] leading-4 text-slate-500">已登记为受控引用 · {selected.suffix.replace('.', '').toUpperCase()}</p>
                 </div>
               ) : null}
             </>
           ) : (
-            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">没有找到可用数据集。请把 CSV、TSV、JSON、JSONL 或 TXT 文件放入 `THETA/data` 后重新读取。</div>
+            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">没有找到可用数据集。请直接上传 CSV、TSV、JSON、JSONL、TXT、Excel 或 Parquet 文件。</div>
           )}
-          <p className="mt-3 text-xs leading-5 text-slate-500">只读取 `theta-cli-agent/fixtures` 与 `THETA/data` 的文件列表，不会扫描整块磁盘，也不会在此步骤读取文件正文。</p>
+          <p className="mt-3 text-xs leading-5 text-slate-500">上传文件会写入 THETA 受控目录并生成不暴露本地路径的 datasetRef；系统不会扫描整块磁盘。</p>
         </div>
 
         <div className="min-w-0 p-5 sm:p-6">

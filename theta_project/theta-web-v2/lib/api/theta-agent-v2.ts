@@ -280,9 +280,11 @@ export interface ThetaPresentation {
 }
 
 export interface ThetaDataset {
+  datasetRef: string;
   name: string;
-  filePath: string;
   sizeBytes: number;
+  suffix: string;
+  createdAt: string;
 }
 
 export interface ThetaModel {
@@ -364,6 +366,17 @@ const post = async <T,>(path: string, body: unknown): Promise<T> => {
   return payload.data;
 };
 
+const upload = async <T,>(path: string, file: File): Promise<T> => {
+  const body = new FormData();
+  body.set('file', file);
+  const response = await fetch(`/api/agent/${path}`, { method: 'POST', body });
+  const payload = (await response.json()) as ApiEnvelope<T>;
+  if (!response.ok || !payload.ok || payload.data === undefined) {
+    throw new Error(payload.error?.message ?? '数据集上传失败。');
+  }
+  return payload.data;
+};
+
 export const ThetaAgentV2API = {
   health: (): Promise<ThetaHealth> => get<ThetaHealth>('health'),
   runs: (limit = 30): Promise<{ runs: ThetaRunSummary[] }> =>
@@ -394,11 +407,13 @@ export const ThetaAgentV2API = {
     `/api/agent/runs/${encodeURIComponent(runId)}/results/assets/${relativePath.split('/').map(encodeURIComponent).join('/')}`,
   datasets: (): Promise<{ datasets: ThetaDataset[] }> =>
     get<{ datasets: ThetaDataset[] }>('datasets'),
+  uploadDataset: (file: File): Promise<ThetaDataset> =>
+    upload<ThetaDataset>('datasets/upload', file),
   models: (): Promise<{ models: ThetaModel[]; supportedModelIds: string[] }> =>
     get<{ models: ThetaModel[]; supportedModelIds: string[] }>('models'),
   plan: (runId: string): Promise<ThetaPlan> =>
     get<ThetaPlan>(`runs/${encodeURIComponent(runId)}/plan`),
-  createRun: (input: { filePath: string; researchGoal?: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
+  createRun: (input: { datasetRef: string; researchGoal?: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
     post<ThetaRunStatus>('runs', input),
   act: (runId: string, action: ThetaRunAction): Promise<{ result: ThetaActionResult; status: ThetaRunStatus }> =>
     post<{ result: ThetaActionResult; status: ThetaRunStatus }>(`runs/${encodeURIComponent(runId)}/actions`, action),

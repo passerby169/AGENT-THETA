@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +16,12 @@ import {
 } from './web-api/contracts.js';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'theta-web-api-smoke-'));
+const agentRoot = path.join(root, 'theta-cli-agent');
+const dataRoot = path.join(root, 'THETA', 'data');
+await mkdir(path.join(agentRoot, 'fixtures'), { recursive: true });
+await mkdir(dataRoot, { recursive: true });
+const originalAllowedRoots = process.env.THETA_ALLOWED_DATA_ROOTS;
+process.env.THETA_ALLOWED_DATA_ROOTS = [path.join(agentRoot, 'fixtures'), dataRoot].join(path.delimiter);
 
 assert.equal(isUserFacingRun({ runId: 'theta-stage-c2-ready' }), false);
 assert.equal(isUserFacingRun({
@@ -38,7 +44,7 @@ if (originalResultTimeout === undefined) {
   process.env.THETA_RESULT_ANALYSIS_TIMEOUT_MS = originalResultTimeout;
 }
 const server = createThetaWebApiServer({
-  agentRoot: process.cwd(),
+  agentRoot,
   runtimeDb: path.join(root, 'runtime.sqlite'),
   host: '127.0.0.1',
   port: 4318,
@@ -167,6 +173,32 @@ try {
   const datasetsResponse = await requestJson(`${baseUrl}/api/v2/datasets`);
   assert.equal(datasetsResponse.statusCode, 200);
 
+  const uploadBody = new FormData();
+  uploadBody.set('file', new File(['text,timestamp\nhello,2026-08-07\n'], 'smoke.csv'));
+  const uploadResponse = await fetch(`${baseUrl}/api/v2/datasets/upload`, {
+    method: 'POST',
+    body: uploadBody,
+  });
+  const uploaded = await uploadResponse.json() as {
+    ok: boolean;
+    data: { datasetRef: string; name: string; suffix: string; filePath?: string };
+  };
+  assert.equal(uploadResponse.status, 201);
+  assert.equal(uploaded.ok, true);
+  assert.match(uploaded.data.datasetRef, /^dataset_/u);
+  assert.equal(uploaded.data.name.endsWith('smoke.csv'), true);
+  assert.equal(uploaded.data.suffix, '.csv');
+  assert.equal(uploaded.data.filePath, undefined);
+
+  const registeredResponse = await requestJson(`${baseUrl}/api/v2/datasets`);
+  const registered = registeredResponse.body as {
+    ok: boolean;
+    data: { datasets: Array<{ datasetRef: string; filePath?: string }> };
+  };
+  assert.equal(registered.data.datasets.some(
+    (dataset) => dataset.datasetRef === uploaded.data.datasetRef && dataset.filePath === undefined,
+  ), true);
+
   const invalidCreate = await requestJson(
     `${baseUrl}/api/v2/runs`,
     'POST',
@@ -186,6 +218,8 @@ try {
     server.close((error) => error ? reject(error) : resolve());
   });
   await rm(root, { recursive: true, force: true });
+  if (originalAllowedRoots === undefined) delete process.env.THETA_ALLOWED_DATA_ROOTS;
+  else process.env.THETA_ALLOWED_DATA_ROOTS = originalAllowedRoots;
 }
 
 async function requestJson(
