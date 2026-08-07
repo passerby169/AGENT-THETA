@@ -110,6 +110,7 @@ const routeRequest = async (
       const result = await workflow.run({
         input: {
           filePath: dataset.filePath,
+          workflowVersion: '2.0.0',
           researchGoal: input.researchGoal,
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
         },
@@ -190,6 +191,12 @@ const routeRequest = async (
         presentation: buildHumanResponse(status),
         ...(context.datasetProfile ? { datasetProfile: context.datasetProfile } : {}),
         ...(context.researchBrief ? { researchBrief: context.researchBrief } : {}),
+        ...(context.datasetFacts ? { datasetFacts: context.datasetFacts } : {}),
+        ...(context.datasetUnderstanding ? { datasetUnderstanding: context.datasetUnderstanding } : {}),
+        ...(context.datasetConfirmation ? { datasetConfirmation: context.datasetConfirmation } : {}),
+        ...(context.researchIntent ? { researchIntent: context.researchIntent } : {}),
+        ...(context.interviewMemory ? { interviewMemory: context.interviewMemory } : {}),
+        ...(context.decisionGap ? { decisionGap: context.decisionGap } : {}),
       },
     });
     return;
@@ -412,6 +419,24 @@ const executeRunAction = async (
   }
   if (action.action === 'poll') {
     return workflow.resume({ runId, runtimeDb });
+  }
+  if (action.action === 'confirmDataset') {
+    return workflow.resume({
+      runId,
+      runtimeDb,
+      datasetConfirmation: {
+        status: action.status,
+        domainLabel: action.domainLabel,
+        analysisUnit: action.analysisUnit,
+        textColumns: action.textColumns,
+        timeColumns: action.timeColumns,
+        idColumns: action.idColumns,
+        metadataColumns: action.metadataColumns,
+      },
+    });
+  }
+  if (action.action === 'decisionAnswer') {
+    return workflow.resume({ runId, runtimeDb, decisionAnswer: action.text });
   }
   const store = new SQLiteConversationStore(runtimeDb);
   try {

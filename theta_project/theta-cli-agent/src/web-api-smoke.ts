@@ -50,6 +50,29 @@ try {
     thetaWebRunActionSchema.parse({ action: 'message', text: '你能做什么？' }),
     { action: 'message', text: '你能做什么？', useMiniMax: true },
   );
+  assert.deepEqual(
+    thetaWebRunActionSchema.parse({
+      action: 'confirmDataset',
+      status: 'confirmed',
+      domainLabel: '社会文本研究',
+      analysisUnit: '每行一条文本记录',
+      textColumns: ['text'],
+    }),
+    {
+      action: 'confirmDataset',
+      status: 'confirmed',
+      domainLabel: '社会文本研究',
+      analysisUnit: '每行一条文本记录',
+      textColumns: ['text'],
+      timeColumns: [],
+      idColumns: [],
+      metadataColumns: [],
+    },
+  );
+  assert.deepEqual(
+    thetaWebRunActionSchema.parse({ action: 'decisionAnswer', text: '不比较不同群体。' }),
+    { action: 'decisionAnswer', text: '不比较不同群体。' },
+  );
   const analysisRequest = thetaResultAnalysisRequestSchema.parse({
     question: '这些主题之间有什么差异？',
     selection: { topicIds: ['topic-1'] },

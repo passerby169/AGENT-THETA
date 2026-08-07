@@ -39,6 +39,7 @@ import {
   interviewMemorySchema,
   selectNextDecisionGap,
   type DecisionGap,
+  type InterviewMemory,
 } from "./agent/decision-gap.js";
 import {
   datasetConfirmationDraftSchema,
@@ -47,6 +48,7 @@ import {
   datasetUnderstandingDraftSchema,
   researchIntentSchema,
   type DatasetConfirmationDraft,
+  type DatasetConfirmation,
   type DatasetFacts,
   type DatasetUnderstandingDraft,
   type ResearchIntent,
@@ -211,6 +213,12 @@ export interface ThetaWorkflowConversationContext {
   researchBrief?: ResearchBrief;
   researchAssessment?: Record<string, unknown>;
   datasetProfile?: DatasetProfile;
+  datasetFacts?: DatasetFacts;
+  datasetUnderstanding?: DatasetUnderstandingDraft;
+  datasetConfirmation?: DatasetConfirmation;
+  researchIntent?: ResearchIntent;
+  interviewMemory?: InterviewMemory;
+  decisionGap?: DecisionGap;
 }
 
 export interface ThetaWorkflowPlan {
@@ -605,6 +613,34 @@ export class ThetaWorkflowService {
               ),
             }
           : {}),
+        ...(isRecord(variables.datasetFacts)
+          ? { datasetFacts: datasetFactsSchema.parse(variables.datasetFacts) }
+          : {}),
+        ...(isRecord(variables.datasetUnderstanding)
+          ? {
+              datasetUnderstanding: datasetUnderstandingDraftSchema.parse(
+                variables.datasetUnderstanding,
+              ),
+            }
+          : {}),
+        ...(isRecord(variables.datasetConfirmation)
+          ? {
+              datasetConfirmation: datasetConfirmationSchema.parse(
+                variables.datasetConfirmation,
+              ),
+            }
+          : {}),
+        ...(isRecord(variables.researchIntent)
+          ? { researchIntent: researchIntentSchema.parse(variables.researchIntent) }
+          : {}),
+        ...(isRecord(variables.interviewMemory)
+          ? {
+              interviewMemory: interviewMemorySchema.parse(
+                variables.interviewMemory,
+              ),
+            }
+          : {}),
+        ...v2DecisionGapContext(variables),
       };
     } finally {
       runtime.close();
@@ -2591,6 +2627,27 @@ const validateV2ConfirmedColumns = (
       `Dataset confirmation references unknown columns: ${[...new Set(unknown)].join(", ")}.`,
     );
   }
+};
+
+const v2DecisionGapContext = (
+  variables: Record<string, unknown>,
+): { decisionGap: DecisionGap } | Record<string, never> => {
+  const understanding = datasetUnderstandingDraftSchema.safeParse(
+    variables.datasetUnderstanding,
+  );
+  const confirmation = datasetConfirmationSchema.safeParse(
+    variables.datasetConfirmation,
+  );
+  const intent = researchIntentSchema.safeParse(variables.researchIntent);
+  if (!understanding.success || !confirmation.success || !intent.success) {
+    return {};
+  }
+  const memory = interviewMemorySchema.safeParse(variables.interviewMemory);
+  const nextGap = selectNextDecisionGap(
+    deriveDecisionGaps(understanding.data, confirmation.data, intent.data),
+    memory.success ? memory.data : emptyInterviewMemory(),
+  );
+  return nextGap ? { decisionGap: nextGap } : {};
 };
 
 const v2PlanningCompatibility = (
