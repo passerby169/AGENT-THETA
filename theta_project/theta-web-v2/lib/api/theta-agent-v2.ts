@@ -47,6 +47,15 @@ export interface ThetaRunStatus {
   statePath: string[];
   trainingReceipt?: ThetaTrainingReceipt;
   datasetProfile?: ThetaDatasetProfile;
+  datasetFacts?: ThetaDatasetFacts;
+  datasetUnderstanding?: ThetaDatasetUnderstanding;
+  datasetConfirmation?: ThetaDatasetConfirmation;
+  researchIntent?: ThetaResearchIntent;
+  interviewMemory?: {
+    resolvedGapIds: string[];
+    defaultedGapIds: string[];
+  };
+  decisionGap?: ThetaDecisionGap;
   researchBrief?: {
     researchQuestion?: string;
     researchDomain?: string;
@@ -56,6 +65,78 @@ export interface ThetaRunStatus {
     sensitiveData?: { status: 'yes' | 'no' | 'unknown'; categories: string[] };
   };
   presentation: ThetaPresentation;
+}
+
+export interface ThetaDatasetFacts {
+  datasetRef: string;
+  datasetHash: string;
+  fileName: string;
+  format: string;
+  sizeBytes: number;
+  rowCount: number;
+  columns: Array<{
+    name: string;
+    inferredType: 'empty' | 'number' | 'datetime' | 'text' | 'string';
+    missingRatio: number;
+    uniqueCount: number;
+    averageLength: number;
+  }>;
+  languageDistribution: Array<{ language: string; ratio: number }>;
+  duplicateRatio: number;
+  timeCoverage: { start: string | null; end: string | null };
+}
+
+export interface ThetaDatasetUnderstanding {
+  datasetRef: string;
+  datasetHash: string;
+  domain: { label: string; confidence: number; evidence: string[] };
+  analysisUnit: string;
+  textColumns: ThetaColumnRole[];
+  timeColumns: ThetaColumnRole[];
+  idColumns: ThetaColumnRole[];
+  metadataColumns: ThetaColumnRole[];
+  qualityWarnings: string[];
+  assumptions: string[];
+  confidence: number;
+  provenance: { source: string; toolIds: string[]; sampleSeed: string; generatedAt: string };
+}
+
+export interface ThetaColumnRole {
+  column: string;
+  confidence: number;
+  reason: string;
+}
+
+export interface ThetaDatasetConfirmation {
+  datasetHash: string;
+  status: 'confirmed' | 'corrected';
+  domainLabel: string;
+  analysisUnit: string;
+  textColumns: string[];
+  timeColumns: string[];
+  idColumns: string[];
+  metadataColumns: string[];
+}
+
+export interface ThetaResearchIntent {
+  researchQuestion: string;
+  comparisonDimensions: string[];
+  temporalAnalysis: boolean;
+  topicGranularity: 'coarse' | 'medium' | 'fine';
+  successCriteria: string[];
+  constraints: string[];
+  unknowns: string[];
+}
+
+export interface ThetaDecisionGap {
+  id: string;
+  category: 'research_goal' | 'comparison' | 'temporal' | 'granularity' | 'success' | 'constraint';
+  question: string;
+  whyItMatters: string;
+  planImpact: string;
+  blocking: boolean;
+  defaultResolution: string;
+  evidence: string[];
 }
 
 export interface ThetaDatasetProfile {
@@ -243,6 +324,17 @@ export type ThetaRunAction =
   | { action: 'answer'; text: string }
   | { action: 'message'; text: string; useMiniMax: boolean }
   | { action: 'columns'; text: string }
+  | {
+      action: 'confirmDataset';
+      status: 'confirmed' | 'corrected';
+      domainLabel: string;
+      analysisUnit: string;
+      textColumns: string[];
+      timeColumns: string[];
+      idColumns: string[];
+      metadataColumns: string[];
+    }
+  | { action: 'decisionAnswer'; text: string }
   | { action: 'finishInterview' }
   | { action: 'adjustPlan'; text: string }
   | { action: 'approvePlan'; acceptDegradation: boolean }
@@ -306,7 +398,7 @@ export const ThetaAgentV2API = {
     get<{ models: ThetaModel[]; supportedModelIds: string[] }>('models'),
   plan: (runId: string): Promise<ThetaPlan> =>
     get<ThetaPlan>(`runs/${encodeURIComponent(runId)}/plan`),
-  createRun: (input: { filePath: string; researchGoal: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
+  createRun: (input: { filePath: string; researchGoal?: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
     post<ThetaRunStatus>('runs', input),
   act: (runId: string, action: ThetaRunAction): Promise<{ result: ThetaActionResult; status: ThetaRunStatus }> =>
     post<{ result: ThetaActionResult; status: ThetaRunStatus }>(`runs/${encodeURIComponent(runId)}/actions`, action),

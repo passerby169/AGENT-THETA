@@ -55,6 +55,8 @@ import {
 const actionableStates = new Set([
   'ResearchClarification',
   'ColumnConfirmation',
+  'AwaitDatasetUnderstandingConfirmation',
+  'ResearchIntentInterview',
   'AwaitPlanCreationApproval',
   'AwaitTrainingStartApproval',
 ]);
@@ -173,13 +175,13 @@ export default function WorkbenchPage() {
 
   const createResearch = useCallback(async () => {
     const goal = researchGoal.trim();
-    if (!selectedDataset || goal.length < 8 || goal.length > 2000 || createBusy) return;
+    if (!selectedDataset || (goal.length > 0 && goal.length < 8) || goal.length > 2000 || createBusy) return;
     setCreateBusy(true);
     setError(undefined);
     try {
       const status = await ThetaAgentV2API.createRun({
         filePath: selectedDataset,
-        researchGoal: goal,
+        ...(goal ? { researchGoal: goal } : {}),
         useMiniMax: true,
       });
       const detailedStatus = await ThetaAgentV2API.status(status.runId);
@@ -364,7 +366,7 @@ function ResearchStartPanel({
   const goal = researchGoal.trim();
   const selected = datasets.find((dataset) => dataset.filePath === selectedDataset);
   const datasetReady = Boolean(selected);
-  const goalReady = goal.length >= 8 && goal.length <= 2000;
+  const goalReady = (goal.length === 0 || goal.length >= 8) && goal.length <= 2000;
   const canCreate = datasetReady && goalReady && !busy;
 
   return (
@@ -375,7 +377,7 @@ function ResearchStartPanel({
         </span>
         <div>
           <p className="text-sm font-semibold text-slate-900">开始一项新研究</p>
-          <p className="mt-1 text-sm leading-6 text-slate-600">先选择要分析的数据集，再直接告诉我你希望研究什么。创建后，THETA 会在对话中补全必要信息。</p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">先选择数据集。研究目标可以暂时留空，THETA 会先检查数据，再只询问影响研究方案的必要问题。</p>
         </div>
       </div>
 
@@ -415,8 +417,8 @@ function ResearchStartPanel({
 
         <div className="min-w-0 p-5 sm:p-6">
           <div>
-            <p className="text-xs font-semibold text-blue-600">2 / 2 · 说明研究目标</p>
-            <p className="mt-1 text-sm font-medium text-slate-800">你希望从这批数据中得到什么？</p>
+            <p className="text-xs font-semibold text-blue-600">2 / 2 · 研究目标（可选）</p>
+            <p className="mt-1 text-sm font-medium text-slate-800">已有明确方向可以先说明，也可以让 THETA 看完数据后再讨论。</p>
           </div>
           <div className="mt-4 rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
             <Textarea
@@ -429,11 +431,11 @@ function ResearchStartPanel({
                 event.preventDefault();
                 void onCreate();
               }}
-              placeholder="例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。"
+              placeholder="可留空。例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。"
               className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
             />
             <div className="flex flex-col items-stretch gap-2 border-t border-slate-100 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-              <span className={`text-xs ${goal.length > 0 && !goalReady ? 'text-amber-700' : 'text-slate-400'}`}>{goal.length} / 2000 · 至少 8 个字符</span>
+              <span className={`text-xs ${goal.length > 0 && !goalReady ? 'text-amber-700' : 'text-slate-400'}`}>{goal.length} / 2000 · 留空或至少 8 个字符</span>
               <Button type="button" disabled={!canCreate} onClick={() => void onCreate()} className="h-9 w-full gap-2 rounded-md bg-blue-600 px-4 hover:bg-blue-700 sm:w-auto">
                 {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 {busy ? '正在预检数据...' : '开始研究对话'}
@@ -454,7 +456,7 @@ function ResearchStartPanel({
           ) : null}
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
             <RequirementItem met={datasetReady}>已选择数据集</RequirementItem>
-            <RequirementItem met={goalReady}>研究目标信息充分</RequirementItem>
+            <RequirementItem met={goalReady}>{goal ? '研究目标信息充分' : '研究目标稍后讨论'}</RequirementItem>
           </div>
         </div>
       </div>
@@ -669,7 +671,12 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   const notices = (
     <>
       {actionError ? <ErrorNotice message={actionError} /> : null}
-      {actionNotice && !['ResearchClarification', 'ColumnConfirmation'].includes(status.currentState ?? '')
+      {actionNotice && ![
+        'ResearchClarification',
+        'ColumnConfirmation',
+        'AwaitDatasetUnderstandingConfirmation',
+        'ResearchIntentInterview',
+      ].includes(status.currentState ?? '')
         ? <ActionNotice message={actionNotice} />
         : null}
     </>
@@ -1021,6 +1028,28 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
     />
   );
 
+  if (state === 'AwaitDatasetUnderstandingConfirmation') return (
+    <DatasetUnderstandingConfirmation
+      status={status}
+      busy={busy}
+      notice={notice}
+      onAction={onAction}
+    />
+  );
+
+  if (state === 'ResearchIntentInterview') return (
+    <ResearchConversation
+      status={status}
+      messages={conversation}
+      loading={conversationLoading}
+      busy={busy}
+      notice={notice}
+      compact={compact}
+      answerAction="decisionAnswer"
+      onAction={onAction}
+    />
+  );
+
   if (state === 'ColumnConfirmation') return (
     <ActionShell title="确认数据列" description="正文列必须确认；时间、ID 和元数据列不使用时可以明确写“无”。">
       <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950">
@@ -1085,13 +1114,109 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
 }
 
-function ResearchConversation({ status, messages, loading, busy, notice, compact = false, onAction }: {
+function DatasetUnderstandingConfirmation({ status, busy, notice, onAction }: {
+  status: ThetaRunStatus;
+  busy: boolean;
+  notice?: string;
+  onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
+}) {
+  const facts = status.datasetFacts;
+  const understanding = status.datasetUnderstanding;
+  const [domainLabel, setDomainLabel] = useState('');
+  const [analysisUnit, setAnalysisUnit] = useState('');
+  const [textColumns, setTextColumns] = useState('');
+  const [timeColumns, setTimeColumns] = useState('');
+  const [idColumns, setIdColumns] = useState('');
+  const [metadataColumns, setMetadataColumns] = useState('');
+
+  useEffect(() => {
+    if (!understanding) return;
+    setDomainLabel(understanding.domain.label);
+    setAnalysisUnit(understanding.analysisUnit);
+    setTextColumns(understanding.textColumns.map((item) => item.column).join('、'));
+    setTimeColumns(understanding.timeColumns.map((item) => item.column).join('、'));
+    setIdColumns(understanding.idColumns.map((item) => item.column).join('、'));
+    setMetadataColumns(understanding.metadataColumns.map((item) => item.column).join('、'));
+  }, [understanding]);
+
+  if (!facts || !understanding) {
+    return <ActionShell title="正在理解数据集" description="THETA 正在通过受治理工具读取结构、质量和脱敏样本。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
+  }
+
+  const original = {
+    domainLabel: understanding.domain.label,
+    analysisUnit: understanding.analysisUnit,
+    textColumns: understanding.textColumns.map((item) => item.column),
+    timeColumns: understanding.timeColumns.map((item) => item.column),
+    idColumns: understanding.idColumns.map((item) => item.column),
+    metadataColumns: understanding.metadataColumns.map((item) => item.column),
+  };
+  const draft = {
+    domainLabel: domainLabel.trim(),
+    analysisUnit: analysisUnit.trim(),
+    textColumns: splitColumnNames(textColumns),
+    timeColumns: splitColumnNames(timeColumns),
+    idColumns: splitColumnNames(idColumns),
+    metadataColumns: splitColumnNames(metadataColumns),
+  };
+  const corrected = JSON.stringify(draft) !== JSON.stringify(original);
+  const valid = draft.domainLabel.length > 0 && draft.analysisUnit.length > 0 && draft.textColumns.length > 0;
+
+  return (
+    <ActionShell title="确认 THETA 对数据的理解" description="系统已先完成结构、质量和领域预判。只需确认有业务含义的部分，文件哈希变化后本确认会自动失效。">
+      <div className="grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-3">
+        <Metric label="数据规模" value={`${facts.rowCount} 行 · ${facts.columns.length} 列`} />
+        <Metric label="格式" value={facts.format.toUpperCase()} />
+        <Metric label="整体置信度" value={`${Math.round(understanding.confidence * 100)}%`} />
+      </div>
+      <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
+        <p className="text-xs font-semibold text-blue-700">自动理解依据</p>
+        <p className="mt-1 text-sm leading-6 text-blue-950">主要列：{facts.columns.map((column) => column.name).join('、')}。领域预判为“{understanding.domain.label}”，分析单位为“{understanding.analysisUnit}”。</p>
+        <p className="mt-1 text-xs leading-5 text-blue-700">来源：{understanding.provenance.source} · 数据集指纹 {facts.datasetHash.slice(0, 12)}…</p>
+      </div>
+      {understanding.qualityWarnings.length ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">{understanding.qualityWarnings.join('；')}</div>
+      ) : null}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <LabeledInput label="领域/方向" value={domainLabel} onChange={setDomainLabel} />
+        <LabeledInput label="每行代表什么" value={analysisUnit} onChange={setAnalysisUnit} />
+        <LabeledInput label="正文列（必填，可多列）" value={textColumns} onChange={setTextColumns} />
+        <LabeledInput label="时间列（可选）" value={timeColumns} onChange={setTimeColumns} />
+        <LabeledInput label="ID 列（可选）" value={idColumns} onChange={setIdColumns} />
+        <LabeledInput label="分组元数据列（可选）" value={metadataColumns} onChange={setMetadataColumns} />
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button
+          type="button"
+          disabled={busy || !valid}
+          onClick={() => void onAction({
+            action: 'confirmDataset',
+            status: corrected ? 'corrected' : 'confirmed',
+            ...draft,
+          })}
+          className="bg-blue-600 hover:bg-blue-700"
+        >
+          {busy ? '正在固化确认...' : corrected ? '保存修正并继续' : '确认理解并继续'}
+        </Button>
+        <p className="text-xs text-slate-500">列名用逗号、顿号或换行分隔；空白表示不使用。</p>
+      </div>
+      {notice ? <ClarificationFeedback message={notice} /> : null}
+    </ActionShell>
+  );
+}
+
+function LabeledInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return <label><span className="mb-1.5 block text-xs font-medium text-slate-600">{label}</span><Input value={value} onChange={(event) => onChange(event.target.value)} /></label>;
+}
+
+function ResearchConversation({ status, messages, loading, busy, notice, compact = false, answerAction = 'message', onAction }: {
   status: ThetaRunStatus;
   messages: ThetaConversationMessage[];
   loading: boolean;
   busy: boolean;
   notice?: string;
   compact?: boolean;
+  answerAction?: 'message' | 'decisionAnswer';
   onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
 }) {
   const [draft, setDraft] = useState('');
@@ -1104,7 +1229,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
     ),
     [messages],
   );
-  const currentPrompt = status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
+  const currentPrompt = status.decisionGap?.question ?? status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
   const showCurrentPrompt = !researchMessages.some(
     (message) => message.role === 'assistant' && message.content.includes(currentPrompt),
   );
@@ -1178,7 +1303,9 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
         delivery: 'sending',
       },
     ]);
-    const outcome = await onAction({ action: 'message', text: answer, useMiniMax: true });
+    const outcome = answerAction === 'decisionAnswer'
+      ? await onAction({ action: 'decisionAnswer', text: answer })
+      : await onAction({ action: 'message', text: answer, useMiniMax: true });
     if (!outcome.requestSucceeded) {
       setOptimisticMessages((current) => current.map((message) =>
         message.messageId === optimisticId ? { ...message, delivery: 'failed' } : message,
@@ -1205,7 +1332,8 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
         {loading && researchMessages.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
         ) : null}
-        {status.datasetProfile ? <DatasetProfileSummary status={status} compact={compact} /> : null}
+        {status.datasetFacts && status.datasetUnderstanding ? <V2DatasetSummary status={status} compact={compact} /> : null}
+        {!status.datasetFacts && status.datasetProfile ? <DatasetProfileSummary status={status} compact={compact} /> : null}
         {displayMessages.map(({ message, current, delivery }) => (
           <ConversationBubble key={message.messageId} message={message} current={current} delivery={delivery} />
         ))}
@@ -1245,10 +1373,14 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
         </div>
         <div className={`mt-3 flex flex-col gap-2 text-xs text-slate-500 ${compact ? '' : 'sm:flex-row sm:items-center sm:justify-between'}`}>
           <p className={compact ? 'text-[11px] leading-5' : ''}>THETA 会先判断你是在回答研究设置，还是在向助手咨询；只有研究答案会推进流程。</p>
-          <div className="text-right">
-            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">检查完整度并进入数据列确认</Button>
-            <p className="mt-0.5 text-[11px] text-slate-400">若仍缺必填信息，系统会列出缺项，不会错误跳过。</p>
-          </div>
+          {answerAction === 'message' ? (
+            <div className="text-right">
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void onAction({ action: 'finishInterview' })} className="h-8 justify-start px-2 text-blue-700 hover:bg-blue-50 hover:text-blue-800">检查完整度并进入数据列确认</Button>
+              <p className="mt-0.5 text-[11px] text-slate-400">V1 兼容流程会检查旧 ResearchBrief 的必填信息。</p>
+            </div>
+          ) : status.decisionGap ? (
+            <p className="text-right text-[11px] leading-5 text-slate-400">本轮只处理“{status.decisionGap.category}”决策；回答后会根据新增信息重算下一步。</p>
+          ) : null}
         </div>
       </div>
     </section>
@@ -1281,6 +1413,42 @@ function DatasetProfileSummary({ status, compact }: { status: ThetaRunStatus; co
         <span className="rounded-sm bg-slate-100 px-2 py-1">缺失率：{Math.round(profile.missingRatio * 100)}%</span>
       </div>
       <p className="mt-2 text-xs leading-5 text-slate-500">THETA 已依据结构和样本统计建立初步判断；后续只会询问无法可靠推断的领域含义与必要授权。</p>
+    </div>
+  );
+}
+
+function V2DatasetSummary({ status, compact }: { status: ThetaRunStatus; compact: boolean }) {
+  const facts = status.datasetFacts;
+  const understanding = status.datasetUnderstanding;
+  if (!facts || !understanding) return null;
+  const visibleColumns = facts.columns.slice(0, compact ? 4 : 8).map((column) => column.name);
+  const hiddenColumns = Math.max(0, facts.columns.length - visibleColumns.length);
+  const primaryText = understanding.textColumns[0]?.column ?? '需要确认';
+  const primaryTime = understanding.timeColumns[0]?.column ?? '未识别';
+  return (
+    <div className="rounded-md border border-blue-200 bg-white px-4 py-3 shadow-sm sm:px-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold text-blue-700">THETA 已完成受治理的数据理解</p>
+          <p className="mt-1 text-sm font-medium leading-6 text-slate-900">
+            当前数据共 {facts.rowCount} 行、{facts.columns.length} 列，主要列为 {visibleColumns.join('、')}{hiddenColumns ? ` 等 ${facts.columns.length} 列` : ''}。
+          </p>
+        </div>
+        <Badge variant="outline" className="w-fit shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700">数据 Hash 已绑定</Badge>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+        <span className="rounded-sm bg-blue-50 px-2 py-1 text-blue-700">领域：{understanding.domain.label}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">每行：{understanding.analysisUnit}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">正文：{primaryText}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">时间：{primaryTime}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">置信度：{Math.round(understanding.confidence * 100)}%</span>
+      </div>
+      {status.decisionGap ? (
+        <div className="mt-3 rounded-md bg-slate-100 px-3 py-2 text-xs leading-5 text-slate-600">
+          <p className="font-semibold text-slate-700">为什么现在询问</p>
+          <p>{status.decisionGap.whyItMatters} {status.decisionGap.planImpact}</p>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1386,6 +1554,9 @@ const workflowStateLabels: Record<string, string> = {
   Intake: '接收研究任务',
   ResearchClarification: '完善研究设置',
   InspectDataset: '检查数据集',
+  AnalyzeDataset: '理解数据内容',
+  AwaitDatasetUnderstandingConfirmation: '确认数据理解',
+  ResearchIntentInterview: '明确研究意图',
   ColumnConfirmation: '确认数据列',
   RecommendModel: '生成模型建议',
   ValidatePlan: '校验训练方案',
@@ -1402,6 +1573,9 @@ const workflowStateLabels: Record<string, string> = {
   Cancelled: '训练已取消',
 };
 const workflowStateLabel = (state?: string): string => workflowStateLabels[state ?? ''] ?? state ?? '处理研究任务';
+const splitColumnNames = (value: string): string[] => [...new Set(
+  value.split(/[,，、;；\n\r]+/u).map((item) => item.trim()).filter(Boolean),
+)];
 const stateTitle = (state?: string): string => workflowStateLabel(state);
 const researchStatusLabel = (status?: ThetaRunResults['researchStatus']): string => status === 'passed' ? '研究目标已满足' : status === 'needs_review' ? '结果需要复核' : '研究目标未评估';
 const metricLabels: Record<string, string> = {

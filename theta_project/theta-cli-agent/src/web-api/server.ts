@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,7 +112,7 @@ const routeRequest = async (
         input: {
           filePath: dataset.filePath,
           workflowVersion: '2.0.0',
-          researchGoal: input.researchGoal,
+          ...(input.researchGoal ? { researchGoal: input.researchGoal } : {}),
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
         },
         runtimeDb: options.runtimeDb,
@@ -436,7 +437,40 @@ const executeRunAction = async (
     });
   }
   if (action.action === 'decisionAnswer') {
-    return workflow.resume({ runId, runtimeDb, decisionAnswer: action.text });
+    const result = await workflow.resume({
+      runId,
+      runtimeDb,
+      decisionAnswer: action.text,
+    });
+    const context = await workflow.conversationContext(result.runId, runtimeDb);
+    const store = new SQLiteConversationStore(runtimeDb);
+    try {
+      const sessionId = `theta-web-${result.runId}`;
+      store.getOrCreateSession(sessionId, { activeRunId: result.runId });
+      store.appendMessage({
+        messageId: `message.user.${randomUUID()}`,
+        sessionId,
+        runId: result.runId,
+        role: 'user',
+        messageKind: 'research.decision-answer',
+        content: action.text,
+        createdAt: new Date().toISOString(),
+      });
+      if (context.decisionGap) {
+        store.appendMessage({
+          messageId: `message.assistant.${randomUUID()}`,
+          sessionId,
+          runId: result.runId,
+          role: 'assistant',
+          messageKind: 'research.decision-gap',
+          content: context.decisionGap.question,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } finally {
+      store.close();
+    }
+    return result;
   }
   const store = new SQLiteConversationStore(runtimeDb);
   try {
