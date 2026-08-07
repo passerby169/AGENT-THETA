@@ -265,7 +265,10 @@ export interface ThetaWorkflowServiceOptions {
 class GovernedThetaWorkflowToolPort implements ThetaWorkflowToolPort {
   private readonly runner;
 
-  constructor(private readonly trace: JsonlToolTraceRecorder) {
+  constructor(
+    private readonly runtimeDb: string,
+    private readonly trace: JsonlToolTraceRecorder,
+  ) {
     this.runner = createThetaGovernedToolRunner(trace);
   }
 
@@ -295,6 +298,10 @@ class GovernedThetaWorkflowToolPort implements ThetaWorkflowToolPort {
       executionScope,
       operationId: `theta-workflow:${request.stateId}:${request.stateAttempt}`,
       correlationId: request.runId,
+      metadata: {
+        source: "theta-cli-agent",
+        thetaRuntimeDb: this.runtimeDb,
+      },
     };
     let result = await this.runner.run({
       toolId: request.toolId,
@@ -761,6 +768,7 @@ export class ThetaWorkflowService {
     return (
       this.options.toolPort ??
       new GovernedThetaWorkflowToolPort(
+        runtimeDb,
         new JsonlToolTraceRecorder(thetaToolTraceFile(runtimeDb, runId)),
       )
     );

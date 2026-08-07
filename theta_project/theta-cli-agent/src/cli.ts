@@ -15,6 +15,7 @@ import {
   runApprovedThetaTrainingCancel,
   runApprovedThetaTrainingStart,
   runThetaDatasetDetectColumns,
+  runThetaDatasetExplore,
   runThetaDatasetInspect,
   runThetaModelCatalog,
   runThetaModelRecommend,
@@ -23,6 +24,7 @@ import {
   runThetaTrainingStatus,
 } from "./tools/hypha-runner.js";
 import type { ThetaDatasetFileInput } from "./tools/dataset-inspect-tool.js";
+import type { ThetaDatasetExploreInput } from "./tools/dataset-explore-tool.js";
 import type { ThetaModelRecommendInput } from "./tools/model-recommend-tool.js";
 import type { ThetaPlanApproveInput } from "./tools/plan-approve-tool.js";
 import type { ThetaPlanCreateInput } from "./tools/plan-create-tool.js";
@@ -37,6 +39,7 @@ import {
 } from "./agent-cli.js";
 import { loadThetaProjectEnvironment } from "./environment.js";
 import { renderUserError } from "./presentation/terminal-renderer.js";
+import { SQLiteDatasetRegistry } from "./storage/dataset-registry.js";
 
 interface ParsedArguments {
   positionals: string[];
@@ -122,6 +125,12 @@ Commands:
   dataset detect-columns --file <path> [--sample-size <number>]
       Detect text, time, and metadata column candidates.
 
+  dataset register --file <path> [--runtime-db <path>]
+      Register an allowed local file and return an opaque dataset reference.
+
+  dataset explore --dataset-ref <ref> [--sample-size <number>] [--runtime-db <path>]
+      Explore a registered dataset through the governed V2 read tool.
+
   models
       List models exposed by THETA through Hypha governance.
 
@@ -150,8 +159,11 @@ Commands:
       Request cooperative cancellation only when --approve is explicit.
 
   workflow compile
-  workflow run --file <dataset> [--approve-plans] [--approve-training]
+  workflow run --file <dataset> [--workflow-version 1.0.0|2.0.0]
+      V2 is the default; use 1.0.0 only for legacy compatibility.
   workflow resume --run-id <id> [--answers <json> | --columns <json>]
+  workflow resume --run-id <id> [--dataset-confirmation <json>]
+  workflow resume --run-id <id> [--decision-answer <text>]
   workflow resume --run-id <id> [--approve | --reject]
   workflow trace --run-id <id>
   workflow replay --run-id <id>
@@ -168,6 +180,8 @@ Global options:
 Examples:
   npm run cli -- dataset inspect --file fixtures/sample.jsonl
   npm run cli -- dataset detect-columns --file fixtures/sample.jsonl
+  npm run cli -- dataset register --file fixtures/sample.jsonl
+  npm run cli -- dataset explore --dataset-ref <dataset_ref>
   npm run cli -- models
   npm run cli -- recommend --profile fixtures/data-profile.json --columns fixtures/model-recommend-columns.json
   npm run cli -- plan validate --file fixtures/training-plan.json
@@ -357,6 +371,84 @@ const detectDatasetColumnsCommand = async (
       ...detected.warnings.map((warning) => `Warning: ${warning}`),
     ].join("\n");
   });
+};
+
+const registerDatasetCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput,
+): Promise<void> => {
+  const runtimeDb = stringFlag(parsed, "runtime-db");
+  const registry = new SQLiteDatasetRegistry(runtimeDb);
+  try {
+    const record = await registry.registerLocalFile(
+      resolve(process.cwd(), requiredStringFlag(parsed, "file")),
+      { userId: "local_user", workspaceId: "local_workspace" },
+    );
+    const result = {
+      datasetRef: record.datasetRef,
+      displayName: record.displayName,
+      sha256: record.sha256,
+      sizeBytes: record.sizeBytes,
+      suffix: record.suffix,
+      createdAt: record.createdAt,
+    };
+    writeResult(result, parsed, output, () =>
+      [
+        "Dataset registered.",
+        `Reference: ${result.datasetRef}`,
+        `Name: ${result.displayName}`,
+        `Format: ${result.suffix}`,
+        `Size: ${result.sizeBytes} bytes`,
+      ].join("\n"),
+    );
+  } finally {
+    registry.close();
+  }
+};
+
+const exploreDatasetCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput,
+): Promise<void> => {
+  const sampleSize = integerFlag(parsed, "sample-size");
+  const input: ThetaDatasetExploreInput = {
+    datasetRef: requiredStringFlag(parsed, "dataset-ref"),
+    ...(sampleSize === undefined ? {} : { sampleSize }),
+  };
+  const result = await withWorkflowDbEnvironment(
+    stringFlag(parsed, "runtime-db"),
+    () => runThetaDatasetExplore(input),
+  );
+  const explored = requireCompleted(result, "Dataset exploration");
+  writeResult(explored, parsed, output, () =>
+    [
+      `Dataset: ${explored.fileName}`,
+      `Reference: ${explored.datasetRef}`,
+      `Rows: ${explored.rowCount}`,
+      `Columns: ${explored.columns.join(", ")}`,
+      `Inferred domain: ${explored.inferredDomain.label} (${(
+        explored.inferredDomain.confidence * 100
+      ).toFixed(0)}%)`,
+      `Sample rows: ${explored.sample.length}`,
+      `Redacted values: ${explored.redaction.redactedValueCount}`,
+      ...explored.qualityWarnings.map((warning) => `Warning: ${warning}`),
+    ].join("\n"),
+  );
+};
+
+const withWorkflowDbEnvironment = async <T>(
+  runtimeDb: string | undefined,
+  action: () => Promise<T>,
+): Promise<T> => {
+  if (!runtimeDb) return action();
+  const previous = process.env.THETA_WORKFLOW_DB;
+  process.env.THETA_WORKFLOW_DB = resolve(process.cwd(), runtimeDb);
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) delete process.env.THETA_WORKFLOW_DB;
+    else process.env.THETA_WORKFLOW_DB = previous;
+  }
 };
 
 const catalogCommand = async (
@@ -849,6 +941,14 @@ export const runCli = async (
     }
     if (command === "dataset" && subcommand === "detect-columns") {
       await detectDatasetColumnsCommand(parsed, output);
+      return 0;
+    }
+    if (command === "dataset" && subcommand === "register") {
+      await registerDatasetCommand(parsed, output);
+      return 0;
+    }
+    if (command === "dataset" && subcommand === "explore") {
+      await exploreDatasetCommand(parsed, output);
       return 0;
     }
     if (command === "models" && subcommand === undefined) {

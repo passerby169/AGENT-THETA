@@ -96,7 +96,7 @@ if (
   throw new Error("Existing batch-size and max-topic adjustments regressed.");
 }
 
-const runJsonCommand = (commandCase: CommandCase): void => {
+const runJsonCommand = (commandCase: CommandCase): unknown => {
   const result = spawnSync(
     process.execPath,
     [cliPath, ...commandCase.args, "--json"],
@@ -110,7 +110,9 @@ const runJsonCommand = (commandCase: CommandCase): void => {
       `CLI command failed (${commandCase.args.join(" ")}): ${result.stderr || result.stdout}`,
     );
   }
-  commandCase.verify(JSON.parse(result.stdout) as unknown);
+  const output = JSON.parse(result.stdout) as unknown;
+  commandCase.verify(output);
+  return output;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> => {
@@ -345,6 +347,49 @@ const cases: CommandCase[] = [
 for (const commandCase of cases) {
   runJsonCommand(commandCase);
 }
+
+const registeredDataset = asRecord(
+  runJsonCommand({
+    args: [
+      "dataset",
+      "register",
+      "--file",
+      "fixtures/sample.jsonl",
+      "--runtime-db",
+      runtimeDb,
+    ],
+    verify: (output) => {
+      const record = asRecord(output);
+      if (
+        typeof record.datasetRef !== "string" ||
+        "managedPath" in record
+      ) {
+        throw new Error("dataset register leaked a path or omitted its reference.");
+      }
+    },
+  }),
+);
+
+runJsonCommand({
+  args: [
+    "dataset",
+    "explore",
+    "--dataset-ref",
+    String(registeredDataset.datasetRef),
+    "--runtime-db",
+    runtimeDb,
+  ],
+  verify: (output) => {
+    const explored = asRecord(output);
+    if (
+      explored.datasetRef !== registeredDataset.datasetRef ||
+      !Array.isArray(explored.columns) ||
+      !Array.isArray(explored.sample)
+    ) {
+      throw new Error("dataset explore did not use the registered opaque reference.");
+    }
+  },
+});
 
 const repl = spawnSync(process.execPath, [cliPath, "repl"], {
   cwd: process.cwd(),

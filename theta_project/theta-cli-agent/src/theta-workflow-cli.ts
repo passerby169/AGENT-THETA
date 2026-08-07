@@ -25,14 +25,17 @@ export const thetaWorkflowHelp = `THETA workflow commands:
       Compile the THETA DomainPack and print the FSM contract summary.
 
   workflow run --file <dataset> [--run-id <id>] [--runtime-db <path>]
-      Start the event-first workflow. It stops at the first approval gate.
+      Start the event-first V2 workflow. It registers the local file and uses
+      an opaque dataset reference. Use --workflow-version 1.0.0 only for
+      legacy compatibility.
       Add --approve-plans for HumanPlanReview. Add
       --approve-training as well to permit the external training start.
 
   workflow resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
       Resume a durable Run and optionally resolve an approval wait.
       Use --answers <json> for research clarification or --columns <json>
-      for explicit dataset column confirmation.
+      for legacy column confirmation. V2 accepts --dataset-confirmation <json>,
+      --decision-answer <text>, or --plan-adjustment <json>.
 
   workflow status --run-id <id> [--runtime-db <path>]
       Derive the current Run state from canonical Runtime events.
@@ -92,6 +95,12 @@ export const runThetaWorkflowCliCommand = async (
       }
       const researchAnswers = await optionalJsonFlag(parsed, "answers");
       const columnConfirmation = await optionalJsonFlag(parsed, "columns");
+      const datasetConfirmation = await optionalJsonFlag(
+        parsed,
+        "dataset-confirmation",
+      );
+      const planAdjustment = await optionalJsonFlag(parsed, "plan-adjustment");
+      const decisionAnswer = stringFlag(parsed, "decision-answer");
       const result = await service.resume({
         runId: requiredFlag(parsed, "run-id"),
         ...(runtimeDb ? { runtimeDb } : {}),
@@ -110,6 +119,21 @@ export const runThetaWorkflowCliCommand = async (
               },
             }
           : {}),
+        ...(datasetConfirmation
+          ? {
+              datasetConfirmation: datasetConfirmation as {
+                status: "confirmed" | "corrected";
+                domainLabel: string;
+                analysisUnit: string;
+                textColumns: string[];
+                timeColumns: string[];
+                idColumns: string[];
+                metadataColumns: string[];
+              },
+            }
+          : {}),
+        ...(decisionAnswer ? { decisionAnswer } : {}),
+        ...(planAdjustment ? { planAdjustment } : {}),
       });
       write(result, json, output);
       return result.disposition === "failed" ? 2 : 0;
@@ -158,13 +182,22 @@ const workflowInput = async (
       throw new Error("--input must contain a JSON object.");
     }
     const input = value as ThetaWorkflowInput;
+    const workflowVersion = parseWorkflowVersion(
+      stringFlag(parsed, "workflow-version") ??
+        input.workflowVersion ??
+        "2.0.0",
+    );
     return {
       ...input,
       filePath: path.resolve(process.cwd(), input.filePath),
+      workflowVersion,
     };
   }
   return {
     filePath: path.resolve(process.cwd(), requiredFlag(parsed, "file")),
+    workflowVersion: parseWorkflowVersion(
+      stringFlag(parsed, "workflow-version") ?? "2.0.0",
+    ),
     ...(stringFlag(parsed, "dataset-id")
       ? { datasetId: stringFlag(parsed, "dataset-id") }
       : {}),
@@ -174,7 +207,32 @@ const workflowInput = async (
     ...(integerFlag(parsed, "sample-size")
       ? { sampleSize: integerFlag(parsed, "sample-size") }
       : {}),
+    ...(stringFlag(parsed, "planner-mode")
+      ? {
+          plannerMode: parsePlannerMode(
+            requiredFlag(parsed, "planner-mode"),
+          ),
+        }
+      : {}),
   };
+};
+
+const parseWorkflowVersion = (
+  value: string,
+): "1.0.0" | "2.0.0" => {
+  if (value !== "1.0.0" && value !== "2.0.0") {
+    throw new Error("--workflow-version must be 1.0.0 or 2.0.0.");
+  }
+  return value;
+};
+
+const parsePlannerMode = (
+  value: string,
+): "deterministic" | "minimax" => {
+  if (value !== "deterministic" && value !== "minimax") {
+    throw new Error("--planner-mode must be deterministic or minimax.");
+  }
+  return value;
 };
 
 const parseWorkflowArguments = (args: string[]): ParsedWorkflowArguments => {

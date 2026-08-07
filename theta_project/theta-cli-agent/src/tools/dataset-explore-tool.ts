@@ -160,7 +160,12 @@ export const thetaDatasetExploreHandler: ToolHandler<
   const userId = context.userId ?? context.principal?.userId ?? 'local_user';
   const workspaceId =
     context.workspaceId ?? context.principal?.workspaceId ?? 'local_workspace';
-  const registry = new SQLiteDatasetRegistry();
+  const runtimeDb = context.metadata?.thetaRuntimeDb;
+  const registry = new SQLiteDatasetRegistry(
+    typeof runtimeDb === 'string' && runtimeDb.trim()
+      ? runtimeDb
+      : undefined,
+  );
   try {
     const record = registry.require(input.datasetRef, { userId, workspaceId });
     const response = await callThetaBridge(
