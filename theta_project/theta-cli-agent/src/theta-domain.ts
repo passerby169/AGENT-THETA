@@ -309,6 +309,10 @@ const forwardTransitions = [
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
   ],
   [
+    THETA_WORKFLOW_STATES.inspectDataset,
+    THETA_WORKFLOW_STATES.awaitResearchClarification,
+  ],
+  [
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
     THETA_WORKFLOW_STATES.inspectDataset,
   ],

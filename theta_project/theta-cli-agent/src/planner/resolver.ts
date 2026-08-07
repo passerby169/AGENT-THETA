@@ -26,6 +26,7 @@ export interface PlannerResolution {
   acceptedFields: string[];
   rejectedFields: Array<{ field: string; reason: string }>;
   selectedModelId: string;
+  inputSnapshotHash: string;
   evidenceBundleHash: string;
   acceptedEvidenceRefs: string[];
   authorityPolicy: "implementation_over_paper";
@@ -42,6 +43,7 @@ export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResol
       acceptedFields: Object.keys(explicit),
       rejectedFields: [],
       selectedModelId: String(explicit.modelId),
+      inputSnapshotHash: input.proposal.inputSnapshot.snapshotHash,
       evidenceBundleHash: input.evidenceBundle.bundleHash,
       acceptedEvidenceRefs: [],
       authorityPolicy: "implementation_over_paper",
@@ -167,6 +169,7 @@ export const resolvePlannerProposal = (input: ResolvePlannerInput): PlannerResol
     acceptedFields,
     rejectedFields,
     selectedModelId: modelId,
+    inputSnapshotHash: input.proposal.inputSnapshot.snapshotHash,
     evidenceBundleHash: input.evidenceBundle.bundleHash,
     acceptedEvidenceRefs: [...acceptedEvidenceRefs],
     authorityPolicy: "implementation_over_paper",

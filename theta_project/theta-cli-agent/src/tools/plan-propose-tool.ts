@@ -33,7 +33,7 @@ const inputSchema: JsonSchema = {
 
 const outputSchema: JsonSchema = {
   type: "object",
-  required: ["schemaVersion", "source", "factsHash", "plannerProgress", "draft"],
+  required: ["schemaVersion", "source", "factsHash", "inputSnapshot", "plannerProgress", "draft"],
   properties: {
     schemaVersion: { const: "1.0.0" },
     source: { enum: ["minimax", "deterministic"] },
@@ -41,6 +41,30 @@ const outputSchema: JsonSchema = {
     fallbackDetail: { type: "string", maxLength: 500 },
     boundaryAdjustments: { type: "array", items: { type: "string" }, maxItems: 12 },
     factsHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    inputSnapshot: {
+      type: "object",
+      required: [
+        "schemaVersion",
+        "researchBriefHash",
+        "datasetProfileHash",
+        "columnConfirmationHash",
+        "recommendationHash",
+        "evidenceBundleHash",
+        "factsHash",
+        "snapshotHash",
+      ],
+      properties: {
+        schemaVersion: { const: "1.0.0" },
+        researchBriefHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        datasetProfileHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        columnConfirmationHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        recommendationHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        evidenceBundleHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        factsHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        snapshotHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      },
+      additionalProperties: false,
+    },
     plannerProgress: { type: "array", items: { type: "object", additionalProperties: true } },
     evidenceSelectionReceipts: {
       type: "array",

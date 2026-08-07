@@ -289,6 +289,13 @@ export class ThetaTurnOrchestrator {
           activeRunId: runId,
         };
       }
+      const resumed = await this.workflow.resume({
+        runId,
+        runtimeDb: context.runtimeDb,
+        researchAnswers: merged.patch as Record<string, unknown>,
+        approvedBy: 'local_user',
+      });
+      this.store.updateTurn(turn.turnId, 'fsm_resumed');
       const parent = this.store.getLatestBrief(runId);
       this.store.appendBriefRevision({
         revisionId: `brief.${randomUUID()}`,
@@ -317,13 +324,6 @@ export class ThetaTurnOrchestrator {
         createdAt: new Date().toISOString(),
       });
       this.store.updateTurn(turn.turnId, 'brief_applied');
-      const resumed = await this.workflow.resume({
-        runId,
-        runtimeDb: context.runtimeDb,
-        researchAnswers: merged.patch as Record<string, unknown>,
-        approvedBy: 'local_user',
-      });
-      this.store.updateTurn(turn.turnId, 'fsm_resumed');
       const next = await this.workflow.conversationContext(
         runId,
         context.runtimeDb,

@@ -5,6 +5,7 @@ import {
   RESEARCH_CONTRACT_VERSION,
   researchBriefPatchSchema,
   researchBriefSchema,
+  type DatasetProfile,
   type InformationGap,
   type PlannedQuestion,
   type ResearchBrief,
@@ -70,6 +71,7 @@ export class ResearchService {
       currentState?: string;
       askedCounts?: Readonly<Record<string, number>>;
       recentlyAskedGapId?: string;
+      datasetProfile?: DatasetProfile;
     } = {},
   ): ResearchAssessment {
     const conflicts = detectResearchConflicts(brief);
@@ -88,6 +90,7 @@ export class ResearchService {
       currentState: options.currentState ?? 'ResearchIntake',
       askedCounts: options.askedCounts,
       recentlyAskedGapId: options.recentlyAskedGapId,
+      datasetProfile: options.datasetProfile,
     });
     return {
       brief: this.finalize({

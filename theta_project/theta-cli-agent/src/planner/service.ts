@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { InferenceProvider, PromptMessage } from "@hypha/inference";
 import { ZodError } from "zod";
 import { CapabilityRegistry } from "../capabilities/registry.js";
@@ -20,7 +19,12 @@ import {
   type ModelDecision,
   type EvidenceSelectionReceipt,
   type PlannerProgressEvent,
+  type PlannerInputSnapshot,
 } from "./contracts.js";
+import {
+  createPlannerInputSnapshot,
+  sanitizePlannerInput,
+} from './input-snapshot.js';
 import {
   EvidenceCompatibilityError,
   createRejectedEvidenceSelectionReceipt,
@@ -57,7 +61,8 @@ export class ThetaPlannerService {
     const progress = new PlannerProgressRecorder(this.options.onProgress);
     await progress.record("analyze_brief", "started", 1);
     const safeInput = sanitizePlannerInput(input);
-    const factsHash = hash(safeInput);
+    const inputSnapshot = createPlannerInputSnapshot(safeInput);
+    const factsHash = inputSnapshot.factsHash;
     await progress.record("analyze_brief", "completed", 1);
     await progress.record("build_retrieval_queries", "started", 1);
     await progress.record("build_retrieval_queries", "completed", 1);
@@ -69,8 +74,8 @@ export class ThetaPlannerService {
       `${safeInput.evidenceBundle.evidence.length} evidence items`,
     );
     const evidenceSelectionReceipts: EvidenceSelectionReceipt[] = [];
-    if (!this.options.enabled) return fallback(safeInput, factsHash, "planner_not_enabled", undefined, evidenceSelectionReceipts, progress.events);
-    if (!this.options.provider) return fallback(safeInput, factsHash, "provider_not_configured", undefined, evidenceSelectionReceipts, progress.events);
+    if (!this.options.enabled) return fallback(safeInput, inputSnapshot, "planner_not_enabled", undefined, evidenceSelectionReceipts, progress.events);
+    if (!this.options.provider) return fallback(safeInput, inputSnapshot, "provider_not_configured", undefined, evidenceSelectionReceipts, progress.events);
     try {
       let skeleton: PlannerSkeleton;
       try {
@@ -115,6 +120,7 @@ export class ThetaPlannerService {
         schemaVersion: PLANNER_CONTRACT_VERSION,
         source: "minimax",
         factsHash,
+        inputSnapshot,
         plannerProgress: progress.events,
         evidenceSelectionReceipts,
         draft,
@@ -122,7 +128,7 @@ export class ThetaPlannerService {
     } catch (error) {
       return fallback(
         safeInput,
-        factsHash,
+        inputSnapshot,
         plannerFallbackReason(error),
         errorSummary(error),
         evidenceSelectionReceipts,
@@ -401,25 +407,6 @@ const strings = (value: unknown): string[] =>
       : [];
 const isPrimitive = (value: unknown): value is string | number | boolean | null =>
   value === null || ["string", "number", "boolean"].includes(typeof value);
-
-const sanitizePlannerInput = (input: PlannerInput): PlannerInput => ({
-  researchBrief: JSON.parse(JSON.stringify(input.researchBrief)) as Record<string, unknown>,
-  datasetProfile: summarizeProfile(input.datasetProfile),
-  columnConfirmation: JSON.parse(JSON.stringify(input.columnConfirmation)) as Record<string, unknown>,
-  recommendation: input.recommendation,
-  evidenceBundle: evidenceBundleSchema.parse({
-    ...input.evidenceBundle,
-    evidence: input.evidenceBundle.evidence.slice(0, 18).map((item) => {
-      const { retrievalRoutes: _routes, matchedQueries: _queries, ...safe } = item;
-      return { ...safe, excerpt: item.excerpt.slice(0, 900) };
-    }),
-  }),
-});
-
-const summarizeProfile = (profile: Record<string, unknown>): Record<string, unknown> => {
-  const allowed = ["format", "rowCount", "sampledRowCount", "profileScope", "estimationWarnings", "columnCount", "missingRatio", "duplicateRatio", "textLengthDistribution", "languageDistribution", "columns", "timeCoverage", "columnCandidates", "sensitiveRiskCodes", "timeSliceProfile", "metadataProfile"];
-  return Object.fromEntries(allowed.filter((key) => key in profile).map((key) => [key, profile[key]]));
-};
 
 const evidenceAliases = (input: PlannerInput): Map<string, string> =>
   new Map(input.evidenceBundle.evidence.map((item, index) => [`E${index + 1}`, item.evidenceId]));
@@ -702,12 +689,13 @@ const enforceCatalogBoundaries = (draft: PlanProposalDraft, input: PlannerInput)
 
 const fallback = (
   input: PlannerInput,
-  factsHash: string,
+  inputSnapshot: PlannerInputSnapshot,
   reason: PlannerFallbackReason,
   detail?: string,
   evidenceSelectionReceipts: EvidenceSelectionReceipt[] = [],
   plannerProgress: PlannerProgressEvent[] = [],
 ): PlanProposalResult => {
+  const factsHash = inputSnapshot.factsHash;
   const recommendations = input.recommendation.recommendations;
   const primary = recommendations[0];
   if (!primary) throw new Error("Planner fallback requires at least one deterministic recommendation.");
@@ -767,6 +755,7 @@ const fallback = (
     fallbackReason: reason,
     ...(detail ? { fallbackDetail: detail.slice(0, 500) } : {}),
     factsHash,
+    inputSnapshot,
     plannerProgress,
     evidenceSelectionReceipts,
     draft,
@@ -836,6 +825,5 @@ const errorSummary = (error: unknown): string => {
   }
   return String(error).slice(0, 500);
 };
-const hash = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const normalizeIdentifier = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9]/gu, "");

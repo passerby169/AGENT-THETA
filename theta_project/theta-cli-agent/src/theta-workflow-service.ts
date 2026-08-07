@@ -68,6 +68,7 @@ import type { ThetaTrainingPlan } from "./tools/plan-validate-tool.js";
 import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
 import { recommendationResultSchema } from "./recommendation/contracts.js";
 import { planProposalResultSchema } from "./planner/contracts.js";
+import { comparePlannerInputSnapshots } from './planner/input-snapshot.js';
 import { resolvePlannerProposal } from "./planner/resolver.js";
 import { evidenceRefSchema } from "./rag/contracts.js";
 import {
@@ -918,9 +919,16 @@ const executeThetaState = async (
         ) {
           const assessment = researchService.assess(
             researchBriefSchema.parse(variables.researchBrief),
-            { currentState: execution.state.id },
+            researchPlanningContext(
+              variables,
+              execution.state.id,
+              execution.projection.stateAttempt,
+            ),
           );
-          return researchClarificationWait(assessment);
+          return researchClarificationWait(
+            assessment,
+            execution.projection.stateAttempt,
+          );
         }
         if (resume.decision === "rejected") {
           return failed(
@@ -938,8 +946,29 @@ const executeThetaState = async (
             researchBriefSchema.parse(variables.researchBrief),
             answers,
           ),
-          { currentState: execution.state.id },
+          researchPlanningContext(
+            variables,
+            execution.state.id,
+            execution.projection.stateAttempt,
+          ),
         );
+        if (
+          !isRecord(variables.datasetProfile) &&
+          assessment.brief.sensitiveData.status !== 'unknown'
+        ) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            researchBrief: runtimeRecord({ ...assessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(assessment),
+            processedResearchResumeCommandId: lastResume.commandId,
+          });
+        }
+        if (!assessment.blocking) {
+          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+            researchBrief: runtimeRecord({ ...assessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(assessment),
+            processedResearchResumeCommandId: lastResume.commandId,
+          });
+        }
         const grilling = decideResearchGrilling(
           assessment,
           execution.projection.stateAttempt,
@@ -989,12 +1018,18 @@ const executeThetaState = async (
         );
         const observedAssessment = researchService.assess(observedBrief, {
           currentState: execution.state.id,
-        });
-        return transition(THETA_WORKFLOW_STATES.awaitColumnConfirmation, {
           datasetProfile,
-          researchBrief: runtimeRecord({ ...observedAssessment.brief }),
-          researchAssessment: sanitizeResearchAssessment(observedAssessment),
         });
+        return transition(
+          observedAssessment.blocking
+            ? THETA_WORKFLOW_STATES.awaitResearchClarification
+            : THETA_WORKFLOW_STATES.awaitColumnConfirmation,
+          {
+            datasetProfile,
+            researchBrief: runtimeRecord({ ...observedAssessment.brief }),
+            researchAssessment: sanitizeResearchAssessment(observedAssessment),
+          },
+        );
       }
       case THETA_WORKFLOW_STATES.awaitColumnConfirmation: {
         const datasetProfile = datasetProfileSchema.parse(
@@ -1066,6 +1101,15 @@ const executeThetaState = async (
         });
       }
       case THETA_WORKFLOW_STATES.recommendModel: {
+        const previousProposal = planProposalResultSchema.safeParse(
+          variables.planProposal,
+        );
+        const hadPreviousPlanningState =
+          isRecord(variables.planProposal) ||
+          isRecord(variables.planRecord) ||
+          isRecord(variables.planReview) ||
+          isRecord(variables.dryRun) ||
+          isRecord(variables.trainingReview);
         const input = requireRecord(variables.input, "workflow input");
         const datasetProfile = requireRecord(
           variables.datasetProfile,
@@ -1168,6 +1212,12 @@ const executeThetaState = async (
             evidenceBundle,
           }),
         );
+        const plannerInputChange = previousProposal.success
+          ? comparePlannerInputSnapshots(
+              previousProposal.data.inputSnapshot,
+              proposal.inputSnapshot,
+            )
+          : undefined;
         const resolution = resolvePlannerProposal({
           proposal,
           recommendation: recommendationResultSchema.parse(recommendation),
@@ -1195,6 +1245,11 @@ const executeThetaState = async (
           planProposal: proposal as unknown as RuntimeJsonValue,
           plannerResolution: resolution as unknown as RuntimeJsonValue,
           candidatePlan: resolution.resolvedPlan as RuntimeJsonValue,
+          plannerInputChange: plannerInputChange
+            ? (plannerInputChange as unknown as RuntimeJsonValue)
+            : null,
+          planningApprovalsInvalidated: hadPreviousPlanningState,
+          ...planningInvalidationPatch(variables),
         });
       }
       case THETA_WORKFLOW_STATES.validatePlan: {
@@ -1727,6 +1782,73 @@ const sanitizeResearchAssessment = (
     questions: assessment.questions,
     blocking: assessment.blocking,
   });
+
+const researchPlanningContext = (
+  variables: Record<string, unknown>,
+  currentState: string,
+  stateAttempt: number,
+): {
+  currentState: string;
+  askedCounts?: Readonly<Record<string, number>>;
+  recentlyAskedGapId?: string;
+  datasetProfile?: DatasetProfile;
+} => {
+  const previousAssessment = isRecord(variables.researchAssessment)
+    ? variables.researchAssessment
+    : undefined;
+  const previousQuestion = previousAssessment
+    ? arrayValue(previousAssessment.questions)
+        .map((item) => (isRecord(item) ? item : undefined))
+        .find((item) => item !== undefined)
+    : undefined;
+  const recentlyAskedGapId = previousQuestion
+    ? stringValue(previousQuestion.gapId)
+    : undefined;
+  const datasetProfile = isRecord(variables.datasetProfile)
+    ? datasetProfileSchema.parse(variables.datasetProfile)
+    : undefined;
+  return {
+    currentState,
+    ...(recentlyAskedGapId
+      ? {
+          recentlyAskedGapId,
+          askedCounts: {
+            [recentlyAskedGapId]: Math.max(1, stateAttempt),
+          },
+        }
+      : {}),
+    ...(datasetProfile ? { datasetProfile } : {}),
+  };
+};
+
+const planningInvalidationPatch = (
+  variables: Record<string, unknown>,
+): Record<string, RuntimeJsonValue> => ({
+  approvalActors: withoutPlanningApprovalKeys(variables.approvalActors),
+  approvalDecisions: withoutPlanningApprovalKeys(variables.approvalDecisions),
+  planRecord: null,
+  planReview: null,
+  dryRun: null,
+  trainingReview: null,
+  validation: null,
+  validatedPlan: null,
+  planAdjustment: null,
+  processedPlanAdjustmentHash: null,
+  planAdjustmentResumeAt: null,
+});
+
+const withoutPlanningApprovalKeys = (value: unknown): RuntimeJsonValue => {
+  if (!isRecord(value)) return {};
+  return runtimeRecord(
+    Object.fromEntries(
+      Object.entries(value).filter(
+        ([key]) =>
+          key !== THETA_APPROVAL_KEYS.planReview &&
+          key !== THETA_APPROVAL_KEYS.trainingReview,
+      ),
+    ),
+  );
+};
 
 const validateConfirmedColumns = (
   confirmation: ColumnConfirmationDraft,

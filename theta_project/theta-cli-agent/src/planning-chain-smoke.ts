@@ -10,6 +10,117 @@ import {
   buildParameterDecisions,
 } from "./planning/parameter-decisions.js";
 import { createPlanningFixture } from "./planning/test-fixture.js";
+import {
+  comparePlannerInputSnapshots,
+  createPlannerInputSnapshot,
+  sanitizePlannerInput,
+} from './planner/input-snapshot.js';
+import { resolvePlannerProposal } from './planner/resolver.js';
+import { ThetaPlannerService } from './planner/service.js';
+import { recommendationResultSchema } from './recommendation/contracts.js';
+import {
+  buildEvidenceBundle,
+  planEvidenceQueries,
+} from './rag/evidence-bundle.js';
+
+const snapshotFixture = createPlanningFixture();
+const evidenceQuery = planEvidenceQueries({
+  researchBrief: snapshotFixture.researchBrief as Record<string, unknown>,
+  datasetProfile: snapshotFixture.datasetProfile as Record<string, unknown>,
+  columnConfirmation: snapshotFixture.columnConfirmation as Record<string, unknown>,
+})[0];
+if (!evidenceQuery) {
+  throw new Error('Planner snapshot fixture did not produce an evidence query.');
+}
+const emptyEvidenceBundle = buildEvidenceBundle([
+  {
+    query: evidenceQuery,
+    evidence: [],
+    trace: {
+      schemaVersion: '1.0.0',
+      subqueries: [{ type: evidenceQuery.purpose, query: evidenceQuery.query }],
+      routesUsed: [],
+      candidateCount: 0,
+      selectedCount: 0,
+      sourceCap: 3,
+      coverage: [],
+      noEvidence: true,
+    },
+  },
+], 18);
+const rawPlannerInput = {
+  researchBrief: snapshotFixture.researchBrief as Record<string, unknown>,
+  datasetProfile: snapshotFixture.datasetProfile as Record<string, unknown>,
+  columnConfirmation: snapshotFixture.columnConfirmation as Record<string, unknown>,
+  recommendation: recommendationResultSchema.parse(snapshotFixture.recommendation),
+  evidenceBundle: emptyEvidenceBundle,
+};
+const snapshotInput = sanitizePlannerInput(rawPlannerInput);
+const firstSnapshot = createPlannerInputSnapshot(snapshotInput);
+const sameSnapshot = createPlannerInputSnapshot({
+  ...snapshotInput,
+  researchBrief: Object.fromEntries(
+    Object.entries(snapshotInput.researchBrief).reverse(),
+  ),
+});
+if (firstSnapshot.snapshotHash !== sameSnapshot.snapshotHash) {
+  throw new Error('Planner input snapshot depends on object key order.');
+}
+const changedSnapshot = createPlannerInputSnapshot({
+  ...snapshotInput,
+  datasetProfile: {
+    ...snapshotInput.datasetProfile,
+    rowCount: 121,
+  },
+});
+const snapshotChange = comparePlannerInputSnapshots(
+  firstSnapshot,
+  changedSnapshot,
+);
+if (
+  !snapshotChange.changed ||
+  !snapshotChange.approvalInvalidated ||
+  snapshotChange.changedSections.length !== 1 ||
+  snapshotChange.changedSections[0] !== 'datasetProfile'
+) {
+  throw new Error('Planner input changes did not invalidate approval precisely.');
+}
+const proposal = await new ThetaPlannerService({ enabled: false }).propose(
+  rawPlannerInput,
+);
+const evidenceBundle = snapshotInput.evidenceBundle;
+const resolution = resolvePlannerProposal({
+  proposal,
+  recommendation: snapshotInput.recommendation,
+  workflowInput: { datasetId: 'demo-dataset' },
+  datasetProfile: snapshotInput.datasetProfile,
+  columnConfirmation: snapshotInput.columnConfirmation,
+  evidenceBundle,
+});
+const snapshotBoundPlanInput = {
+  ...snapshotFixture,
+  createdAt: '2026-07-28T00:00:00.000Z',
+  evidenceBundle,
+  planProposal: proposal,
+  plannerResolution: resolution,
+};
+createTrainingPlanRecord(snapshotBoundPlanInput);
+let stalePlannerInputRejected = false;
+try {
+  createTrainingPlanRecord({
+    ...snapshotBoundPlanInput,
+    datasetProfile: {
+      ...(snapshotBoundPlanInput.datasetProfile as Record<string, unknown>),
+      rowCount: 121,
+    },
+  });
+} catch (error) {
+  stalePlannerInputRejected =
+    error instanceof Error && error.message.includes('Planner input changed');
+}
+if (!stalePlannerInputRejected) {
+  throw new Error('A stale Planner proposal was accepted after input changed.');
+}
 
 const recommendedPlan = {
   modelId: "lda",
@@ -247,5 +358,8 @@ console.log(
     trainingReviewApprovalId: trainingReview.approvalId,
     dryRunHash: dryRun.dryRunHash,
     staleDryRunRejected,
+    plannerSnapshotHash: firstSnapshot.snapshotHash,
+    plannerChangedSections: snapshotChange.changedSections,
+    stalePlannerInputRejected,
   }),
 );

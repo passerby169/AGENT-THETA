@@ -19,6 +19,11 @@ import {
 import { CapabilityRegistry } from "../capabilities/registry.js";
 import { evidenceBundleSchema } from "../rag/evidence-bundle.js";
 import { planProposalResultSchema } from "../planner/contracts.js";
+import {
+  comparePlannerInputSnapshots,
+  createPlannerInputSnapshot,
+  sanitizePlannerInput,
+} from '../planner/input-snapshot.js';
 import { PLAN_VALIDATOR_VERSION } from "./validator-v2.js";
 
 export interface CreateTrainingPlanRecordInput {
@@ -120,6 +125,37 @@ export const createTrainingPlanRecord = (
   const acceptedEvidenceRefs = stringArray(
     plannerResolution.acceptedEvidenceRefs,
   );
+  if (planProposal) {
+    if (!evidenceBundle) {
+      throw new Error('Planner proposal requires its bound evidence bundle.');
+    }
+    const currentSnapshot = createPlannerInputSnapshot(
+      sanitizePlannerInput({
+        researchBrief: brief,
+        datasetProfile: profile,
+        columnConfirmation: confirmation,
+        recommendation,
+        evidenceBundle,
+      }),
+    );
+    if (currentSnapshot.snapshotHash !== planProposal.inputSnapshot.snapshotHash) {
+      const change = comparePlannerInputSnapshots(
+        planProposal.inputSnapshot,
+        currentSnapshot,
+      );
+      throw new Error(
+        `Planner input changed after proposal (${change.changedSections.join(', ')}); regenerate the proposal before approval.`,
+      );
+    }
+    if (
+      plannerResolution.inputSnapshotHash !== undefined &&
+      plannerResolution.inputSnapshotHash !== currentSnapshot.snapshotHash
+    ) {
+      throw new Error(
+        'Planner resolution is not bound to the active Planner input snapshot.',
+      );
+    }
+  }
   const recommendations = recommendation.recommendations;
   if (recommendations.length === 0)
     throw new Error("TrainingPlan requires one compatible recommendation.");
@@ -242,6 +278,9 @@ export const createTrainingPlanRecord = (
           : planProposal?.source ?? "deterministic",
       plannerAcceptedEvidenceRefs: acceptedEvidenceRefs,
       evidenceSelectionReceipts: planProposal?.evidenceSelectionReceipts ?? [],
+      ...(planProposal
+        ? { plannerInputSnapshot: planProposal.inputSnapshot }
+        : {}),
       ...(Object.keys(parameterDecisions).length > 0
         ? { parameterDecisions }
         : {}),

@@ -216,6 +216,37 @@ export const planProposalDraftSchema = z
   })
   .strict();
 
+export const plannerInputSectionSchema = z.enum([
+  'researchBrief',
+  'datasetProfile',
+  'columnConfirmation',
+  'recommendation',
+  'evidenceBundle',
+]);
+
+export const plannerInputSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(PLANNER_CONTRACT_VERSION),
+    researchBriefHash: z.string().regex(/^[a-f0-9]{64}$/),
+    datasetProfileHash: z.string().regex(/^[a-f0-9]{64}$/),
+    columnConfirmationHash: z.string().regex(/^[a-f0-9]{64}$/),
+    recommendationHash: z.string().regex(/^[a-f0-9]{64}$/),
+    evidenceBundleHash: z.string().regex(/^[a-f0-9]{64}$/),
+    factsHash: z.string().regex(/^[a-f0-9]{64}$/),
+    snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
+export const plannerInputChangeSchema = z
+  .object({
+    changed: z.boolean(),
+    changedSections: z.array(plannerInputSectionSchema),
+    previousSnapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+    currentSnapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+    approvalInvalidated: z.boolean(),
+  })
+  .strict();
+
 export const planProposalResultSchema = z
   .object({
     schemaVersion: z.literal(PLANNER_CONTRACT_VERSION),
@@ -233,6 +264,7 @@ export const planProposalResultSchema = z
     fallbackDetail: z.string().trim().min(1).max(500).optional(),
     boundaryAdjustments: z.array(bounded).max(12).optional(),
     factsHash: z.string().regex(/^[a-f0-9]{64}$/),
+    inputSnapshot: plannerInputSnapshotSchema,
     plannerProgress: z.array(plannerProgressEventSchema).optional(),
     evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema).default([]),
     draft: planProposalDraftSchema,
@@ -246,6 +278,9 @@ export type ModelDecision = z.infer<typeof modelDecisionSchema>;
 export type ExperimentProtocol = z.infer<typeof experimentProtocolSchema>;
 export type PlanProposalDraft = z.infer<typeof planProposalDraftSchema>;
 export type PlanProposalResult = z.infer<typeof planProposalResultSchema>;
+export type PlannerInputSection = z.infer<typeof plannerInputSectionSchema>;
+export type PlannerInputSnapshot = z.infer<typeof plannerInputSnapshotSchema>;
+export type PlannerInputChange = z.infer<typeof plannerInputChangeSchema>;
 export type PlannerFallbackReason = NonNullable<PlanProposalResult["fallbackReason"]>;
 export type EvidenceSelectionIssue = z.infer<typeof evidenceSelectionIssueSchema>;
 export type EvidenceSelectionReceipt = z.infer<typeof evidenceSelectionReceiptSchema>;

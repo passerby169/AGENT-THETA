@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { evidenceRefSchema } from "../rag/contracts.js";
-import { evidenceSelectionReceiptSchema } from "../planner/contracts.js";
+import {
+  evidenceSelectionReceiptSchema,
+  plannerInputSnapshotSchema,
+} from '../planner/contracts.js';
 
 export const TRAINING_PLAN_SCHEMA_VERSION = "2.0.0";
 export const trainingPlanSchemaVersionSchema = z.enum(["1.0.0", "2.0.0"]);
@@ -182,6 +185,7 @@ export const planReviewSnapshotSchema = z
     planProposalSource: z.enum(["minimax", "deterministic", "explicit_user_plan"]),
     plannerAcceptedEvidenceRefs: z.array(z.string().min(1)),
     evidenceSelectionReceipts: z.array(evidenceSelectionReceiptSchema),
+    plannerInputSnapshot: plannerInputSnapshotSchema.optional(),
     parameterDecisions: parameterDecisionMapSchema.optional(),
     validatorVersion: z.string().min(1),
   })

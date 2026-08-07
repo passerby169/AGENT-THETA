@@ -1,5 +1,11 @@
 import { decideResearchGrilling } from './agent/grilling-engine.js';
-import { researchBriefSchema } from './agent/research-contracts.js';
+import { planResearchQuestions } from './agent/question-planner.js';
+import {
+  RESEARCH_CONTRACT_VERSION,
+  researchBriefSchema,
+  type DatasetProfile,
+  type InformationGap,
+} from './agent/research-contracts.js';
 import { ResearchService } from './agent/research-service.js';
 
 const service = new ResearchService();
@@ -82,6 +88,81 @@ if (
   throw new Error('Research question planning is not deterministic.');
 }
 
+const datasetProfile: DatasetProfile = {
+  schemaVersion: RESEARCH_CONTRACT_VERSION,
+  datasetSha256: 'a'.repeat(64),
+  fileName: 'research.csv',
+  fileSizeBytes: 4096,
+  format: 'csv',
+  encoding: 'utf-8',
+  rowCount: 80,
+  sampledRowCount: 80,
+  profileScope: 'full',
+  estimationWarnings: [],
+  columnCount: 4,
+  columns: ['id', 'text', 'timestamp', 'source'],
+  columnProfiles: [],
+  missingRatio: 0,
+  duplicateRatio: 0,
+  textLengthDistribution: { average: 42, maximum: 160 },
+  languageDistribution: [{ language: 'zh', ratio: 1 }],
+  timeCoverage: {
+    start: '2026-01-01T00:00:00.000Z',
+    end: '2026-03-31T00:00:00.000Z',
+  },
+  columnCandidates: {
+    text: [{ name: 'text', score: 0.98, reason: 'long natural language' }],
+    time: [{ name: 'timestamp', score: 0.96, reason: 'datetime values' }],
+    metadata: [{ name: 'source', score: 0.82, reason: 'categorical values' }],
+  },
+  sensitiveRiskCodes: [],
+};
+const dataAware = service.assess(incomplete.brief, {
+  currentState: 'ResearchClarification',
+  datasetProfile,
+});
+const analysisUnitQuestion = dataAware.questions.find(
+  (question) => question.field === 'analysisUnit',
+);
+if (!analysisUnitQuestion?.question.includes('80 行')) {
+  throw new Error('Research questions did not use the inspected row count.');
+}
+const textIntentQuestion = dataAware.questions.find(
+  (question) => question.field === 'textFieldIntent',
+);
+if (!textIntentQuestion?.question.includes('text')) {
+  throw new Error('Research questions did not use detected column candidates.');
+}
+
+const blockingGap: InformationGap = {
+  id: 'gap.blocking-repeat',
+  field: 'analysisUnit',
+  severity: 'blocking',
+  reason: 'Required for deterministic planning.',
+  question: 'What does one row represent?',
+  informationGain: 10,
+};
+const optionalGap: InformationGap = {
+  id: 'gap.optional-new',
+  field: 'knownBiases',
+  severity: 'optional',
+  reason: 'Useful but not required.',
+  question: 'Are there known biases?',
+  informationGain: 100,
+};
+const repeatedBlocking = planResearchQuestions(
+  [blockingGap, optionalGap],
+  {
+    currentState: 'ResearchClarification',
+    askedCounts: { [blockingGap.id]: 10 },
+    recentlyAskedGapId: blockingGap.id,
+  },
+  2,
+);
+if (repeatedBlocking[0]?.gapId !== blockingGap.id) {
+  throw new Error('An optional question displaced an unresolved blocking gap.');
+}
+
 console.log(
   JSON.stringify({
     status: 'ok',
@@ -90,5 +171,7 @@ console.log(
     completeBlocking: complete.blocking,
     conflictCount: conflict.conflicts.length,
     strictContractRejected,
+    dataAwareQuestions: 'verified',
+    blockingPriority: 'verified',
   }),
 );
