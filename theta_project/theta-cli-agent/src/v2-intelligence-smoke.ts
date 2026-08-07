@@ -5,6 +5,7 @@ import { DatasetUnderstandingLanguageLoop, MAX_DATASET_EXPLORATION_CALLS } from 
 import { buildDatasetFacts, buildDeterministicUnderstanding } from './dataset-understanding/service.js';
 import { plannerInputV2Hash, type PlannerDecisionV2, type PlannerInputV2 } from './planner/v2-contracts.js';
 import { presentPlanV2 } from './planner/v2-presenter.js';
+import { buildPlannerDecisionV2, buildPlannerInputV2 } from './planner/v2-runtime.js';
 import { validatePlannerDecisionV2 } from './planner/v2-validator.js';
 import type { ThetaDatasetExploreOutput } from './tools/dataset-explore-tool.js';
 
@@ -62,4 +63,56 @@ const decision: PlannerDecisionV2 = {
 const validation = validatePlannerDecisionV2(plannerInput, decision);
 assert.equal(validation.valid, true);
 assert.equal(presentPlanV2(plannerInput, decision, validation).approvalRequired, true);
-console.log(JSON.stringify({ status: 'ok', explorationCalls: calls, defaultedGap: first.id, plannerValid: validation.valid }));
+const runtimeRecommendation = {
+  schemaVersion: '1.0.0' as const,
+  deterministic: true as const,
+  recommendationVersion: '1.0.0' as const,
+  catalogSource: 'smoke-catalog',
+  dataProfileSummary: { rowCount: 80, textColumnCount: 1, timeColumnCount: 1, metadataColumnCount: 0, averageTextLength: 40 },
+  recommendations: [{
+    rank: 1, modelId: 'dtm', modelName: 'DTM', maturity: 'production' as const, score: 90, confidence: 'high' as const,
+    reasonCodes: ['temporal_fit'], warnings: [], requirements: [],
+    topicRecommendation: { range: [2, 20] as [number, number], firstRun: 5, alternatives: [4, 6] },
+    parameters: [],
+    resourceEstimate: { cpu: 'medium' as const, gpu: 'none' as const, memory: 'medium' as const, disk: 'low' as const, relativeRuntime: 'medium' as const, network: 'none' as const },
+    evidenceRefs: [],
+    capabilityAssessment: { temporalTopics: true, metadataEffects: false, shortTextOptimized: false, offlineExecution: true, cpuExecution: true, nativeOutputs: ['topic_trends'], unmetResearchRequirements: [] },
+    recommendedPlanPatch: { modelId: 'dtm', mode: 'unsupervised' as const, topicCountMode: 'fixed' as const, numTopics: 5 },
+  }],
+  skipped: [], warnings: [],
+  constraintsApplied: { preferredModelIds: [], forbiddenModelIds: [], unavailableRequirements: [], mode: null, maxTopics: null },
+  researchRequirements: { required: ['temporal_topics'], preferred: [], reasons: { temporal_topics: 'time trend' } },
+  degradation: { required: false, unmetRequirements: [], message: null }, noEvidence: false,
+};
+const runtimeInput = buildPlannerInputV2({
+  facts,
+  confirmation,
+  intent: plannerInput.intent,
+  recommendation: runtimeRecommendation,
+  constraints: { device: 'cpu', memoryGb: 16, offlineOnly: true },
+});
+const runtimeDecision = buildPlannerDecisionV2({
+  input: runtimeInput,
+  plan: { datasetId: 'dataset', modelId: 'dtm', mode: 'unsupervised', numTopics: 5 },
+  proposal: {
+    schemaVersion: '1.0.0', source: 'deterministic', fallbackReason: 'planner_not_enabled', factsHash: 'b'.repeat(64),
+    inputSnapshot: { schemaVersion: '1.0.0', researchBriefHash: '1'.repeat(64), datasetProfileHash: '2'.repeat(64), columnConfirmationHash: '3'.repeat(64), recommendationHash: '4'.repeat(64), evidenceBundleHash: '5'.repeat(64), factsHash: '6'.repeat(64), snapshotHash: '7'.repeat(64) },
+    evidenceSelectionReceipts: [],
+    draft: {
+      schemaVersion: '1.0.0', summary: 'DTM temporal plan',
+      primary: { role: 'primary', modelId: 'dtm', choice: 'Use DTM', evidenceRefs: [], confidence: 'high', assumptions: [], risks: [], alternativesConsidered: [], parameterCandidates: [] },
+      baseline: null, alternatives: [],
+      experimentProtocol: { mode: 'quick', primarySeeds: [42], baselineModelId: null, baselineSeeds: [], rationale: 'Smoke', evidenceRefs: [], confidence: 'high' },
+      preprocessing: [{ choice: 'Normalize text', evidenceRefs: [], confidence: 'high', assumptions: [], risks: [], alternativesConsidered: [] }],
+      evaluation: [{ choice: 'Temporal coherence', evidenceRefs: [], confidence: 'high', assumptions: [], risks: [], alternativesConsidered: [] }],
+      visualizations: ['Topic trend chart'], requestedTools: [], openQuestions: [],
+    },
+  },
+  recommendation: runtimeRecommendation,
+});
+const runtimeValidation = validatePlannerDecisionV2(runtimeInput, runtimeDecision);
+assert.equal(runtimeValidation.valid, true);
+assert.equal(runtimeDecision.inputHash, plannerInputV2Hash(runtimeInput));
+const invalidDecision = { ...runtimeDecision, modelId: 'missing-model' };
+assert.equal(validatePlannerDecisionV2(runtimeInput, invalidDecision).valid, false);
+console.log(JSON.stringify({ status: 'ok', explorationCalls: calls, defaultedGap: first.id, plannerValid: validation.valid, runtimePlannerValid: runtimeValidation.valid }));

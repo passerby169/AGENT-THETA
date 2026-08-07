@@ -99,6 +99,12 @@ import { recommendationResultSchema } from "./recommendation/contracts.js";
 import { planProposalResultSchema } from "./planner/contracts.js";
 import { comparePlannerInputSnapshots } from './planner/input-snapshot.js';
 import { resolvePlannerProposal } from "./planner/resolver.js";
+import {
+  buildPlannerDecisionV2,
+  buildPlannerInputV2,
+} from './planner/v2-runtime.js';
+import { presentPlanV2 } from './planner/v2-presenter.js';
+import { validatePlannerDecisionV2 } from './planner/v2-validator.js';
 import { evidenceRefSchema } from "./rag/contracts.js";
 import {
   buildEvidenceBundle,
@@ -1553,6 +1559,15 @@ const executeThetaState = async (
           columnConfirmation,
           evidenceBundle,
         });
+        const v2Planner = isV2Workflow(input)
+          ? createV2PlannerArtifacts({
+              variables,
+              input,
+              recommendation: recommendationResultSchema.parse(recommendation),
+              proposal,
+              plan: resolution.resolvedPlan,
+            })
+          : undefined;
         return transition(THETA_WORKFLOW_STATES.validatePlan, {
           modelCatalog: sanitizeCatalog(catalog),
           evidence: {
@@ -1576,6 +1591,7 @@ const executeThetaState = async (
             ? (plannerInputChange as unknown as RuntimeJsonValue)
             : null,
           planningApprovalsInvalidated: hadPreviousPlanningState,
+          ...(v2Planner ?? {}),
           ...planningInvalidationPatch(variables),
         });
       }
@@ -1602,6 +1618,25 @@ const executeThetaState = async (
           validation.normalizedPlan,
           "normalized plan",
         );
+        const workflowInput = requireRecord(variables.input, 'workflow input');
+        const v2Planner = isV2Workflow(workflowInput)
+          ? createV2PlannerArtifacts({
+              variables,
+              input: workflowInput,
+              recommendation: recommendationResultSchema.parse(
+                variables.recommendation,
+              ),
+              proposal: planProposalResultSchema.parse(variables.planProposal),
+              plan: normalizedPlan as ThetaTrainingPlan,
+            })
+          : undefined;
+        if (v2Planner && v2Planner.plannerValidationV2.valid !== true) {
+          return failed(
+            'RUNTIME_INVARIANT_FAILED',
+            `Planner V2 rejected the candidate plan: ${v2Planner.plannerValidationV2.errors.join('; ')}`,
+            execution.state.id,
+          );
+        }
         const plannerResolution = requireRecord(
           variables.plannerResolution,
           "planner resolution",
@@ -1627,6 +1662,7 @@ const executeThetaState = async (
             findings: arrayValue(validation.findings) as RuntimeJsonValue[],
             catalogSource: stringValue(validation.catalogSource) ?? "unknown",
           },
+          ...(v2Planner ?? {}),
         });
       }
       case THETA_WORKFLOW_STATES.awaitPlanCreationApproval:
@@ -2791,6 +2827,56 @@ const v2PlanningCompatibility = (
     researchBrief: researchBrief as unknown as RuntimeJsonValue,
   };
 };
+
+const createV2PlannerArtifacts = (context: {
+  variables: Record<string, unknown>;
+  input: Record<string, unknown>;
+  recommendation: ReturnType<typeof recommendationResultSchema.parse>;
+  proposal: ReturnType<typeof planProposalResultSchema.parse>;
+  plan: ThetaTrainingPlan;
+}): {
+  plannerInputV2: RuntimeJsonValue;
+  plannerDecisionV2: RuntimeJsonValue;
+  plannerValidationV2: ReturnType<typeof validatePlannerDecisionV2>;
+  plannerPresentationV2: RuntimeJsonValue;
+} => {
+  const plannerInput = buildPlannerInputV2({
+    facts: datasetFactsSchema.parse(context.variables.datasetFacts),
+    confirmation: datasetConfirmationSchema.parse(
+      context.variables.datasetConfirmation,
+    ),
+    intent: researchIntentSchema.parse(context.variables.researchIntent),
+    recommendation: context.recommendation,
+    constraints: isRecord(context.input.constraints)
+      ? context.input.constraints
+      : undefined,
+    userOverrides: isRecord(context.variables.planAdjustment)
+      ? context.variables.planAdjustment
+      : isRecord(context.input.plan)
+        ? context.input.plan
+        : undefined,
+  });
+  const decision = buildPlannerDecisionV2({
+    input: plannerInput,
+    plan: context.plan,
+    proposal: context.proposal,
+    recommendation: context.recommendation,
+  });
+  const validation = validatePlannerDecisionV2(plannerInput, decision);
+  return {
+    plannerInputV2: plannerInput as unknown as RuntimeJsonValue,
+    plannerDecisionV2: decision as unknown as RuntimeJsonValue,
+    plannerValidationV2: validation,
+    plannerPresentationV2: presentPlanV2(
+      plannerInput,
+      decision,
+      validation,
+    ) as unknown as RuntimeJsonValue,
+  };
+};
+
+const isV2Workflow = (input: Record<string, unknown>): boolean =>
+  input.workflowVersion === '2.0.0';
 
 const sanitizeCandidates = (
   value: unknown,
