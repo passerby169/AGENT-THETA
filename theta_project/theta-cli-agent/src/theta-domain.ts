@@ -12,9 +12,9 @@ import { thetaHyphaToolSpecs } from "./tools/hypha-registry.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
 export const THETA_DOMAIN_PACK_ID = "domain.theta.training";
-export const THETA_DOMAIN_PACK_VERSION = "3.0.0";
+export const THETA_DOMAIN_PACK_VERSION = "4.0.0";
 export const THETA_WORKFLOW_ID = "workflow.theta.training";
-export const THETA_WORKFLOW_VERSION = "3.0.0";
+export const THETA_WORKFLOW_VERSION = "4.0.0";
 export const THETA_AGENT_REF: SpecRef = {
   id: "agent.theta.cli",
   version: "1.0.0",
@@ -24,6 +24,10 @@ export const THETA_WORKFLOW_STATES = {
   intake: "Intake",
   awaitResearchClarification: "ResearchClarification",
   inspectDataset: "InspectDataset",
+  analyzeDataset: "AnalyzeDataset",
+  awaitDatasetUnderstandingConfirmation:
+    "AwaitDatasetUnderstandingConfirmation",
+  researchIntentInterview: "ResearchIntentInterview",
   awaitColumnConfirmation: "ColumnConfirmation",
   recommendModel: "RecommendModel",
   validatePlan: "ValidatePlan",
@@ -34,6 +38,8 @@ export const THETA_WORKFLOW_STATES = {
   verifyDatasetBeforeTraining: "VerifyDatasetBeforeTraining",
   startTraining: "StartTraining",
   monitorTraining: "MonitorTraining",
+  evaluate: "Evaluate",
+  visualize: "Visualize",
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -42,6 +48,8 @@ export const THETA_WORKFLOW_STATES = {
 
 export const THETA_APPROVAL_KEYS = {
   researchClarification: "theta.research.clarify",
+  datasetUnderstanding: "theta.dataset-understanding.confirm",
+  researchIntent: "theta.research-intent.confirm",
   columnConfirmation: "theta.columns.confirm",
   planReview: "theta.plan.review",
   trainingReview: "theta.training.review",
@@ -133,18 +141,45 @@ const workflowStates: WorkflowStateSpec[] = [
   ),
   state(
     THETA_WORKFLOW_STATES.inspectDataset,
-    "Inspect the dataset without persisting raw rows.",
+    "Resolve the registered dataset and collect bounded deterministic facts without persisting raw rows.",
     {
       allowedTools: [
         THETA_TOOL_IDS.datasetInspect,
+        THETA_TOOL_IDS.datasetExplore,
         THETA_TOOL_IDS.datasetDetectColumns,
       ],
       allowedToolRefs: [
         toolRef(THETA_TOOL_IDS.datasetInspect),
+        toolRef(THETA_TOOL_IDS.datasetExplore, "2.0.0"),
         toolRef(THETA_TOOL_IDS.datasetDetectColumns),
       ],
       permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
       policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.analyzeDataset,
+    "Build a bounded dataset understanding from governed, redacted dataset views.",
+    {
+      allowedTools: [THETA_TOOL_IDS.datasetExplore],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetExplore, "2.0.0")],
+      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
+      policyRefs: [readonlyPolicy.id],
+    },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+    "Require confirmation or correction of the dataset domain, analysis unit and column roles.",
+  ),
+  state(
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+    "Resolve only planning-relevant decision gaps without repeating answered questions.",
+    {
+      allowedTools: [THETA_TOOL_IDS.conversationLanguage],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.conversationLanguage)],
+      permissionScopes: [THETA_PERMISSION_SCOPES.inferenceUse],
+      humanApprovalPolicyRef: toolRef(languageInferencePolicy.id),
+      policyRefs: [languageInferencePolicy.id],
     },
   ),
   state(
@@ -279,6 +314,14 @@ const workflowStates: WorkflowStateSpec[] = [
     },
   ),
   state(
+    THETA_WORKFLOW_STATES.evaluate,
+    "Evaluate governed training outputs against the approved research intent and plan.",
+  ),
+  state(
+    THETA_WORKFLOW_STATES.visualize,
+    "Bind verified result artifacts and visualization metadata to the current Run.",
+  ),
+  state(
     THETA_WORKFLOW_STATES.completed,
     "Return the verified training result.",
   ),
@@ -303,6 +346,30 @@ const forwardTransitions = [
   [
     THETA_WORKFLOW_STATES.awaitResearchClarification,
     THETA_WORKFLOW_STATES.awaitResearchClarification,
+  ],
+  [
+    THETA_WORKFLOW_STATES.inspectDataset,
+    THETA_WORKFLOW_STATES.analyzeDataset,
+  ],
+  [
+    THETA_WORKFLOW_STATES.analyzeDataset,
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+    THETA_WORKFLOW_STATES.analyzeDataset,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+  ],
+  [
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+  ],
+  [
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+    THETA_WORKFLOW_STATES.recommendModel,
   ],
   [
     THETA_WORKFLOW_STATES.inspectDataset,
@@ -351,6 +418,9 @@ const forwardTransitions = [
     THETA_WORKFLOW_STATES.inspectDataset,
   ],
   [THETA_WORKFLOW_STATES.startTraining, THETA_WORKFLOW_STATES.monitorTraining],
+  [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.evaluate],
+  [THETA_WORKFLOW_STATES.evaluate, THETA_WORKFLOW_STATES.visualize],
+  [THETA_WORKFLOW_STATES.visualize, THETA_WORKFLOW_STATES.completed],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.completed],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.cancelled],
   [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.quarantined],
@@ -385,7 +455,9 @@ export const thetaTrainingDomainPack: DomainPackSpec = validateDomainPackSpec({
         required: ["filePath"],
         properties: {
           filePath: { type: "string", minLength: 1 },
+          datasetRef: { type: "string", minLength: 1 },
           datasetId: { type: "string" },
+          workflowVersion: { enum: ["1.0.0", "2.0.0"] },
           researchGoal: { type: "string" },
           research: {
             type: "object",

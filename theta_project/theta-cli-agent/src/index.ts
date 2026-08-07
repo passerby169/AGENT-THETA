@@ -31,6 +31,7 @@ export * from './dataset-understanding/contracts.js';
 export * from './dataset-understanding/service.js';
 export * from './dataset-understanding/language-loop.js';
 export * from './storage/dataset-registry.js';
+export * from './storage/v2-research-store.js';
 export * from './agent/decision-gap.js';
 export * from './planner/v2-contracts.js';
 export * from './planner/v2-validator.js';

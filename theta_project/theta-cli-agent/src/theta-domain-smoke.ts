@@ -26,6 +26,10 @@ const inspectScope = resolveThetaStateToolScope(
   first,
   THETA_WORKFLOW_STATES.inspectDataset,
 );
+const analyzeScope = resolveThetaStateToolScope(
+  first,
+  THETA_WORKFLOW_STATES.analyzeDataset,
+);
 const trainingScope = resolveThetaStateToolScope(
   first,
   THETA_WORKFLOW_STATES.startTraining,
@@ -54,6 +58,15 @@ const researchStateDefinition = workflowDefinition?.states.find(
 
 if (!inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.datasetInspect)) {
   throw new Error("InspectDataset does not allow theta.dataset.inspect.");
+}
+if (!inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.datasetExplore)) {
+  throw new Error("InspectDataset does not allow theta.dataset.explore for V2 runs.");
+}
+if (
+  analyzeScope.allowedToolIds?.length !== 1 ||
+  analyzeScope.allowedToolIds[0] !== THETA_TOOL_IDS.datasetExplore
+) {
+  throw new Error("AnalyzeDataset must be limited to bounded dataset exploration.");
 }
 if (inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.trainingStart)) {
   throw new Error("InspectDataset improperly allows theta.training.start.");
@@ -117,6 +130,28 @@ const workflowStateIds = first.bindings.workflowStates.map(
 for (const expected of Object.values(THETA_WORKFLOW_STATES)) {
   if (!workflowStateIds.includes(expected)) {
     throw new Error(`Compiled workflow is missing state ${expected}.`);
+  }
+}
+
+const workflowTransitions = new Set(
+  workflowDefinition?.transitions.map(({ from, to }) => `${from}->${to}`),
+);
+for (const [from, to] of [
+  [THETA_WORKFLOW_STATES.inspectDataset, THETA_WORKFLOW_STATES.analyzeDataset],
+  [
+    THETA_WORKFLOW_STATES.analyzeDataset,
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+  ],
+  [THETA_WORKFLOW_STATES.monitorTraining, THETA_WORKFLOW_STATES.evaluate],
+  [THETA_WORKFLOW_STATES.evaluate, THETA_WORKFLOW_STATES.visualize],
+  [THETA_WORKFLOW_STATES.visualize, THETA_WORKFLOW_STATES.completed],
+] as const) {
+  if (!workflowTransitions.has(`${from}->${to}`)) {
+    throw new Error(`V2 workflow is missing transition ${from}->${to}.`);
   }
 }
 
