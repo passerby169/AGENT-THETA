@@ -695,6 +695,10 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
         resultsLoading={resultsLoading}
         assistant={actionPanel}
         assistantExpanded={workspaceMode === 'agent'}
+        models={models}
+        busy={busy}
+        notice={actionNotice}
+        onAction={act}
       />
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
@@ -1183,7 +1187,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
   };
 
   return (
-    <section className="flex h-[calc(100dvh-12rem)] min-h-[560px] max-h-[820px] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm transition-[height,margin] duration-500 ease-in-out">
+    <section className={`flex flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm transition-[height,margin] duration-500 ease-in-out ${compact ? 'h-[calc(100dvh-12rem)] min-h-[560px] max-h-[820px]' : 'h-[calc(100dvh-9rem)] min-h-[520px] max-h-none'}`}>
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
