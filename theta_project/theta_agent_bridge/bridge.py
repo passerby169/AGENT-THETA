@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .dataset import explore_dataset
+
 
 BRIDGE_PROTOCOL = "theta-agent-bridge/v1"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +105,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
     handlers = {
         "dataset.inspect": dataset_inspect,
+        "dataset.explore": explore_dataset,
         "dataset.detect_columns": dataset_detect_columns,
         "dataset.clean_preview": dataset_clean_preview,
         "model.catalog": model_catalog,

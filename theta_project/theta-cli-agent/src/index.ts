@@ -27,3 +27,6 @@ export * from "./providers/minimax.js";
 export * from "./environment.js";
 export * from './web-api/contracts.js';
 export * from './web-api/server.js';
+export * from './dataset-understanding/contracts.js';
+export * from './dataset-understanding/service.js';
+export * from './storage/dataset-registry.js';

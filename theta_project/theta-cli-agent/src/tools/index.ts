@@ -13,6 +13,13 @@ export type {
   ThetaDatasetInspectOutput,
 } from "./dataset-inspect-tool.js";
 export type {
+  DatasetExploreView,
+  ExploreColumnCandidate,
+  ExploreColumnProfile,
+  ThetaDatasetExploreInput,
+  ThetaDatasetExploreOutput,
+} from './dataset-explore-tool.js';
+export type {
   ThetaModelCatalogInput,
   ThetaModelCatalogOutput,
 } from "./model-catalog-tool.js";

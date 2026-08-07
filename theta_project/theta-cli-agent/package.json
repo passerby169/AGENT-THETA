@@ -27,6 +27,7 @@
     "smoke:planning-chain": "node dist/planning-chain-smoke.js",
     "smoke:theta-workflow": "node dist/theta-workflow-smoke.js",
     "smoke:hypha-dataset-tools": "node dist/hypha-dataset-tools-smoke.js",
+    "smoke:dataset-understanding-v2": "node dist/dataset-understanding-v2-smoke.js",
     "smoke:hypha-import": "node dist/hypha-import-smoke.js",
     "smoke:hypha-registry": "node dist/hypha-registry-smoke.js",
     "smoke:hypha-runner": "node dist/hypha-runner-smoke.js",

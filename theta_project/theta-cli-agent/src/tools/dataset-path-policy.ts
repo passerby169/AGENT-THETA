@@ -2,7 +2,16 @@ import { realpath, stat } from 'node:fs/promises';
 import { delimiter, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const supportedDatasetSuffixes = new Set(['.csv', '.tsv', '.json', '.jsonl', '.txt']);
+const supportedDatasetSuffixes = new Set([
+  '.csv',
+  '.tsv',
+  '.json',
+  '.jsonl',
+  '.txt',
+  '.xlsx',
+  '.xls',
+  '.parquet',
+]);
 const defaultMaxDatasetBytes = 100 * 1024 * 1024;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));

@@ -16,6 +16,10 @@ import type {
   ThetaDatasetInspectOutput,
 } from "./dataset-inspect-tool.js";
 import type {
+  ThetaDatasetExploreInput,
+  ThetaDatasetExploreOutput,
+} from './dataset-explore-tool.js';
+import type {
   ThetaModelCatalogInput,
   ThetaModelCatalogOutput,
 } from "./model-catalog-tool.js";
@@ -195,6 +199,27 @@ export const runThetaDatasetInspect = async (
       },
     ),
   }) as Promise<ToolCallResult<ThetaDatasetInspectOutput>>;
+};
+
+export const runThetaDatasetExplore = async (
+  input: ThetaDatasetExploreInput,
+  options: ThetaHyphaRunnerOptions = {},
+): Promise<ToolCallResult<ThetaDatasetExploreOutput>> => {
+  const { runner } = createThetaHyphaRuntime();
+  return runner.run({
+    toolId: THETA_TOOL_IDS.datasetExplore,
+    input,
+    context: createThetaToolCallContext(
+      'theta-dataset-explore',
+      'dataset_explore',
+      {
+        ...options,
+        permissionScopes: options.permissionScopes ?? [
+          THETA_PERMISSION_SCOPES.datasetRead,
+        ],
+      },
+    ),
+  }) as Promise<ToolCallResult<ThetaDatasetExploreOutput>>;
 };
 
 export const runThetaDatasetDetectColumns = async (
