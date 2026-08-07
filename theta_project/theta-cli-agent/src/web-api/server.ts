@@ -180,13 +180,16 @@ const routeRequest = async (
   if (statusMatch) {
     if (method !== 'GET') return methodNotAllowed(response);
     const runId = decodeURIComponent(statusMatch[1]);
-    const status = await workflow.status(runId, options.runtimeDb);
+    const context = await workflow.conversationContext(runId, options.runtimeDb);
+    const status = context.status;
     writeJson(response, 200, {
       ok: true,
       data: {
         ...status,
         runtimeDb: undefined,
         presentation: buildHumanResponse(status),
+        ...(context.datasetProfile ? { datasetProfile: context.datasetProfile } : {}),
+        ...(context.researchBrief ? { researchBrief: context.researchBrief } : {}),
       },
     });
     return;
@@ -513,7 +516,9 @@ const buildRunIdentity = (value: unknown): Record<string, unknown> => {
   const datasetName = dataSource
     ? path.basename(dataSource, path.extname(dataSource))
     : stringField(asRecord(plan.datasetProfile), 'datasetId') ?? '本地数据集';
-  const researchQuestion = stringField(brief, 'researchQuestion') ?? '主题分析';
+  const researchQuestion = normalizeResearchQuestion(
+    stringField(brief, 'researchQuestion'),
+  ) ?? '主题分析';
   const canonicalPlan = asRecord(asRecord(plan.planRecord)?.canonicalPlan);
   const model = asRecord(canonicalPlan?.model) ?? asRecord(plan.validatedPlan) ?? asRecord(plan.candidatePlan);
   const modelId = stringField(model, 'modelId');
@@ -533,6 +538,16 @@ const buildRunIdentity = (value: unknown): Record<string, unknown> => {
     ...(modelId ? { modelId } : {}),
     ...(numTopics !== undefined ? { numTopics } : {}),
   };
+};
+
+const normalizeResearchQuestion = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const normalized = value
+    .replace(/[，,、；;\s]+(?=[，,、；;])/gu, '')
+    .replace(/([，,、；;])\1+/gu, '$1')
+    .replace(/^[，,、；;\s]+|[，,、；;\s]+$/gu, '')
+    .trim();
+  return normalized || undefined;
 };
 
 export const isUserFacingRun = (value: unknown): boolean => {

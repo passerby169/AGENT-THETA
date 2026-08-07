@@ -638,6 +638,23 @@ try {
       "Incomplete research intake did not request clarification.",
     );
   }
+  const clarificationContext = await service.conversationContext(
+    clarificationRunId,
+    runtimeDb,
+  );
+  if (!clarificationContext.datasetProfile) {
+    throw new Error(
+      "Research clarification started before the local dataset preflight completed.",
+    );
+  }
+  if (
+    !clarificationContext.researchBrief?.analysisUnit ||
+    !clarificationContext.researchBrief?.textFieldIntent
+  ) {
+    throw new Error(
+      "Dataset preflight did not populate deterministic research brief fields.",
+    );
+  }
   const clarified = await service.resume({
     runId: clarificationRunId,
     runtimeDb,

@@ -64,6 +64,7 @@ export function ThetaOneWorkbench({
   results,
   resultsLoading,
   assistant,
+  assistantExpanded,
 }: {
   run?: ThetaRunSummary;
   status: ThetaRunStatus;
@@ -72,6 +73,7 @@ export function ThetaOneWorkbench({
   results?: ThetaRunResults;
   resultsLoading: boolean;
   assistant: ReactNode;
+  assistantExpanded: boolean;
 }) {
   const currentStage = stateStage(status.currentState);
   const [activeStage, setActiveStage] = useState<ClassicStage>(currentStage);
@@ -92,7 +94,7 @@ export function ThetaOneWorkbench({
 
   return (
     <section className="mt-4">
-      <div className="overflow-x-auto border-y border-slate-200 bg-white px-2 py-3">
+      <div className={`overflow-hidden transition-all duration-300 ease-out ${assistantExpanded ? 'max-h-0 border-transparent opacity-0' : 'max-h-24 border-y border-slate-200 bg-white px-2 py-3 opacity-100'}`}>
         <div className="flex min-w-[820px] items-center justify-between">
           {stages.map((stage, index) => {
             const Icon = stage.icon;
@@ -121,8 +123,8 @@ export function ThetaOneWorkbench({
         </div>
       </div>
 
-      <div className="mt-4 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-        <div className="min-w-0 space-y-4">
+      <div className={`grid items-start transition-[grid-template-columns,gap] duration-300 ease-out ${assistantExpanded ? 'mt-0 grid-cols-[0_minmax(0,1fr)] gap-0' : 'mt-4 gap-4 xl:grid-cols-[minmax(0,1fr)_390px]'}`}>
+        <div className={`min-w-0 overflow-hidden transition-all duration-300 ease-out ${assistantExpanded ? 'pointer-events-none -translate-x-4 opacity-0' : 'translate-x-0 space-y-4 opacity-100'}`} aria-hidden={assistantExpanded}>
           <div className="rounded-md border border-slate-200 bg-white p-5 sm:p-6">
             <div className="flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-start sm:justify-between">
               <div>
@@ -136,10 +138,10 @@ export function ThetaOneWorkbench({
             {activeStage === 'data' ? (
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
                 <ClassicInfo label="数据集" value={run?.identity?.datasetName ?? '当前本地数据集'} />
-                <ClassicInfo label="记录事件" value={`${status.eventCount} 个`} />
+                <ClassicInfo label="记录事件" value={Number.isFinite(status.eventCount) ? `${status.eventCount} 个` : '正在同步'} />
                 <div className="rounded-md border border-slate-200 p-4 sm:col-span-2">
                   <p className="text-xs font-medium text-slate-500">研究目标</p>
-                  <p className="mt-2 text-sm leading-6 text-slate-700">{run?.identity?.researchQuestion ?? status.presentation.summary}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{cleanResearchQuestion(run?.identity?.researchQuestion) ?? status.researchBrief?.researchQuestion ?? status.presentation.summary}</p>
                 </div>
               </div>
             ) : null}
@@ -185,8 +187,8 @@ export function ThetaOneWorkbench({
           </div>
         </div>
 
-        <aside className="min-w-0 xl:sticky xl:top-20">
-          <div className="mb-2 flex items-center justify-between px-1">
+        <aside className={`min-w-0 transition-all duration-300 ease-out ${assistantExpanded ? 'translate-x-0' : 'xl:sticky xl:top-20'}`}>
+          <div className={`flex items-center justify-between px-1 transition-all duration-200 ${assistantExpanded ? 'max-h-0 overflow-hidden opacity-0' : 'mb-2 max-h-14 opacity-100'}`}>
             <div><p className="text-xs font-semibold text-slate-700">THETA AI 助手</p><p className="mt-0.5 text-[11px] text-slate-400">当前任务操作与对话</p></div>
             <span className="rounded-sm bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700">动态同步</span>
           </div>
@@ -200,3 +202,13 @@ export function ThetaOneWorkbench({
 function ClassicInfo({ label, value }: { label: string; value: string }) {
   return <div className="rounded-md border border-slate-200 bg-white px-4 py-3"><p className="text-xs font-medium text-slate-500">{label}</p><p className="mt-1 break-words text-sm font-semibold text-slate-800">{value}</p></div>;
 }
+
+const cleanResearchQuestion = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const normalized = value
+    .replace(/[，,、；;\s]+(?=[，,、；;])/gu, '')
+    .replace(/([，,、；;])\1+/gu, '$1')
+    .replace(/^[，,、；;\s]+|[，,、；;\s]+$/gu, '')
+    .trim();
+  return normalized || undefined;
+};

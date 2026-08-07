@@ -88,7 +88,7 @@ export const detectPrivacyConfirmationGap: GapRule = (brief) =>
         'sensitiveData',
         'blocking',
         '这批数据是否包含个人信息、机密内容或其他敏感数据？',
-        '读取样本前必须先确认敏感数据情况。',
+        '进入外部语言服务或模型训练前必须确认敏感数据情况；本地预检不会上传原始文本。',
         100,
       )
     : null;

@@ -1204,7 +1204,7 @@ const currentPlanAdjustmentValues = (
 
 export const isObviousAssistantRequest = (text: string): boolean => {
   const normalized = text.trim();
-  if (/^(?:你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用)(?:[？?。！!]|$)/iu.test(normalized)) {
+  if (/^(?:你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用|现在我需要做什么|我现在需要做什么|下一步(?:做什么)?|我该做什么)(?:[？?。！!]|$)/iu.test(normalized)) {
     return true;
   }
   const asksForHelp =
@@ -1247,7 +1247,7 @@ export const fastReadonlyToolProposal = (
     intent = 'reject_current';
   } else if (/你能做什么|你可以做什么|你是谁|帮助|怎么用|如何使用/u.test(normalized)) {
     intent = 'help';
-  } else if (/为什么|解释|当前步骤/u.test(normalized)) {
+  } else if (/为什么|解释|当前步骤|现在我需要做什么|我现在需要做什么|下一步|我该做什么/u.test(normalized)) {
     intent = 'explain_current';
   }
 

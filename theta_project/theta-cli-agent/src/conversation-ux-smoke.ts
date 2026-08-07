@@ -322,6 +322,12 @@ if (
 if (!isObviousAssistantRequest('你能做什么？')) {
   throw new Error('An obvious THETA assistant request did not use the fast route.');
 }
+if (!isObviousAssistantRequest('现在我需要做什么？')) {
+  throw new Error('A next-step question did not use the assistant fast route.');
+}
+if (fastReadonlyToolProposal('现在我需要做什么？', true).intent !== 'explain_current') {
+  throw new Error('A next-step question did not request a current-state explanation.');
+}
 if (isObviousAssistantRequest('每条记录中的 text 列是需要分析的正文。')) {
   throw new Error('A research answer was incorrectly sent through the assistant fast route.');
 }

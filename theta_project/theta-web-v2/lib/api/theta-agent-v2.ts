@@ -46,7 +46,43 @@ export interface ThetaRunStatus {
   lastEventAt: string;
   statePath: string[];
   trainingReceipt?: ThetaTrainingReceipt;
+  datasetProfile?: ThetaDatasetProfile;
+  researchBrief?: {
+    researchQuestion?: string;
+    analysisUnit?: string;
+    textFieldIntent?: string;
+    sensitiveData?: { status: 'yes' | 'no' | 'unknown'; categories: string[] };
+  };
   presentation: ThetaPresentation;
+}
+
+export interface ThetaDatasetProfile {
+  fileName: string;
+  fileSizeBytes: number;
+  format: string;
+  encoding: string;
+  rowCount: number;
+  sampledRowCount: number;
+  profileScope: 'full' | 'sample';
+  columnCount: number;
+  columns: string[];
+  columnProfiles: Array<{
+    name: string;
+    inferredType: 'empty' | 'number' | 'datetime' | 'text' | 'string';
+    nonEmptySampleCount: number;
+    uniqueSampleCount: number;
+    avgLength: number;
+    maxLength: number;
+  }>;
+  missingRatio: number;
+  languageDistribution: Array<{ language: string; ratio: number }>;
+  timeCoverage: { start: string | null; end: string | null };
+  columnCandidates: {
+    text: Array<{ name: string; score: number; reason: string }>;
+    time: Array<{ name: string; score: number; reason: string }>;
+    metadata: Array<{ name: string; score: number; reason: string }>;
+  };
+  sensitiveRiskCodes: string[];
 }
 
 export interface ThetaTrainingReceipt {

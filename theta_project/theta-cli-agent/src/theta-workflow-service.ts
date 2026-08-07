@@ -897,9 +897,7 @@ const executeThetaState = async (
           { currentState: execution.state.id },
         );
         return transition(
-          assessment.gaps.length > 0
-            ? THETA_WORKFLOW_STATES.awaitResearchClarification
-            : THETA_WORKFLOW_STATES.inspectDataset,
+          THETA_WORKFLOW_STATES.inspectDataset,
           {
             researchBrief: runtimeRecord({ ...assessment.brief }),
             researchAssessment: sanitizeResearchAssessment(assessment),
@@ -952,16 +950,6 @@ const executeThetaState = async (
             execution.projection.stateAttempt,
           ),
         );
-        if (
-          !isRecord(variables.datasetProfile) &&
-          assessment.brief.sensitiveData.status !== 'unknown'
-        ) {
-          return transition(THETA_WORKFLOW_STATES.inspectDataset, {
-            researchBrief: runtimeRecord({ ...assessment.brief }),
-            researchAssessment: sanitizeResearchAssessment(assessment),
-            processedResearchResumeCommandId: lastResume.commandId,
-          });
-        }
         if (!assessment.blocking) {
           return transition(THETA_WORKFLOW_STATES.inspectDataset, {
             researchBrief: runtimeRecord({ ...assessment.brief }),
@@ -1004,8 +992,10 @@ const executeThetaState = async (
           invoke(THETA_TOOL_IDS.datasetDetectColumns, toolInput),
         ]);
         const datasetProfile = sanitizeDatasetProfile(inspection, columns);
+        const currentBrief = researchBriefSchema.parse(variables.researchBrief);
+        const primaryTextColumn = datasetProfile.columnCandidates.text[0]?.name;
         const observedBrief = researchService.applyAnswers(
-          researchBriefSchema.parse(variables.researchBrief),
+          currentBrief,
           {
             expectedRowCount: datasetProfile.rowCount,
             candidateTimeColumns: datasetProfile.columnCandidates.time.map(
@@ -1014,6 +1004,19 @@ const executeThetaState = async (
             candidateGroupColumns: datasetProfile.columnCandidates.metadata.map(
               (candidate) => candidate.name,
             ),
+            ...(currentBrief.analysisUnit
+              ? {}
+              : { analysisUnit: '每一行是一条独立文本记录' }),
+            ...(currentBrief.textFieldIntent || !primaryTextColumn
+              ? {}
+              : {
+                  textFieldIntent: `分析 ${primaryTextColumn} 列中的主要文本内容`,
+                }),
+            ...(currentBrief.language || datasetProfile.languageDistribution.length === 0
+              ? {}
+              : {
+                  language: datasetProfile.languageDistribution[0]?.language,
+                }),
           },
         );
         const observedAssessment = researchService.assess(observedBrief, {

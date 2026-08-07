@@ -35,7 +35,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import {
   ThetaAgentV2API,
@@ -71,6 +70,12 @@ interface RunActionOutcome {
 interface OptimisticConversationMessage extends ThetaConversationMessage {
   baselineMatches: number;
   delivery: 'sending' | 'failed';
+}
+
+interface DisplayConversationMessage {
+  message: ThetaConversationMessage;
+  current?: boolean;
+  delivery?: 'sending' | 'failed';
 }
 
 type WorkspaceMode = 'agent' | 'classic';
@@ -177,8 +182,9 @@ export default function WorkbenchPage() {
         researchGoal: goal,
         useMiniMax: true,
       });
+      const detailedStatus = await ThetaAgentV2API.status(status.runId);
       setActiveRunId(status.runId);
-      setActiveStatus(status);
+      setActiveStatus(detailedStatus);
       setResearchGoal('');
       void refresh();
     } catch (cause) {
@@ -430,10 +436,22 @@ function ResearchStartPanel({
               <span className={`text-xs ${goal.length > 0 && !goalReady ? 'text-amber-700' : 'text-slate-400'}`}>{goal.length} / 2000 · 至少 8 个字符</span>
               <Button type="button" disabled={!canCreate} onClick={() => void onCreate()} className="h-9 w-full gap-2 rounded-md bg-blue-600 px-4 hover:bg-blue-700 sm:w-auto">
                 {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                {busy ? '正在创建...' : '开始研究对话'}
+                {busy ? '正在预检数据...' : '开始研究对话'}
               </Button>
             </div>
           </div>
+          {busy ? (
+            <div className="mt-4 overflow-hidden rounded-md border border-blue-200 bg-blue-50/60 px-4 py-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-blue-800">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                THETA 正在本地建立数据概况
+              </div>
+              <p className="mt-1 text-xs leading-5 text-blue-700">读取文件结构、识别候选数据列并生成第一版研究档案。原始文本不会在此阶段发送到外部服务。</p>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100">
+                <div className="h-full w-2/5 animate-pulse rounded-full bg-blue-600" />
+              </div>
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
             <RequirementItem met={datasetReady}>已选择数据集</RequirementItem>
             <RequirementItem met={goalReady}>研究目标信息充分</RequirementItem>
@@ -647,30 +665,6 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   };
 
   if (loading || !status) return <LoadingBlock />;
-  const presentation = status.presentation;
-  const workflowProgress = presentation.progress
-    ? Math.round((presentation.progress.current / presentation.progress.total) * 100)
-    : 0;
-  const trainingProgress = timeline?.training?.progress ?? status.trainingReceipt?.progress;
-  const progress = monitoring && typeof trainingProgress === 'number'
-    ? trainingProgress
-    : workflowProgress;
-  const conversationMode = status.currentState === 'ResearchClarification';
-  const overviewContent = (
-    <>
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-        <div className="min-w-0"><p className="text-xs font-medium text-blue-600">{run ? runSubtitle(run) : '研究任务'}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{run ? runLabel(run) : presentation.title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{presentation.summary}</p></div>
-        <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 shrink-0 rounded-md"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
-      </div>
-      <WorkflowProgress
-        current={presentation.progress?.current}
-        total={presentation.progress?.total}
-        label={presentation.progress?.label}
-        progress={progress}
-        monitoring={monitoring}
-      />
-    </>
-  );
   const actionPanel = <ActionPanel status={status} plan={plan} models={models} conversation={conversation} conversationLoading={conversationLoading} busy={busy} notice={actionNotice} compact={workspaceMode === 'classic'} onAction={act} />;
   const notices = (
     <>
@@ -690,55 +684,24 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
         </div>
       </div>
       <p className="mt-2 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
-      {workspaceMode === 'classic' ? (
-        <>
-          {notices}
-          <ThetaOneWorkbench
-            run={run}
-            status={status}
-            timeline={timeline}
-            plan={plan}
-            results={results}
-            resultsLoading={resultsLoading}
-            assistant={actionPanel}
-          />
-        </>
-      ) : conversationMode ? (
-        <>
-          <div className="mt-3 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-blue-600">研究设置对话</p>
-              <h1 className="mt-1 truncate text-lg font-semibold text-slate-900 sm:text-xl">{run ? runLabel(run) : presentation.title}</h1>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">第 {presentation.progress?.current ?? 1} / {presentation.progress?.total ?? 7} 阶段</Badge>
-              <Button type="button" variant="outline" size="icon" disabled={syncing} onClick={() => void refreshRun()} title="刷新状态" className="h-8 w-8 rounded-md bg-white"><RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} /></Button>
-            </div>
-          </div>
-          {notices}
-          {actionPanel}
-          <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
-            <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-700 hover:bg-slate-50 sm:px-5">
-              <span>任务概览与整体流程</span>
-              <span className="text-xs font-normal text-slate-400">需要时展开</span>
-            </summary>
-            <div className="border-t border-slate-100 p-5 sm:p-6">{overviewContent}</div>
-          </details>
-        </>
-      ) : (
-        <>
-          <section className="mt-4 rounded-md border border-slate-200 bg-white p-5 sm:p-6">{overviewContent}</section>
-          {notices}
-          {actionPanel}
-        </>
-      )}
+      {notices}
+      <ThetaOneWorkbench
+        run={run}
+        status={status}
+        timeline={timeline}
+        plan={plan}
+        results={results}
+        resultsLoading={resultsLoading}
+        assistant={actionPanel}
+        assistantExpanded={workspaceMode === 'agent'}
+      />
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
       <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
 
       <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
-        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="text-xs font-normal text-slate-400">{status.eventCount} 个事件</span></summary>
+        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="text-xs font-normal text-slate-400">{Number.isFinite(status.eventCount) ? `${status.eventCount} 个事件` : '正在同步'}</span></summary>
         <ol className="border-t border-slate-100 px-4 py-3 sm:px-5">
           {uniquePath(status.statePath).map((state, index, states) => {
             const isLast = index === states.length - 1;
@@ -1140,6 +1103,36 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
   const showCurrentPrompt = !researchMessages.some(
     (message) => message.role === 'assistant' && message.content.includes(currentPrompt),
   );
+  const displayMessages = useMemo<DisplayConversationMessage[]>(() => {
+    const persisted = [...researchMessages]
+      .sort((left, right) => left.sequenceNumber - right.sequenceNumber)
+      .map((message) => ({ message }));
+    const latestSequence = persisted.reduce(
+      (maximum, item) => Math.max(maximum, item.message.sequenceNumber),
+      0,
+    );
+    const pendingPrompt: DisplayConversationMessage[] = showCurrentPrompt
+      ? [{
+          current: true,
+          message: {
+            messageId: `pending-${status.runId}-${currentPrompt}`,
+            role: 'assistant',
+            messageKind: 'research.question',
+            content: currentPrompt,
+            sequenceNumber: latestSequence + 1,
+            createdAt: validIsoTimestamp(status.lastEventAt) ?? new Date().toISOString(),
+          },
+        }]
+      : [];
+    const pendingUserMessages = optimisticMessages.map((message, index) => ({
+      message: {
+        ...message,
+        sequenceNumber: latestSequence + pendingPrompt.length + index + 1,
+      },
+      delivery: message.delivery,
+    }));
+    return [...persisted, ...pendingPrompt, ...pendingUserMessages];
+  }, [currentPrompt, optimisticMessages, researchMessages, showCurrentPrompt, status.lastEventAt, status.runId]);
   const noticeAlreadyShown = notice
     ? researchMessages.some((message) => message.content.includes(notice))
     : false;
@@ -1197,7 +1190,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
           </span>
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-slate-900">THETA 研究助手</h2>
-            <p className={`mt-0.5 text-xs text-slate-500 ${compact ? 'line-clamp-2' : ''}`}>我会根据你的新回答更新研究档案、调整判断，并重新决定下一步。</p>
+            <p className={`mt-0.5 text-xs text-slate-500 ${compact ? 'line-clamp-2' : ''}`}>我会先自主检查数据并完成可确定的步骤，只在领域判断或审批点询问你。</p>
           </div>
         </div>
         <Badge variant="outline" className="w-fit border-blue-200 bg-blue-50 text-blue-700">Agent 对话进行中</Badge>
@@ -1207,25 +1200,10 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
         {loading && researchMessages.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-slate-400"><RefreshCw className="h-4 w-4 animate-spin" />正在读取本次研究对话...</div>
         ) : null}
-        {researchMessages.map((message) => (
-          <ConversationBubble key={message.messageId} message={message} />
+        {status.datasetProfile ? <DatasetProfileSummary status={status} compact={compact} /> : null}
+        {displayMessages.map(({ message, current, delivery }) => (
+          <ConversationBubble key={message.messageId} message={message} current={current} delivery={delivery} />
         ))}
-        {optimisticMessages.map((message) => (
-          <ConversationBubble key={message.messageId} message={message} delivery={message.delivery} />
-        ))}
-        {showCurrentPrompt ? (
-          <ConversationBubble
-            message={{
-              messageId: `pending-${status.runId}-${currentPrompt}`,
-              role: 'assistant',
-              messageKind: 'research.question',
-              content: currentPrompt,
-              sequenceNumber: Number.MAX_SAFE_INTEGER,
-              createdAt: validIsoTimestamp(status.lastEventAt) ?? new Date().toISOString(),
-            }}
-            current
-          />
-        ) : null}
         {notice && !noticeAlreadyShown ? (
           <div className="ml-11 max-w-3xl rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">{notice}</div>
         ) : null}
@@ -1269,6 +1247,35 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
         </div>
       </div>
     </section>
+  );
+}
+
+function DatasetProfileSummary({ status, compact }: { status: ThetaRunStatus; compact: boolean }) {
+  const profile = status.datasetProfile;
+  if (!profile) return null;
+  const primaryText = profile.columnCandidates.text[0]?.name;
+  const primaryTime = profile.columnCandidates.time[0]?.name;
+  const visibleColumns = profile.columns.slice(0, compact ? 4 : 8);
+  const hiddenColumns = Math.max(0, profile.columns.length - visibleColumns.length);
+  return (
+    <div className="rounded-md border border-blue-200 bg-white px-4 py-3 shadow-sm sm:px-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold text-blue-700">已完成本地数据预检</p>
+          <p className="mt-1 text-sm font-medium text-slate-900">
+            当前数据共 {profile.rowCount} 行、{profile.columnCount} 列，主要列为 {visibleColumns.length ? visibleColumns.join('、') : '尚未识别'}{hiddenColumns ? ` 等 ${profile.columnCount} 列` : ''}。
+          </p>
+        </div>
+        <Badge variant="outline" className="w-fit shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700">原始文本未外传</Badge>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+        <span className="rounded-sm bg-slate-100 px-2 py-1">格式：{profile.format.toUpperCase()}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">正文候选：{primaryText ?? '需要确认'}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">时间候选：{primaryTime ?? '未识别'}</span>
+        <span className="rounded-sm bg-slate-100 px-2 py-1">缺失率：{Math.round(profile.missingRatio * 100)}%</span>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-500">THETA 已依据结构和样本统计建立初步判断；后续只会询问无法可靠推断的领域含义与必要授权。</p>
+    </div>
   );
 }
 
@@ -1350,33 +1357,6 @@ function ClarificationFeedback({ message }: { message: string }) {
       ? { title: '上一步已记录', classes: 'border-emerald-200 bg-emerald-50 text-emerald-800' }
       : { title: '需要补充或确认', classes: 'border-amber-200 bg-amber-50 text-amber-800' };
   return <div className={`mt-4 rounded-md border px-4 py-3 text-sm leading-6 ${tone.classes}`}><p className="font-semibold">{tone.title}</p><p className="mt-0.5">{message}</p></div>;
-}
-
-const workflowStages = [
-  '完善研究设置',
-  '确认数据列',
-  '生成模型建议',
-  '审批训练方案',
-  '确认启动训练',
-  '执行与跟踪训练',
-  '校验并展示结果',
-];
-
-function WorkflowProgress({ current, total, label, progress, monitoring }: { current?: number; total?: number; label?: string; progress: number; monitoring: boolean }) {
-  const safeTotal = total ?? workflowStages.length;
-  const safeCurrent = current ?? 1;
-  const stageLabel = workflowStages[safeCurrent - 1] ?? label ?? '处理研究任务';
-  return (
-    <div className="mt-5 border-t border-slate-100 pt-4">
-      <div className="flex items-end justify-between gap-4">
-        <div><p className="text-xs font-medium text-slate-400">整体工作流进度</p><p className="mt-1 text-sm font-semibold text-slate-700">当前：{monitoring ? `${stageLabel} · ${Math.round(progress)}%` : stageLabel}</p></div>
-        <span className="shrink-0 text-xs text-slate-500">第 {safeCurrent} / {safeTotal} 阶段</span>
-      </div>
-      <Progress value={progress} className="mt-3 h-2" />
-      <p className="mt-2 text-xs leading-5 text-slate-500">进度条表示从研究设置到结果展示的整体流程阶段，不代表当前阶段需要回答的问题数量。</p>
-      {safeTotal === workflowStages.length ? <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-blue-600">查看全部 7 个阶段</summary><ol className="mt-2 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">{workflowStages.map((stage, index) => <li key={stage} className={`rounded-md px-2.5 py-2 ${index + 1 === safeCurrent ? 'bg-blue-50 font-medium text-blue-700' : 'bg-slate-50'}`}>{index + 1}. {stage}</li>)}</ol></details> : null}
-    </div>
-  );
 }
 
 function ActionShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
