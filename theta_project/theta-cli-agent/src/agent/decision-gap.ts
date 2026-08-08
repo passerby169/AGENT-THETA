@@ -107,11 +107,17 @@ export const applyDecisionGapAnswer = (
 ): DecisionGapTurn => {
   const normalized = answer.trim();
   const useDefault = isUnknownAnswer(normalized) || requestsProposalFirst(normalized);
-  const patch = useDefault ? defaultPatch(gap) : answerPatch(gap, normalized);
-  const resolved = new Set([...memory.resolvedGapIds, gap.id]);
+  const extraction = useDefault
+    ? { patch: defaultPatch(gap), resolvedGapIds: [gap.id] }
+    : extractAnswerPatch(current, gap, normalized);
+  const patch = extraction.patch;
+  const resolved = new Set([
+    ...memory.resolvedGapIds,
+    ...extraction.resolvedGapIds,
+  ]);
   const defaulted = new Set(memory.defaultedGapIds);
   if (useDefault) defaulted.add(gap.id);
-  const unknowns = current.unknowns.filter((item) => item !== gap.id);
+  const unknowns = current.unknowns.filter((item) => !resolved.has(item));
   const intent = researchIntentSchema.parse({ ...current, ...patch, unknowns });
   const updatedMemory = interviewMemorySchema.parse({
     ...memory,
@@ -153,6 +159,33 @@ const answerPatch = (gap: DecisionGap, answer: string): Partial<ResearchIntent> 
   }
 };
 
+const extractAnswerPatch = (
+  current: ResearchIntent,
+  gap: DecisionGap,
+  answer: string,
+): { patch: Partial<ResearchIntent>; resolvedGapIds: string[] } => {
+  const patch: Partial<ResearchIntent> = answerPatch(gap, answer);
+  const resolvedGapIds = new Set([gap.id]);
+  if (current.unknowns.includes('temporal') && hasTemporalDecision(answer)) {
+    patch.temporalAnalysis = !isNegativeTemporal(answer);
+    resolvedGapIds.add('temporal');
+  }
+  if (current.unknowns.includes('comparison') && hasComparisonDecision(answer)) {
+    patch.comparisonDimensions = isNoComparison(answer)
+      ? []
+      : extractComparisonDimensions(answer);
+    resolvedGapIds.add('comparison');
+  }
+  if (current.unknowns.includes('success') && hasSuccessDecision(answer)) {
+    patch.successCriteria = splitValues(answer);
+    resolvedGapIds.add('success');
+  }
+  if (/\bCPU\b|\bGPU\b|显存|内存|离线|实验/iu.test(answer)) {
+    patch.constraints = unique([...current.constraints, ...splitValues(answer)]);
+  }
+  return { patch, resolvedGapIds: [...resolvedGapIds] };
+};
+
 const defaultPatch = (gap: DecisionGap): Partial<ResearchIntent> => {
   switch (gap.category) {
     case 'research_goal': return { researchQuestion: gap.defaultResolution };
@@ -181,5 +214,17 @@ const isUnknownAnswer = (value: string): boolean => /^(?:不知道|不清楚|不
 const requestsProposalFirst = (value: string): boolean => /先.{0,4}(?:方案|建议|分析)|你先决定|按默认/iu.test(value);
 const isNoComparison = (value: string): boolean => /不比较|无需比较|没有比较/iu.test(value);
 const isAffirmative = (value: string): boolean => /^(?:是|需要|要|启用|分析|yes|true)$/iu.test(value) || /时间|趋势/iu.test(value);
+const hasTemporalDecision = (value: string): boolean =>
+  /时间|日期|年度|月份|季度|趋势|时序|不做.{0,4}(?:时间|趋势)/iu.test(value);
+const isNegativeTemporal = (value: string): boolean =>
+  /不(?:需要|做|分析|考虑).{0,6}(?:时间|趋势)|无需.{0,6}(?:时间|趋势)/iu.test(value);
+const hasComparisonDecision = (value: string): boolean =>
+  isNoComparison(value) || /比较|对比|分组|群体|来源|阶段|类别|按照.+(?:列|字段)/iu.test(value);
+const extractComparisonDimensions = (value: string): string[] => {
+  const explicit = value.match(/(?:按照|按|比较|对比)([^。；;，,]{1,80})/u)?.[1];
+  return splitValues(explicit ?? value).slice(0, 6);
+};
+const hasSuccessDecision = (value: string): boolean =>
+  /成功|结果|输出|交付|图表|关键词|代表文本|可解释|准确|稳定|趋势/iu.test(value);
 const questionHash = (value: string): string => createHash('sha256').update(value.trim()).digest('hex');
 const unique = <T>(values: T[]): T[] => [...new Set(values)];

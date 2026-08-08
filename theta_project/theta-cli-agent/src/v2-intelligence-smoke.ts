@@ -70,6 +70,31 @@ assert.ok(first);
 const turn = applyDecisionGapAnswer(initialIntent, first, '不知道', emptyInterviewMemory());
 assert.ok(!turn.intent.unknowns.includes(first.id));
 assert.equal(turn.appliedDefaults.length, 1);
+const gapAfterDefault = selectNextDecisionGap(
+  deriveDecisionGaps(understanding, confirmation, turn.intent),
+  turn.memory,
+);
+assert.notEqual(gapAfterDefault?.id, first.id);
+
+const multiIntentAnswer = [
+  '我希望识别主要主题，比较不同来源，并分析按月的时间趋势。',
+  '成功标准是每个主题有关键词、代表文本和可解释的趋势图。',
+  '使用 CPU 离线运行，可用内存 16GB。',
+].join('');
+const multiIntentTurn = applyDecisionGapAnswer(
+  initialIntent,
+  first,
+  multiIntentAnswer,
+  emptyInterviewMemory(),
+);
+assert.equal(multiIntentTurn.intent.temporalAnalysis, true);
+assert.ok(multiIntentTurn.intent.comparisonDimensions.length > 0);
+assert.ok(multiIntentTurn.intent.successCriteria.length > 0);
+assert.ok(multiIntentTurn.intent.constraints.some((item) => /CPU/iu.test(item)));
+assert.ok(!multiIntentTurn.intent.unknowns.includes('research_goal'));
+assert.ok(!multiIntentTurn.intent.unknowns.includes('comparison'));
+assert.ok(!multiIntentTurn.intent.unknowns.includes('temporal'));
+assert.ok(!multiIntentTurn.intent.unknowns.includes('success'));
 assert.equal(validateDatasetConfirmation(confirmation, facts).valid, true);
 assert.equal(validateDatasetConfirmation({
   ...confirmation,
@@ -142,4 +167,12 @@ assert.equal(runtimeValidation.valid, true);
 assert.equal(runtimeDecision.inputHash, plannerInputV2Hash(runtimeInput));
 const invalidDecision = { ...runtimeDecision, modelId: 'missing-model' };
 assert.equal(validatePlannerDecisionV2(runtimeInput, invalidDecision).valid, false);
-console.log(JSON.stringify({ status: 'ok', explorationCalls: calls, defaultedGap: first.id, plannerValid: validation.valid, runtimePlannerValid: runtimeValidation.valid }));
+console.log(JSON.stringify({
+  status: 'ok',
+  explorationCalls: calls,
+  defaultedGap: first.id,
+  nextGapAfterDefault: gapAfterDefault?.id ?? null,
+  multiIntentFields: multiIntentTurn.extractedFields,
+  plannerValid: validation.valid,
+  runtimePlannerValid: runtimeValidation.valid,
+}));
