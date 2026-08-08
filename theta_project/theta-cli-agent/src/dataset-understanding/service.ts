@@ -16,17 +16,35 @@ export const buildDatasetFacts = (
     fileName: output.fileName,
     format: output.format,
     sizeBytes: output.sizeBytes,
+    encoding: output.encoding ?? 'unknown',
+    delimiter: output.delimiter ?? null,
+    sheets: output.sheets ?? [],
+    selectedSheet: output.selectedSheet ?? null,
     rowCount: output.rowCount,
     columns: output.profiles.map((profile) => ({
       name: profile.name,
       inferredType: profile.inferredType,
       missingRatio: profile.missingRatio,
       uniqueCount: profile.uniqueCount,
+      uniqueRatio: profile.uniqueRatio ?? 0,
       averageLength: profile.averageLength,
+      maximumLength: profile.maximumLength,
+      parseSuccessRatio: profile.parseSuccessRatio ?? 0,
+      sampleValues: profile.sampleValues ?? [],
     })),
     languageDistribution: output.languageDistribution,
     duplicateRatio: output.duplicateRatio,
     timeCoverage: output.timeCoverage,
+    samplePolicy: output.samplePolicy ?? {
+      method: 'deterministic_reservoir',
+      requestedRows: 10,
+      returnedRows: output.sample.length,
+      profileRows: output.rowCount,
+      profileTruncated: false,
+    },
+    redactionApplied: output.redaction.applied,
+    sensitiveDataRisk: output.redaction.applied ? 'redacted' : 'none_detected',
+    qualityWarnings: output.qualityWarnings,
     generatedAt: new Date().toISOString(),
   });
 
@@ -51,6 +69,18 @@ export const buildDeterministicUnderstanding = (
   const metadataColumns = output.columnRoles.metadata.map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
+  const groupColumns = (output.columnRoles.group ?? []).map((entry) =>
+    candidate(entry.name, entry.score, entry.reason),
+  );
+  const covariateColumns = (output.columnRoles.covariate ?? []).map((entry) =>
+    candidate(entry.name, entry.score, entry.reason),
+  );
+  const evaluationColumns = (output.columnRoles.evaluation ?? []).map((entry) =>
+    candidate(entry.name, entry.score, entry.reason),
+  );
+  const ignoredColumns = (output.columnRoles.ignored ?? []).map((entry) =>
+    candidate(entry.name, entry.score, entry.reason),
+  );
   const analysisUnit = textColumns[0]
     ? `每一行是一条独立记录，主要分析 ${textColumns[0].column} 列中的文本。`
     : '每一行是一条独立记录；当前没有足够证据确定正文列。';
@@ -60,10 +90,26 @@ export const buildDeterministicUnderstanding = (
     datasetHash: facts.datasetHash,
     domain: output.inferredDomain,
     analysisUnit,
+    evidenceReferences: [
+      ...textColumns.slice(0, 3).map((entry) => ({
+        kind: 'column_profile' as const,
+        column: entry.column,
+        claim: entry.reason,
+      })),
+      ...timeColumns.slice(0, 2).map((entry) => ({
+        kind: 'column_profile' as const,
+        column: entry.column,
+        claim: entry.reason,
+      })),
+    ],
     textColumns,
     timeColumns,
     idColumns,
     metadataColumns,
+    groupColumns,
+    covariateColumns,
+    evaluationColumns,
+    ignoredColumns,
     qualityWarnings: output.qualityWarnings,
     assumptions: [
       '列角色来自字段名、数据类型、长度与唯一性统计，尚未替代用户的领域确认。',

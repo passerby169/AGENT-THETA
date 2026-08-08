@@ -5,7 +5,11 @@ export const datasetColumnFactSchema = z.object({
   inferredType: z.enum(['empty', 'number', 'datetime', 'text', 'string']),
   missingRatio: z.number().min(0).max(1),
   uniqueCount: z.number().int().nonnegative(),
+  uniqueRatio: z.number().min(0).max(1).default(0),
   averageLength: z.number().nonnegative(),
+  maximumLength: z.number().nonnegative().default(0),
+  parseSuccessRatio: z.number().min(0).max(1).default(0),
+  sampleValues: z.array(z.string()).max(5).default([]),
 });
 
 export const datasetFactsSchema = z.object({
@@ -15,6 +19,10 @@ export const datasetFactsSchema = z.object({
   fileName: z.string().min(1),
   format: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
+  encoding: z.string().default('unknown'),
+  delimiter: z.string().nullable().default(null),
+  sheets: z.array(z.string()).default([]),
+  selectedSheet: z.string().nullable().default(null),
   rowCount: z.number().int().nonnegative(),
   columns: z.array(datasetColumnFactSchema),
   languageDistribution: z.array(
@@ -28,6 +36,26 @@ export const datasetFactsSchema = z.object({
     start: z.string().nullable(),
     end: z.string().nullable(),
   }),
+  samplePolicy: z.object({
+    method: z.literal('deterministic_reservoir'),
+    requestedRows: z.number().int().positive(),
+    returnedRows: z.number().int().nonnegative(),
+    profileRows: z.number().int().nonnegative(),
+    profileTruncated: z.boolean(),
+  }).default({
+    method: 'deterministic_reservoir',
+    requestedRows: 10,
+    returnedRows: 0,
+    profileRows: 0,
+    profileTruncated: false,
+  }),
+  redactionApplied: z.boolean().default(false),
+  sensitiveDataRisk: z.enum([
+    'none_detected',
+    'redacted',
+    'requires_confirmation',
+  ]).default('none_detected'),
+  qualityWarnings: z.array(z.string()).default([]),
   generatedAt: z.string().datetime(),
 });
 
@@ -36,6 +64,24 @@ export const datasetColumnRoleSchema = z.object({
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
 });
+
+export const datasetEvidenceReferenceSchema = z.object({
+  kind: z.enum(['column_profile', 'sample_row']),
+  column: z.string().min(1).optional(),
+  sampleIndex: z.number().int().nonnegative().optional(),
+  claim: z.string().min(1),
+});
+
+const roleColumnsSchema = {
+  textColumns: z.array(datasetColumnRoleSchema),
+  timeColumns: z.array(datasetColumnRoleSchema),
+  idColumns: z.array(datasetColumnRoleSchema),
+  metadataColumns: z.array(datasetColumnRoleSchema),
+  groupColumns: z.array(datasetColumnRoleSchema).default([]),
+  covariateColumns: z.array(datasetColumnRoleSchema).default([]),
+  evaluationColumns: z.array(datasetColumnRoleSchema).default([]),
+  ignoredColumns: z.array(datasetColumnRoleSchema).default([]),
+};
 
 export const datasetUnderstandingDraftSchema = z.object({
   schemaVersion: z.literal('2.0.0'),
@@ -47,10 +93,8 @@ export const datasetUnderstandingDraftSchema = z.object({
     evidence: z.array(z.string().min(1)).max(8),
   }),
   analysisUnit: z.string().min(1),
-  textColumns: z.array(datasetColumnRoleSchema),
-  timeColumns: z.array(datasetColumnRoleSchema),
-  idColumns: z.array(datasetColumnRoleSchema),
-  metadataColumns: z.array(datasetColumnRoleSchema),
+  evidenceReferences: z.array(datasetEvidenceReferenceSchema).max(24).default([]),
+  ...roleColumnsSchema,
   qualityWarnings: z.array(z.string()),
   assumptions: z.array(z.string()),
   confidence: z.number().min(0).max(1),
@@ -62,14 +106,22 @@ export const datasetUnderstandingDraftSchema = z.object({
   }),
 });
 
-export const datasetConfirmationDraftSchema = z.object({
-  status: z.enum(['confirmed', 'corrected']),
-  domainLabel: z.string().min(1),
-  analysisUnit: z.string().min(1),
+const confirmedRoleColumnsSchema = {
   textColumns: z.array(z.string().min(1)).min(1),
   timeColumns: z.array(z.string().min(1)),
   idColumns: z.array(z.string().min(1)),
   metadataColumns: z.array(z.string().min(1)),
+  groupColumns: z.array(z.string().min(1)).optional(),
+  covariateColumns: z.array(z.string().min(1)).optional(),
+  evaluationColumns: z.array(z.string().min(1)).optional(),
+  ignoredColumns: z.array(z.string().min(1)).optional(),
+};
+
+export const datasetConfirmationDraftSchema = z.object({
+  status: z.enum(['confirmed', 'corrected']),
+  domainLabel: z.string().min(1),
+  analysisUnit: z.string().min(1),
+  ...confirmedRoleColumnsSchema,
 });
 
 export const datasetConfirmationSchema = z.object({
@@ -79,10 +131,7 @@ export const datasetConfirmationSchema = z.object({
   status: z.enum(['confirmed', 'corrected']),
   domainLabel: z.string().min(1),
   analysisUnit: z.string().min(1),
-  textColumns: z.array(z.string().min(1)).min(1),
-  timeColumns: z.array(z.string().min(1)),
-  idColumns: z.array(z.string().min(1)),
-  metadataColumns: z.array(z.string().min(1)),
+  ...confirmedRoleColumnsSchema,
   confirmedBy: z.string().min(1),
   confirmedAt: z.string().datetime(),
 });
@@ -95,6 +144,13 @@ export const researchIntentSchema = z.object({
   topicGranularity: z.enum(['coarse', 'medium', 'fine']),
   successCriteria: z.array(z.string().min(1)),
   constraints: z.array(z.string().min(1)),
+  deliverables: z.array(z.string().min(1)).default([]),
+  focusAreas: z.array(z.string().min(1)).default([]),
+  resourceBudget: z.object({
+    device: z.enum(['cpu', 'gpu', 'unknown']).default('unknown'),
+    memoryGb: z.number().positive().optional(),
+    maxExperiments: z.number().int().min(1).max(20).default(3),
+  }).default({ device: 'unknown', maxExperiments: 3 }),
   unknowns: z.array(z.string().min(1)),
 });
 

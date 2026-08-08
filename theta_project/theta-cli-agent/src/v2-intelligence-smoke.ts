@@ -7,6 +7,7 @@ import { plannerInputV2Hash, type PlannerDecisionV2, type PlannerInputV2 } from 
 import { presentPlanV2 } from './planner/v2-presenter.js';
 import { buildPlannerDecisionV2, buildPlannerInputV2 } from './planner/v2-runtime.js';
 import { validatePlannerDecisionV2 } from './planner/v2-validator.js';
+import { validateDatasetConfirmation, validateDatasetUnderstanding } from './dataset-understanding/validator.js';
 import type { ThetaDatasetExploreOutput } from './tools/dataset-explore-tool.js';
 
 const output = {
@@ -35,6 +36,11 @@ assert.equal(bounded.source, 'deterministic');
 assert.equal(bounded.fallbackReason, 'tool_budget_exhausted');
 
 const understanding = buildDeterministicUnderstanding(facts, output);
+assert.equal(validateDatasetUnderstanding(understanding, facts).valid, true);
+assert.equal(validateDatasetUnderstanding({
+  ...understanding,
+  evidenceReferences: [{ kind: 'sample_row', sampleIndex: 99, claim: 'invalid sample' }],
+}, facts).valid, false);
 const confirmation = {
   schemaVersion: '2.0.0' as const, datasetRef: facts.datasetRef, datasetHash: facts.datasetHash,
   status: 'confirmed' as const, domainLabel: understanding.domain.label, analysisUnit: understanding.analysisUnit,
@@ -48,6 +54,11 @@ assert.ok(first);
 const turn = applyDecisionGapAnswer(initialIntent, first, '不知道', emptyInterviewMemory());
 assert.ok(!turn.intent.unknowns.includes(first.id));
 assert.equal(turn.appliedDefaults.length, 1);
+assert.equal(validateDatasetConfirmation(confirmation, facts).valid, true);
+assert.equal(validateDatasetConfirmation({
+  ...confirmation,
+  textColumns: ['missing-column'],
+}, facts).valid, false);
 
 const plannerInput: PlannerInputV2 = {
   schemaVersion: '2.0.0', facts, confirmation,
