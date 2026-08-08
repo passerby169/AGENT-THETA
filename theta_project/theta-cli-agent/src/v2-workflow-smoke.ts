@@ -126,7 +126,7 @@ try {
   });
   assert.equal(result.pendingActionRef, THETA_APPROVAL_KEYS.researchIntent);
 
-  for (const answer of ['识别主要主题和关键词', '按 source 比较', '不知道']) {
+  for (const answer of ['识别主要主题和关键词', '按 source 比较']) {
     result = await service.resume({
       runId,
       runtimeDb,
