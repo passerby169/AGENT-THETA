@@ -267,6 +267,14 @@ export interface ThetaWorkflowPlan {
   trainingReview?: RuntimeJsonValue;
   trainingReceipt?: RuntimeJsonValue;
   researchBrief?: RuntimeJsonValue;
+  datasetFacts?: RuntimeJsonValue;
+  datasetUnderstanding?: RuntimeJsonValue;
+  datasetConfirmation?: RuntimeJsonValue;
+  researchIntent?: RuntimeJsonValue;
+  plannerInputV2?: RuntimeJsonValue;
+  plannerDecisionV2?: RuntimeJsonValue;
+  plannerValidationV2?: RuntimeJsonValue;
+  plannerPresentationV2?: RuntimeJsonValue;
 }
 
 export interface ThetaWorkflowReplay {
@@ -745,6 +753,14 @@ export class ThetaWorkflowService {
         ...runtimeVariable(variables, 'dryRun'),
         ...runtimeVariable(variables, 'trainingReview'),
         ...runtimeVariable(variables, 'trainingReceipt'),
+        ...runtimeVariable(variables, 'datasetFacts'),
+        ...runtimeVariable(variables, 'datasetUnderstanding'),
+        ...runtimeVariable(variables, 'datasetConfirmation'),
+        ...runtimeVariable(variables, 'researchIntent'),
+        ...runtimeVariable(variables, 'plannerInputV2'),
+        ...runtimeVariable(variables, 'plannerDecisionV2'),
+        ...runtimeVariable(variables, 'plannerValidationV2'),
+        ...runtimeVariable(variables, 'plannerPresentationV2'),
         ...(isRecord(variables.researchBrief)
           ? { researchBrief: variables.researchBrief as RuntimeJsonValue }
           : {}),
@@ -2539,7 +2555,15 @@ const runtimeVariable = (
     | 'columnConfirmation'
     | 'dryRun'
     | 'trainingReview'
-    | 'trainingReceipt',
+    | 'trainingReceipt'
+    | 'datasetFacts'
+    | 'datasetUnderstanding'
+    | 'datasetConfirmation'
+    | 'researchIntent'
+    | 'plannerInputV2'
+    | 'plannerDecisionV2'
+    | 'plannerValidationV2'
+    | 'plannerPresentationV2',
 ): Partial<ThetaWorkflowPlan> => {
   const value = variables[key];
   return value === undefined ? {} : { [key]: value as RuntimeJsonValue };
@@ -2921,6 +2945,7 @@ const createV2PlannerArtifacts = (context: {
       plannerInput,
       decision,
       validation,
+      { proposal: context.proposal },
     ) as unknown as RuntimeJsonValue,
   };
 };

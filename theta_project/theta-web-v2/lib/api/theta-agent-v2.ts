@@ -305,7 +305,39 @@ export interface ThetaPlan {
       modelName?: string;
     }>;
   };
+  plannerPresentationV2?: ThetaPlannerPresentationV2;
   presentation: ThetaPresentation;
+}
+
+export interface ThetaPlannerPresentationV2 {
+  title: string;
+  summary: string;
+  researchGoal: string;
+  model: string;
+  primaryModel: { modelId: string; rationale: string };
+  baselineModel: { modelId: string; rationale: string } | null;
+  dataBasis: string[];
+  keyParameters: Array<{
+    field: string;
+    value: string | number | boolean | null;
+    rationale: string;
+    source: 'user_override' | 'planner_recommendation' | 'validated_default';
+  }>;
+  experiment: {
+    mode: 'quick' | 'comparative' | 'stability';
+    primarySeeds: number[];
+    baselineSeeds: number[];
+    rationale: string;
+  } | null;
+  preprocessing: Array<{ choice: string; rationale: string }>;
+  evaluation: string[];
+  visualizations: string[];
+  outputs: string[];
+  cautions: string[];
+  assumptions: string[];
+  openQuestions: string[];
+  plannerSource: 'minimax' | 'deterministic' | 'unknown';
+  approvalRequired: boolean;
 }
 
 export interface ThetaPlanCandidate {

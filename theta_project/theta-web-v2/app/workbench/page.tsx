@@ -1132,8 +1132,8 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
             <label><span className="mb-1.5 block text-xs font-medium text-slate-600">训练模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500">{compatibleModels(plan, models).map((item) => <option key={item.id} value={item.id}>{item.name} ({item.id.toUpperCase()})</option>)}</select></label>
             <label><span className="mb-1.5 block text-xs font-medium text-slate-600">主题数量</span><Input type="number" min={2} max={200} value={topics} onChange={(event) => setTopics(event.target.value)} /></label>
           </div>
-          <div className="mt-4 rounded-md bg-slate-50 px-4 py-3"><p className="text-xs font-semibold text-slate-600">当前建议</p><p className="mt-1 text-sm text-slate-600">{plan.presentation.summary}</p></div>
-          {plan.presentation.warnings?.length ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">{plan.presentation.warnings[0]}</div> : null}
+          <PlannerV2Summary plan={plan} />
+          {plan.presentation.warnings?.length ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800"><p className="font-semibold">运行提醒</p><ul className="mt-1 space-y-1">{plan.presentation.warnings.map((warning) => <li key={warning}>· {warning}</li>)}</ul></div> : null}
           <label className="mt-3 flex items-start gap-2 text-xs text-slate-600"><input type="checkbox" checked={acceptDegradation} onChange={(event) => setAcceptDegradation(event.target.checked)} className="mt-0.5" />我已阅读能力缺口，并在仍有警告时接受该降级方案。</label>
           <div className="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy || !model || !topics || !planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'adjustPlan', text: `将模型改为 ${model.toUpperCase()}，主题数改为 ${topics}` })}>{planSettingsDirty(plan, model, topics) ? '应用模型设置' : '设置已应用'}</Button><Button type="button" disabled={busy || !model || planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'approvePlan', acceptDegradation })} className="bg-blue-600 hover:bg-blue-700">批准该方案</Button></div>
         </>
@@ -1577,6 +1577,43 @@ function ClarificationFeedback({ message }: { message: string }) {
       : { title: '需要补充或确认', classes: 'border-amber-200 bg-amber-50 text-amber-800' };
   return <div className={`mt-4 rounded-md border px-4 py-3 text-sm leading-6 ${tone.classes}`}><p className="font-semibold">{tone.title}</p><p className="mt-0.5">{message}</p></div>;
 }
+
+function PlannerV2Summary({ plan }: { plan: ThetaPlan }) {
+  const detail = plan.plannerPresentationV2;
+  if (!detail) return <div className="mt-4 rounded-md bg-slate-50 px-4 py-3"><p className="text-xs font-semibold text-slate-600">当前建议</p><p className="mt-1 text-sm text-slate-600">{plan.presentation.summary}</p></div>;
+  return (
+    <div className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><p className="text-xs font-semibold text-blue-600">完整候选方案</p><h3 className="mt-1 text-base font-semibold text-slate-900">{detail.title}</h3><p className="mt-1 text-sm leading-6 text-slate-600">{detail.summary}</p></div>
+          <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{detail.plannerSource === 'minimax' ? 'MiniMax 建议' : detail.plannerSource === 'deterministic' ? '规则降级方案' : '本地校验方案'}</Badge>
+        </div>
+      </div>
+      <PlanSection title="研究目标"><p>{detail.researchGoal}</p></PlanSection>
+      <PlanSection title="数据依据"><ul className="grid gap-1 sm:grid-cols-2">{detail.dataBasis.map((item) => <li key={item}>· {item}</li>)}</ul></PlanSection>
+      <PlanSection title="模型选择">
+        <p><strong className="text-slate-800">主模型 {detail.primaryModel.modelId.toUpperCase()}</strong>：{detail.primaryModel.rationale}</p>
+        {detail.baselineModel ? <p className="mt-2"><strong className="text-slate-800">基线 {detail.baselineModel.modelId.toUpperCase()}</strong>：{detail.baselineModel.rationale}</p> : <p className="mt-2 text-slate-500">本轮未设置基线模型。</p>}
+      </PlanSection>
+      {detail.keyParameters.length ? <PlanSection title="关键参数"><div className="divide-y divide-slate-100">{detail.keyParameters.map((parameter) => <div key={parameter.field} className="grid gap-1 py-2 first:pt-0 last:pb-0 sm:grid-cols-[11rem_1fr]"><p className="font-medium text-slate-800">{parameter.field} = {String(parameter.value)}</p><p>{parameter.rationale} <span className="ml-1 text-xs text-blue-600">{planParameterSourceLabel(parameter.source)}</span></p></div>)}</div></PlanSection> : null}
+      {detail.experiment ? <PlanSection title="实验安排"><p>{detail.experiment.rationale}</p><p className="mt-1 text-xs text-slate-500">模式：{detail.experiment.mode} · 主实验随机种子：{detail.experiment.primarySeeds.join('、')}{detail.experiment.baselineSeeds.length ? ` · 基线随机种子：${detail.experiment.baselineSeeds.join('、')}` : ''}</p></PlanSection> : null}
+      {detail.preprocessing.length ? <PlanSection title="预处理">{detail.preprocessing.map((item) => <p key={item.choice} className="mb-2 last:mb-0"><strong className="text-slate-800">{item.choice}</strong>：{item.rationale}</p>)}</PlanSection> : null}
+      <PlanSection title="评估与输出"><div className="grid gap-4 sm:grid-cols-2"><PlanList label="评估" values={detail.evaluation} /><PlanList label="可视化" values={detail.visualizations} /></div></PlanSection>
+      {detail.assumptions.length || detail.openQuestions.length ? <PlanSection title="假设与待确认"><div className="grid gap-4 sm:grid-cols-2"><PlanList label="当前假设" values={detail.assumptions} empty="没有额外假设" /><PlanList label="开放问题" values={detail.openQuestions} empty="没有阻塞性问题" /></div></PlanSection> : null}
+      {detail.cautions.length ? <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800"><p className="font-semibold">风险与限制</p><ul className="mt-1 space-y-1">{detail.cautions.map((item) => <li key={item}>· {item}</li>)}</ul></div> : null}
+    </div>
+  );
+}
+
+function PlanSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="border-b border-slate-100 px-4 py-4 text-sm leading-6 text-slate-600 last:border-b-0"><h4 className="mb-2 text-xs font-semibold text-slate-800">{title}</h4>{children}</section>;
+}
+
+function PlanList({ label, values, empty = '暂无' }: { label: string; values: string[]; empty?: string }) {
+  return <div><p className="text-xs font-medium text-slate-500">{label}</p>{values.length ? <ul className="mt-1 space-y-1">{values.map((value) => <li key={value}>· {value}</li>)}</ul> : <p className="mt-1 text-slate-400">{empty}</p>}</div>;
+}
+
+const planParameterSourceLabel = (source: 'user_override' | 'planner_recommendation' | 'validated_default'): string => source === 'user_override' ? '用户指定' : source === 'planner_recommendation' ? 'Planner 建议' : '校验默认值';
 
 function ActionShell({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return <section className="mt-5 rounded-md border border-blue-200 bg-white p-5 sm:p-6"><div className="mb-4"><p className="text-xs font-semibold text-blue-600">你的下一步</p><h2 className="mt-1 text-lg font-semibold">{title}</h2><p className="mt-1 text-sm leading-6 text-slate-500">{description}</p></div>{children}</section>;

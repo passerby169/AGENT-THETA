@@ -115,7 +115,11 @@ const decision: PlannerDecisionV2 = {
 };
 const validation = validatePlannerDecisionV2(plannerInput, decision);
 assert.equal(validation.valid, true);
-assert.equal(presentPlanV2(plannerInput, decision, validation).approvalRequired, true);
+const presentedPlan = presentPlanV2(plannerInput, decision, validation);
+assert.equal(presentedPlan.approvalRequired, true);
+assert.equal(presentedPlan.researchGoal, plannerInput.intent.researchQuestion);
+assert.ok(presentedPlan.dataBasis.some((item) => item.includes('80 行')));
+assert.equal(presentedPlan.keyParameters[0]?.source, 'validated_default');
 const runtimeRecommendation = {
   schemaVersion: '1.0.0' as const,
   deterministic: true as const,
