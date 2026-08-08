@@ -228,7 +228,7 @@ export default function WorkbenchPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <HealthBadge status={health?.status} />
+            <HealthBadge health={health} />
             <Button type="button" variant="ghost" size="icon" onClick={() => router.push('/')} title="返回首页" className="h-8 w-8 rounded-md">
               <Home className="h-4 w-4" />
             </Button>
@@ -1007,31 +1007,37 @@ function VisualizationCard({ runId, item, selected, onSelectionChange, onOpen }:
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {
-  const recent = [...(timeline?.timeline ?? [])].reverse().slice(0, 8);
+  const recent = [...(timeline?.timeline ?? [])].reverse();
+  const workflowEvents = recent.filter((event) => event.source !== 'tool').slice(0, 5);
+  const technicalEvents = recent.filter((event) => event.source === 'tool').slice(0, 8);
   return (
-    <section className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4 sm:px-5">
-        <div><h2 className="flex items-center gap-2 text-sm font-semibold"><Activity className="h-4 w-4 text-blue-600" />运行动态</h2><p className="mt-1 text-xs text-slate-400">训练进程、FSM 推进和受治理工具事件</p></div>
-        {monitoring ? <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">{syncing ? '正在同步' : '每 3 秒自动同步'}</Badge> : null}
-      </div>
-      <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.72fr)]">
-        <ol className="divide-y divide-slate-100 px-4 sm:px-5">
-          {recent.length ? recent.map((event) => (
-            <li key={`${event.source}-${event.id}`} className="flex gap-3 py-3">
-              <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${event.source === 'tool' ? 'bg-slate-400' : 'bg-blue-500'}`} />
-              <div className="min-w-0 flex-1"><p className="truncate text-sm text-slate-700">{event.title}</p>{event.detail ? <p className="mt-0.5 truncate text-xs text-slate-400">{event.detail}</p> : null}</div>
-              <time className="shrink-0 text-xs text-slate-400">{formatTime(event.timestamp)}</time>
-            </li>
-          )) : <li className="py-6 text-sm text-slate-400">正在读取运行事件...</li>}
-        </ol>
+    <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-slate-50/70" open={monitoring ? true : undefined}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 sm:px-5">
+        <div><h2 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><Activity className="h-4 w-4 text-slate-500" />系统运行记录</h2><p className="mt-1 text-xs text-slate-400">后台流程与技术证据，仅供查看，不是待回答问题</p></div>
+        <Badge variant="outline" className={monitoring ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'}>{monitoring ? (syncing ? '正在同步' : '自动同步中') : '无需操作'}</Badge>
+      </summary>
+      <div className="grid border-t border-slate-200 bg-white lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.72fr)]">
+        <div className="px-4 py-3 sm:px-5">
+          <p className="text-[11px] font-semibold uppercase text-slate-400">流程状态</p>
+          <ol className="mt-2 divide-y divide-slate-100">
+            {workflowEvents.length ? workflowEvents.map((event) => (
+              <li key={`${event.source}-${event.id}`} className="flex gap-3 py-3">
+                <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+                <div className="min-w-0 flex-1"><p className="truncate text-sm text-slate-700">{event.title}</p>{event.detail ? <p className="mt-0.5 truncate text-xs text-slate-400">{event.detail}</p> : null}</div>
+                <time className="shrink-0 text-xs text-slate-400">{formatTime(event.timestamp)}</time>
+              </li>
+            )) : <li className="py-5 text-sm text-slate-400">暂无流程更新。</li>}
+          </ol>
+          {technicalEvents.length ? <details className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3"><summary className="cursor-pointer py-2 text-xs font-medium text-slate-500">查看受治理工具事件（{technicalEvents.length}）</summary><ol className="divide-y divide-slate-200">{technicalEvents.map((event) => <li key={`${event.source}-${event.id}`} className="py-2 text-xs text-slate-500"><span className="font-mono text-slate-600">{event.title}</span>{event.detail ? <p className="mt-1 break-all text-[11px] text-slate-400">{event.detail}</p> : null}</li>)}</ol></details> : null}
+        </div>
         <div className="border-t border-slate-100 bg-slate-50/70 p-4 lg:border-l lg:border-t-0 sm:p-5">
-          <p className="text-xs font-semibold text-slate-600">最近训练日志</p>
+          <p className="text-xs font-semibold text-slate-600">训练日志（技术信息）</p>
           <div className="mt-3 max-h-52 space-y-1 overflow-auto font-mono text-[11px] leading-5 text-slate-500">
             {timeline?.logs.length ? timeline.logs.map((line, index) => <p key={`${index}-${line}`} className="break-all">{line}</p>) : <p>暂无训练日志。</p>}
           </div>
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -1266,7 +1272,9 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
 }) {
   const [draft, setDraft] = useState('');
   const [optimisticMessages, setOptimisticMessages] = useState<OptimisticConversationMessage[]>([]);
+  const [promptHistory, setPromptHistory] = useState<ThetaConversationMessage[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const researchMessages = useMemo(
     () => messages.filter((message) =>
       message.messageKind.startsWith('research.') ||
@@ -1275,42 +1283,54 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
     [messages],
   );
   const currentPrompt = status.decisionGap?.question ?? status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
-  const showCurrentPrompt = !researchMessages.some(
-    (message) => message.role === 'assistant' && message.content.includes(currentPrompt),
-  );
   const displayMessages = useMemo<DisplayConversationMessage[]>(() => {
-    const persisted = [...researchMessages]
-      .sort((left, right) => left.sequenceNumber - right.sequenceNumber)
-      .map((message) => ({ message }));
+    const supplementalPrompts = promptHistory.filter((prompt) => !researchMessages.some(
+      (message) => message.role === 'assistant' && message.content === prompt.content,
+    ));
+    const persisted = [...researchMessages, ...supplementalPrompts]
+      .sort((left, right) => {
+        const timeDifference = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+        return timeDifference || left.sequenceNumber - right.sequenceNumber;
+      })
+      .map((message) => ({
+        current: message.role === 'assistant' && message.content === currentPrompt,
+        message,
+      }));
     const latestSequence = persisted.reduce(
-      (maximum, item) => Math.max(maximum, item.message.sequenceNumber),
+      (maximum, item) => Math.max(maximum, Number.isFinite(item.message.sequenceNumber) ? item.message.sequenceNumber : 0),
       0,
     );
-    const pendingPrompt: DisplayConversationMessage[] = showCurrentPrompt
-      ? [{
-          current: true,
-          message: {
-            messageId: `pending-${status.runId}-${currentPrompt}`,
-            role: 'assistant',
-            messageKind: 'research.question',
-            content: currentPrompt,
-            sequenceNumber: latestSequence + 1,
-            createdAt: validIsoTimestamp(status.lastEventAt) ?? new Date().toISOString(),
-          },
-        }]
-      : [];
     const pendingUserMessages = optimisticMessages.map((message, index) => ({
       message: {
         ...message,
-        sequenceNumber: latestSequence + pendingPrompt.length + index + 1,
+        sequenceNumber: latestSequence + index + 1,
       },
       delivery: message.delivery,
     }));
-    return [...persisted, ...pendingPrompt, ...pendingUserMessages];
-  }, [currentPrompt, optimisticMessages, researchMessages, showCurrentPrompt, status.lastEventAt, status.runId]);
+    return [...persisted, ...pendingUserMessages];
+  }, [currentPrompt, optimisticMessages, promptHistory, researchMessages]);
   const noticeAlreadyShown = notice
     ? researchMessages.some((message) => message.content.includes(notice))
     : false;
+
+  useEffect(() => {
+    setPromptHistory([]);
+    setOptimisticMessages([]);
+  }, [status.runId]);
+
+  useEffect(() => {
+    if (researchMessages.some((message) => message.role === 'assistant' && message.content === currentPrompt)) return;
+    setPromptHistory((current) => current.some((message) => message.content === currentPrompt)
+      ? current
+      : [...current, {
+          messageId: `pending-${status.runId}-${current.length}`,
+          role: 'assistant',
+          messageKind: 'research.question',
+          content: currentPrompt,
+          sequenceNumber: Number.MAX_SAFE_INTEGER,
+          createdAt: validIsoTimestamp(status.lastEventAt) ?? new Date().toISOString(),
+        }]);
+  }, [currentPrompt, researchMessages, status.lastEventAt, status.runId]);
 
   useEffect(() => {
     setOptimisticMessages((pending) => pending.filter((message) => {
@@ -1320,6 +1340,11 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
       return persistedMatches <= message.baselineMatches;
     }));
   }, [researchMessages]);
+
+  useEffect(() => {
+    if (busy) return;
+    inputRef.current?.focus({ preventScroll: true });
+  }, [busy, currentPrompt]);
 
   useEffect(() => {
     const area = scrollAreaRef.current;
@@ -1335,6 +1360,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
       (message) => message.role === 'user' && message.content === answer,
     ).length;
     setDraft('');
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
     setOptimisticMessages((current) => [
       ...current,
       {
@@ -1396,6 +1422,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
       <div className={`shrink-0 border-t border-slate-100 bg-white ${compact ? 'p-3' : 'p-4 sm:p-5'}`}>
         <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
           <Textarea
+            ref={inputRef}
             id="research-answer"
             value={draft}
             maxLength={4000}
@@ -1628,7 +1655,24 @@ const EmptyPanel = ({ title, description, compact = false }: { title: string; de
 const LoadingBlock = () => <div className="grid min-h-44 place-items-center rounded-md border border-slate-200 bg-white"><div className="text-center"><RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" /><p className="mt-2 text-sm text-slate-500">正在读取事件状态...</p></div></div>;
 const ErrorNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
 const ActionNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800"><CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
-function HealthBadge({ status }: { status?: ThetaHealth['status'] }) { const label = status === 'ready' ? '环境正常' : status === 'degraded' ? '有提醒' : status === 'blocked' ? '环境阻塞' : '检查中'; const tone = status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : status === 'degraded' ? 'border-amber-200 bg-amber-50 text-amber-700' : status === 'blocked' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-50 text-slate-500'; return <Badge variant="outline" className={tone}>{label}</Badge>; }
+function HealthBadge({ health }: { health?: ThetaHealth }) {
+  const [open, setOpen] = useState(false);
+  const status = health?.status;
+  const label = status === 'ready' ? '环境正常' : status === 'degraded' ? '有提醒' : status === 'blocked' ? '环境阻塞' : '检查中';
+  const tone = status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : status === 'degraded' ? 'border-amber-200 bg-amber-50 text-amber-700' : status === 'blocked' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-50 text-slate-500';
+  const issues = health?.checks.filter((check) => check.status !== 'PASS') ?? [];
+  return <>
+    <button type="button" onClick={() => setOpen(true)} title="查看运行环境检查" className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"><Badge variant="outline" className={`${tone} cursor-pointer`}>{label}</Badge></button>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>运行环境检查</DialogTitle><DialogDescription>“有提醒”表示核心功能仍可运行，但存在可选配置或性能项需要留意；它不等同于训练失败。“环境阻塞”才表示必须先修复。</DialogDescription></DialogHeader>
+        <div className="space-y-2">
+          {issues.length ? issues.map((check) => <div key={check.id} className={`rounded-md border px-3 py-3 ${check.status === 'FAIL' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}><div className="flex items-center justify-between gap-3"><p className="text-sm font-medium text-slate-800">{check.message}</p><Badge variant="outline" className={check.status === 'FAIL' ? 'border-red-200 text-red-700' : 'border-amber-200 text-amber-700'}>{check.status}</Badge></div>{check.remediation ? <p className="mt-2 text-xs leading-5 text-slate-600">处理建议：{check.remediation}</p> : null}<p className="mt-1 font-mono text-[10px] text-slate-400">{check.id}</p></div>) : <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">所有运行环境检查均已通过。</div>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  </>;
+}
 
 const statusKind = (run: ThetaRunSummary): { label: string; tone: string } => actionableStates.has(run.currentState ?? '') ? { label: '待确认', tone: 'border-amber-200 bg-amber-50 text-amber-700' } : isRunning(run) ? { label: '运行中', tone: 'border-blue-200 bg-blue-50 text-blue-700' } : run.currentState === 'Completed' ? { label: '已完成', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' } : { label: '需检查', tone: 'border-red-200 bg-red-50 text-red-700' };
 const isRunning = (run: ThetaRunSummary): boolean => ['StartTraining', 'MonitorTraining'].includes(run.currentState ?? '') || run.status === 'waiting_timer';

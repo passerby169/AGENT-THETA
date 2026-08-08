@@ -1,9 +1,17 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ImageIcon, ListPlus, Loader2, Paperclip, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Eye, ListPlus, Loader2, Paperclip, Send, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { ZoomableResultImage } from './zoomable-result-image';
 import {
   ThetaAgentV2API,
   type ThetaResultAnalysisSelection,
@@ -27,6 +35,11 @@ interface SelectedVisualization {
   label: string;
   format: 'image' | 'interactive';
   src: string;
+}
+
+interface AttachmentPreview {
+  label: string;
+  visualization?: SelectedVisualization;
 }
 
 export function ResultAnalysisAssistant({
@@ -57,23 +70,26 @@ export function ResultAnalysisAssistant({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [attachment, setAttachment] = useState<SelectionAttachment>();
+  const [preview, setPreview] = useState<AttachmentPreview>();
   const endRef = useRef<HTMLDivElement>(null);
-  const selectionSignature = JSON.stringify(selection);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMessages([]);
     setQuestion('');
     setError(undefined);
     setAttachment(undefined);
+    setPreview(undefined);
   }, [runId]);
-
-  useEffect(() => {
-    setAttachment(undefined);
-  }, [selectionSignature]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [busy, messages]);
+
+  useEffect(() => {
+    if (busy) return;
+    questionRef.current?.focus({ preventScroll: true });
+  }, [busy, messages.length]);
 
   const send = async () => {
     const content = question.trim();
@@ -101,6 +117,7 @@ export function ResultAnalysisAssistant({
       .map(({ role, content: historyContent }) => ({ role, content: historyContent }));
     if (!retrying) setMessages((current) => [...current, userMessage]);
     setQuestion('');
+    requestAnimationFrame(() => questionRef.current?.focus({ preventScroll: true }));
     setBusy(true);
     setError(undefined);
     try {
@@ -145,6 +162,7 @@ export function ResultAnalysisAssistant({
       visualizations: [...nextVisualizations],
     });
     setError(undefined);
+    requestAnimationFrame(() => questionRef.current?.focus({ preventScroll: true }));
   };
 
   const captureSelection = () => {
@@ -165,6 +183,50 @@ export function ResultAnalysisAssistant({
     }
     setQuestion(prompt);
     setError(undefined);
+    requestAnimationFrame(() => questionRef.current?.focus({ preventScroll: true }));
+  };
+
+  const removeAttachmentItem = (index: number) => {
+    setAttachment((current) => {
+      if (!current) return current;
+      const metricCount = current.selection.metricKeys.length;
+      const visualizationCount = current.selection.visualizationIds.length;
+      const nextSelection: ThetaResultAnalysisSelection = {
+        topicIds: [...current.selection.topicIds],
+        metricKeys: [...current.selection.metricKeys],
+        visualizationIds: [...current.selection.visualizationIds],
+        includeGoalAssessment: current.selection.includeGoalAssessment,
+        includeWarnings: current.selection.includeWarnings,
+      };
+      const nextItems = [...current.items];
+      const nextVisualizations = [...current.visualizations];
+      if (index < metricCount) {
+        nextSelection.metricKeys.splice(index, 1);
+      } else if (index < metricCount + visualizationCount) {
+        const visualizationIndex = index - metricCount;
+        const [removedId] = nextSelection.visualizationIds.splice(visualizationIndex, 1);
+        const storedIndex = nextVisualizations.findIndex((item) => item.id === removedId);
+        if (storedIndex >= 0) nextVisualizations.splice(storedIndex, 1);
+      } else {
+        const trailingIndex = index - metricCount - visualizationCount;
+        if (nextSelection.includeGoalAssessment && trailingIndex === 0) {
+          nextSelection.includeGoalAssessment = false;
+        } else {
+          nextSelection.includeWarnings = false;
+        }
+      }
+      nextItems.splice(index, 1);
+      if (nextItems.length === 0) return undefined;
+      return { selection: nextSelection, items: nextItems, visualizations: nextVisualizations };
+    });
+  };
+
+  const previewAttachmentItem = (item: string, index: number) => {
+    const metricCount = attachment?.selection.metricKeys.length ?? 0;
+    const visualizationIndex = index - metricCount;
+    const visualizationId = attachment?.selection.visualizationIds[visualizationIndex];
+    const visualization = attachment?.visualizations.find((candidate) => candidate.id === visualizationId);
+    setPreview({ label: item, visualization });
   };
 
   return (
@@ -209,29 +271,32 @@ export function ResultAnalysisAssistant({
       </div>
 
       <div className="border-t border-slate-100 p-3">
-        {messages.length === 0 ? (
-          <>
-            <div className="mb-2 grid gap-2">
-              <Button type="button" variant={selectionCount ? 'default' : 'outline'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="w-full gap-2">
-                <ListPlus className="h-3.5 w-3.5" />{selectionCount ? `载入已勾选结果（${selectionCount} 项）` : '尚未勾选结果'}
-              </Button>
-              <Button type="button" variant="outline" size="sm" onClick={captureAll} disabled={busy || allSelectionCount === 0} className="w-full gap-2">
-                <Sparkles className="h-3.5 w-3.5" />载入全部可分析结果（{allSelectionCount} 项）
-              </Button>
-            </div>
-            {attachment ? (
-              <div className="mb-2 rounded-md border border-blue-100 bg-blue-50/70 p-2">
-                <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析附件 · {attachment.items.length} 项</p>
-                {attachment.visualizations.length ? <div className="mt-2 grid grid-cols-3 gap-1.5">{attachment.visualizations.slice(0, 3).map((item) => item.format === 'image' ? <div key={item.id} className="aspect-[4/3] overflow-hidden rounded-sm border border-blue-100 bg-white"><img src={item.src} alt={item.label} className="h-full w-full object-contain" /></div> : <div key={item.id} className="grid aspect-[4/3] place-items-center rounded-sm border border-blue-100 bg-white text-blue-600" title={item.label}><ImageIcon className="h-4 w-4" /></div>)}</div> : null}
-                <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
-                  {attachment.items.slice(0, 8).map((item, index) => <span key={`${index}-${item}`} className="max-w-full truncate rounded-sm bg-white px-2 py-1 text-[10px] text-slate-600">{item}</span>)}
-                  {attachment.items.length > 8 ? <span className="rounded-sm bg-white px-2 py-1 text-[10px] text-slate-500">另有 {attachment.items.length - 8} 项</span> : null}
-                </div>
+        <div className="mb-2 grid gap-2">
+          <Button type="button" variant={selectionCount ? 'default' : 'outline'} size="sm" onClick={captureSelection} disabled={busy || selectionCount === 0} className="w-full gap-2">
+            <ListPlus className="h-3.5 w-3.5" />{selectionCount ? `载入已勾选结果（${selectionCount} 项）` : '尚未勾选结果'}
+          </Button>
+          {messages.length === 0 ? <Button type="button" variant="outline" size="sm" onClick={captureAll} disabled={busy || allSelectionCount === 0} className="w-full gap-2">
+            <Sparkles className="h-3.5 w-3.5" />载入全部可分析结果（{allSelectionCount} 项）
+          </Button> : null}
+        </div>
+        {attachment ? (
+          <details className="mb-2 rounded-md border border-blue-100 bg-blue-50/70" open={messages.length === 0 ? true : undefined}>
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-2 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析范围 · {attachment.items.length} 项<span className="ml-auto font-normal text-blue-600">点击查看与管理</span></summary>
+            <div className="border-t border-blue-100 p-2">
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {attachment.items.map((item, index) => (
+                  <div key={`${index}-${item}`} className="flex items-center gap-1 rounded-sm border border-blue-100 bg-white p-1">
+                    <button type="button" onClick={() => previewAttachmentItem(item, index)} className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1 text-left text-[10px] text-slate-600 hover:text-blue-700" title={`查看 ${item}`}><Eye className="h-3 w-3 shrink-0" /><span className="truncate">{item}</span></button>
+                    <button type="button" onClick={() => removeAttachmentItem(index)} className="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-slate-400 hover:bg-red-50 hover:text-red-600" title={`移除 ${item}`} aria-label={`移除 ${item}`}><X className="h-3 w-3" /></button>
+                  </div>
+                ))}
               </div>
-            ) : null}
-          </>
+              <button type="button" onClick={() => setAttachment(undefined)} className="mt-2 flex items-center gap-1 text-[10px] text-slate-500 hover:text-red-600"><Trash2 className="h-3 w-3" />清空本次分析范围</button>
+            </div>
+          </details>
         ) : null}
         <Textarea
+          ref={questionRef}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
@@ -248,6 +313,15 @@ export function ResultAnalysisAssistant({
           <Send className="h-3.5 w-3.5" />{error && messages.length ? '重新发送' : '发送分析'}
         </Button>
       </div>
+      <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) setPreview(undefined); }}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader><DialogTitle>{preview?.label ?? '查看载入结果'}</DialogTitle><DialogDescription>这里只查看当前已载入的分析内容，不会发送 AI 请求。</DialogDescription></DialogHeader>
+          {preview?.visualization ? preview.visualization.format === 'image'
+            ? <ZoomableResultImage src={preview.visualization.src} alt={preview.visualization.label} />
+            : <iframe src={preview.visualization.src} title={preview.visualization.label} className="h-[70vh] w-full rounded-md border border-slate-200 bg-white" sandbox="allow-scripts" />
+          : <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-700">{preview?.label}</div>}
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }
