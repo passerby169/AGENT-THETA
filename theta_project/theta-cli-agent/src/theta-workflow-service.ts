@@ -57,6 +57,11 @@ import {
   buildDatasetFacts,
   buildDeterministicUnderstanding,
 } from "./dataset-understanding/service.js";
+import { DatasetUnderstandingLanguageLoop } from './dataset-understanding/language-loop.js';
+import {
+  assertDatasetConfirmation,
+  validateDatasetUnderstanding,
+} from './dataset-understanding/validator.js';
 import {
   approvalReceiptSchema,
   canonicalExperimentProtocolSchema,
@@ -92,6 +97,7 @@ import {
 } from "./tools/hypha-runner.js";
 import type { ThetaTrainingPlan } from "./tools/plan-validate-tool.js";
 import type { ThetaDatasetExploreOutput } from "./tools/dataset-explore-tool.js";
+import type { DatasetUnderstandingLanguageResult } from './tools/dataset-understanding-language-tool.js';
 import { THETA_TOOL_IDS } from "./tools/tool-ids.js";
 import { SQLiteDatasetRegistry } from "./storage/dataset-registry.js";
 import { SQLiteV2ResearchStore } from "./storage/v2-research-store.js";
@@ -145,6 +151,7 @@ export interface ThetaWorkflowInput {
   plan?: Record<string, unknown>;
   sampleSize?: number;
   plannerMode?: "deterministic" | "minimax";
+  allowRemoteSamples?: boolean;
   recoveryOfRunId?: string;
   recoveryReason?: string;
 }
@@ -1161,7 +1168,7 @@ const executeThetaState = async (
           const explored = (await invoke(THETA_TOOL_IDS.datasetExplore, {
             datasetRef,
             views: ["schema", "profiles", "quality"],
-            sampleSize: Math.min(numberValue(input.sampleSize) ?? 20, 100),
+            sampleSize: Math.min(numberValue(input.sampleSize) ?? 10, 20),
           })) as unknown as ThetaDatasetExploreOutput;
           const facts = buildDatasetFacts(explored);
           const previousFacts = datasetFactsSchema.safeParse(
@@ -1243,10 +1250,12 @@ const executeThetaState = async (
       }
       case THETA_WORKFLOW_STATES.analyzeDataset: {
         const facts = datasetFactsSchema.parse(variables.datasetFacts);
+        const input = requireRecord(variables.input, "workflow input");
+        const allowRemoteSamples = input.allowRemoteSamples === true;
         const explored = (await invoke(THETA_TOOL_IDS.datasetExplore, {
           datasetRef: facts.datasetRef,
           views: ["schema", "head", "sample", "profiles", "quality"],
-          sampleSize: 20,
+          sampleSize: 10,
           sampleSeed: facts.datasetHash.slice(0, 16),
         })) as unknown as ThetaDatasetExploreOutput;
         if (explored.datasetHash !== facts.datasetHash) {
@@ -1260,10 +1269,48 @@ const executeThetaState = async (
             },
           });
         }
-        const understanding = buildDeterministicUnderstanding(facts, explored);
+        let understanding = buildDeterministicUnderstanding(facts, explored);
+        let understandingMeta: Record<string, unknown> = {
+          source: 'deterministic',
+          explorationCalls: 0,
+          remoteSamplesAllowed: false,
+        };
+        if (input.plannerMode === 'minimax') {
+          const result = await new DatasetUnderstandingLanguageLoop({
+            allowRemoteSamples,
+            generate: async (request) =>
+              (await invoke(
+                THETA_TOOL_IDS.datasetUnderstandingLanguage,
+                request as unknown as Record<string, unknown>,
+                USER_ID,
+              )) as unknown as DatasetUnderstandingLanguageResult,
+            explore: async ({ datasetRef, view, selectedColumns }) =>
+              (await invoke(THETA_TOOL_IDS.datasetExplore, {
+                datasetRef,
+                views: [view],
+                selectedColumns,
+                sampleSize: 10,
+                sampleSeed: facts.datasetHash.slice(0, 16),
+              })) as unknown as ThetaDatasetExploreOutput,
+          }).understand(facts, explored);
+          understanding = result.draft;
+          understandingMeta = {
+            source: result.source,
+            explorationCalls: result.explorationCalls,
+            fallbackReason: result.fallbackReason ?? null,
+            remoteSamplesAllowed: allowRemoteSamples,
+          };
+        }
+        const validation = validateDatasetUnderstanding(understanding, facts);
+        if (!validation.valid) {
+          throw new Error(validation.errors.join(' '));
+        }
         return transition(
           THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation,
-          { datasetUnderstanding: understanding },
+          {
+            datasetUnderstanding: understanding,
+            datasetUnderstandingMeta: understandingMeta,
+          },
         );
       }
       case THETA_WORKFLOW_STATES.awaitDatasetUnderstandingConfirmation: {
@@ -1306,7 +1353,7 @@ const executeThetaState = async (
           });
         }
         const draft = datasetConfirmationDraftSchema.parse(submission.draft);
-        validateV2ConfirmedColumns(draft, facts);
+        assertDatasetConfirmation(draft, facts);
         const confirmation = datasetConfirmationSchema.parse({
           schemaVersion: "2.0.0",
           datasetRef: facts.datasetRef,
@@ -2676,25 +2723,6 @@ const sanitizeDatasetProfile = (
   });
 };
 
-const validateV2ConfirmedColumns = (
-  confirmation: DatasetConfirmationDraft,
-  facts: DatasetFacts,
-): void => {
-  const available = new Set(facts.columns.map((column) => column.name));
-  const selected = [
-    ...confirmation.textColumns,
-    ...confirmation.timeColumns,
-    ...confirmation.idColumns,
-    ...confirmation.metadataColumns,
-  ];
-  const unknown = selected.filter((column) => !available.has(column));
-  if (unknown.length > 0) {
-    throw new Error(
-      `Dataset confirmation references unknown columns: ${[...new Set(unknown)].join(", ")}.`,
-    );
-  }
-};
-
 const v2DecisionGapContext = (
   variables: Record<string, unknown>,
 ): { decisionGap: DecisionGap } | Record<string, never> => {
@@ -3313,6 +3341,12 @@ const validateInput = (input: ThetaWorkflowInput): void => {
   }
   if (input.plannerMode !== undefined && input.plannerMode !== "deterministic" && input.plannerMode !== "minimax") {
     throw new Error("input.plannerMode must be deterministic or minimax.");
+  }
+  if (
+    input.allowRemoteSamples !== undefined &&
+    typeof input.allowRemoteSamples !== 'boolean'
+  ) {
+    throw new Error('input.allowRemoteSamples must be a boolean.');
   }
   if (
     input.sampleSize !== undefined &&

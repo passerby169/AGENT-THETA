@@ -16,6 +16,10 @@ import {
   thetaDatasetExploreToolSpec,
 } from './dataset-explore-tool.js';
 import {
+  thetaDatasetUnderstandingLanguageHandler,
+  thetaDatasetUnderstandingLanguageToolSpec,
+} from './dataset-understanding-language-tool.js';
+import {
   thetaModelCatalogHandler,
   thetaModelCatalogToolSpec,
 } from "./model-catalog-tool.js";
@@ -84,6 +88,7 @@ export const registerThetaModelCatalogTool = (
 export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaDatasetInspectToolSpec,
   thetaDatasetExploreToolSpec,
+  thetaDatasetUnderstandingLanguageToolSpec,
   thetaDatasetDetectColumnsToolSpec,
   thetaModelCatalogToolSpec,
   thetaModelRecommendToolSpec,
@@ -110,6 +115,11 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   registry.register(thetaDatasetExploreToolSpec, thetaDatasetExploreHandler, {
     replace: true,
   });
+  registry.register(
+    thetaDatasetUnderstandingLanguageToolSpec,
+    thetaDatasetUnderstandingLanguageHandler,
+    { replace: true },
+  );
   registry.register(
     thetaDatasetDetectColumnsToolSpec,
     thetaDatasetDetectColumnsHandler,

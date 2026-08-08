@@ -161,10 +161,20 @@ const workflowStates: WorkflowStateSpec[] = [
     THETA_WORKFLOW_STATES.analyzeDataset,
     "Build a bounded dataset understanding from governed, redacted dataset views.",
     {
-      allowedTools: [THETA_TOOL_IDS.datasetExplore],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.datasetExplore, "2.0.0")],
-      permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead],
-      policyRefs: [readonlyPolicy.id],
+      allowedTools: [
+        THETA_TOOL_IDS.datasetExplore,
+        THETA_TOOL_IDS.datasetUnderstandingLanguage,
+      ],
+      allowedToolRefs: [
+        toolRef(THETA_TOOL_IDS.datasetExplore, "2.0.0"),
+        toolRef(THETA_TOOL_IDS.datasetUnderstandingLanguage),
+      ],
+      permissionScopes: [
+        THETA_PERMISSION_SCOPES.datasetRead,
+        THETA_PERMISSION_SCOPES.inferenceUse,
+      ],
+      humanApprovalPolicyRef: toolRef(languageInferencePolicy.id),
+      policyRefs: [readonlyPolicy.id, languageInferencePolicy.id],
     },
   ),
   state(

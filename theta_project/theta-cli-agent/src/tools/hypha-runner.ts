@@ -98,6 +98,7 @@ const thetaApprovedExternalToolIds = new Set<string>([
   ...thetaTrainingControlToolIds,
   THETA_TOOL_IDS.languageGenerate,
   THETA_TOOL_IDS.conversationLanguage,
+  THETA_TOOL_IDS.datasetUnderstandingLanguage,
 ]);
 
 export const thetaCliPolicyEngine: PolicyEngine = {

@@ -1,6 +1,7 @@
 export const THETA_TOOL_IDS = {
   datasetInspect: "theta.dataset.inspect",
   datasetExplore: "theta.dataset.explore",
+  datasetUnderstandingLanguage: "theta.dataset.understanding.language",
   datasetDetectColumns: "theta.dataset.detect_columns",
   datasetCleanPreview: "theta.dataset.clean_preview",
   modelCatalog: "theta.model.catalog",

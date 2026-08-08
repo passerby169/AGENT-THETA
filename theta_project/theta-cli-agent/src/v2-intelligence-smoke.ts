@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import type { InferenceProvider } from '@hypha/inference';
 import { applyDecisionGapAnswer, createInitialResearchIntent, deriveDecisionGaps, emptyInterviewMemory, selectNextDecisionGap } from './agent/decision-gap.js';
 import { DatasetUnderstandingLanguageLoop, MAX_DATASET_EXPLORATION_CALLS } from './dataset-understanding/language-loop.js';
 import { buildDatasetFacts, buildDeterministicUnderstanding } from './dataset-understanding/service.js';
@@ -24,16 +23,33 @@ const output = {
   }, inferredDomain: { label: '社会文本研究', confidence: 0.72, evidence: ['文本样本'] }, qualityWarnings: [],
 } as ThetaDatasetExploreOutput;
 const facts = buildDatasetFacts(output);
-const provider: InferenceProvider = {
-  id: 'fake',
-  infer: async () => ({ id: 'fake', output: { kind: 'tool_calls', toolCalls: [{ id: '1', name: 'theta.dataset.explore', arguments: { datasetRef: 'ignored', view: 'sample' } }] } }),
-};
 let calls = 0;
-const loop = new DatasetUnderstandingLanguageLoop({ provider, explore: async () => { calls += 1; return output; } });
+const loop = new DatasetUnderstandingLanguageLoop({
+  generate: async () => ({
+    schemaVersion: '1.0.0', source: 'minimax', factsHash: 'b'.repeat(64),
+    decision: { kind: 'request_view', view: 'profiles', reason: 'need profiles' }, telemetry: {},
+  }),
+  explore: async () => { calls += 1; return output; },
+});
 const bounded = await loop.understand(facts, output);
 assert.equal(calls, MAX_DATASET_EXPLORATION_CALLS);
 assert.equal(bounded.source, 'deterministic');
 assert.equal(bounded.fallbackReason, 'tool_budget_exhausted');
+
+let sanitizedRequest = '';
+const noSampleLoop = new DatasetUnderstandingLanguageLoop({
+  generate: async (request) => {
+    sanitizedRequest = JSON.stringify(request);
+    return {
+      schemaVersion: '1.0.0', source: 'minimax', factsHash: 'c'.repeat(64),
+      decision: { kind: 'request_view', view: 'sample', reason: 'need samples' }, telemetry: {},
+    };
+  },
+  explore: async () => { throw new Error('Sample exploration must not run without consent.'); },
+});
+const noSample = await noSampleLoop.understand(facts, output);
+assert.equal(noSample.fallbackReason, 'illegal_tool_request');
+assert.equal(sanitizedRequest.includes('已脱敏样本'), false);
 
 const understanding = buildDeterministicUnderstanding(facts, output);
 assert.equal(validateDatasetUnderstanding(understanding, facts).valid, true);
