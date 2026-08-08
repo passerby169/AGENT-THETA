@@ -16,6 +16,9 @@ export interface ThetaDatasetExploreInput {
   views?: DatasetExploreView[];
   sampleSize?: number;
   sampleSeed?: string;
+  headLimit?: number;
+  selectedColumns?: string[];
+  sheetName?: string;
 }
 
 export interface ExploreColumnProfile {
@@ -23,8 +26,11 @@ export interface ExploreColumnProfile {
   inferredType: 'empty' | 'number' | 'datetime' | 'text' | 'string';
   missingRatio: number;
   uniqueCount: number;
+  uniqueRatio?: number;
   averageLength: number;
   maximumLength: number;
+  parseSuccessRatio?: number;
+  sampleValues?: string[];
 }
 
 export interface ExploreColumnCandidate {
@@ -39,13 +45,25 @@ export interface ThetaDatasetExploreOutput {
   fileName: string;
   format: string;
   sizeBytes: number;
+  encoding?: string;
+  delimiter?: string | null;
+  sheets?: string[];
+  selectedSheet?: string | null;
   rowCount: number;
   columns: string[];
   profiles: ExploreColumnProfile[];
   head: Array<Record<string, unknown>>;
   sample: Array<Record<string, unknown>>;
   sampleSeed: string;
+  samplePolicy?: {
+    method: 'deterministic_reservoir';
+    requestedRows: number;
+    returnedRows: number;
+    profileRows: number;
+    profileTruncated: boolean;
+  };
   sampleTruncated: boolean;
+  outputTruncated?: boolean;
   redaction: {
     applied: boolean;
     redactedValueCount: number;
@@ -55,7 +73,11 @@ export interface ThetaDatasetExploreOutput {
     text: ExploreColumnCandidate[];
     time: ExploreColumnCandidate[];
     id: ExploreColumnCandidate[];
+    group?: ExploreColumnCandidate[];
+    covariate?: ExploreColumnCandidate[];
+    evaluation?: ExploreColumnCandidate[];
     metadata: ExploreColumnCandidate[];
+    ignored?: ExploreColumnCandidate[];
   };
   languageDistribution: Array<{ language: string; ratio: number }>;
   duplicateRatio: number;
@@ -79,8 +101,16 @@ const inputSchema: JsonSchema = {
       items: { enum: ['schema', 'head', 'sample', 'profiles', 'quality'] },
       maxItems: 5,
     },
-    sampleSize: { type: 'integer', minimum: 1, maximum: 100 },
+    sampleSize: { type: 'integer', minimum: 1, maximum: 20 },
     sampleSeed: { type: 'string', minLength: 1, maxLength: 128 },
+    headLimit: { type: 'integer', minimum: 1, maximum: 10 },
+    selectedColumns: {
+      type: 'array',
+      uniqueItems: true,
+      items: { type: 'string', minLength: 1 },
+      maxItems: 50,
+    },
+    sheetName: { type: 'string', minLength: 1, maxLength: 256 },
   },
   additionalProperties: false,
 };
@@ -93,13 +123,19 @@ const outputSchema: JsonSchema = {
     'fileName',
     'format',
     'sizeBytes',
+    'encoding',
+    'delimiter',
+    'sheets',
+    'selectedSheet',
     'rowCount',
     'columns',
     'profiles',
     'head',
     'sample',
     'sampleSeed',
+    'samplePolicy',
     'sampleTruncated',
+    'outputTruncated',
     'redaction',
     'columnRoles',
     'languageDistribution',
@@ -114,13 +150,19 @@ const outputSchema: JsonSchema = {
     fileName: { type: 'string' },
     format: { type: 'string' },
     sizeBytes: { type: 'integer', minimum: 0 },
+    encoding: { type: 'string' },
+    delimiter: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    sheets: { type: 'array', items: { type: 'string' } },
+    selectedSheet: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     rowCount: { type: 'integer', minimum: 0 },
     columns: { type: 'array', items: { type: 'string' } },
     profiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
     head: { type: 'array', items: { type: 'object', additionalProperties: true } },
     sample: { type: 'array', items: { type: 'object', additionalProperties: true } },
     sampleSeed: { type: 'string' },
+    samplePolicy: { type: 'object', additionalProperties: true },
     sampleTruncated: { type: 'boolean' },
+    outputTruncated: { type: 'boolean' },
     redaction: { type: 'object', additionalProperties: true },
     columnRoles: { type: 'object', additionalProperties: true },
     languageDistribution: { type: 'array', items: { type: 'object', additionalProperties: true } },
@@ -177,8 +219,11 @@ export const thetaDatasetExploreHandler: ToolHandler<
         fileName: record.displayName,
         sizeBytes: record.sizeBytes,
         views: input.views ?? ['schema', 'head', 'sample', 'profiles', 'quality'],
-        sampleSize: input.sampleSize ?? 20,
+        sampleSize: input.sampleSize ?? 10,
         sampleSeed: input.sampleSeed ?? record.sha256.slice(0, 16),
+        headLimit: input.headLimit ?? 5,
+        selectedColumns: input.selectedColumns ?? [],
+        sheetName: input.sheetName,
       },
       { runId: context.runId, stepId: context.stepId },
     );
