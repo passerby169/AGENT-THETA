@@ -274,7 +274,10 @@ const recommendationCapabilities = (
   temporalTopics: card.capabilities.temporalTopics,
   metadataEffects: card.capabilities.metadataEffects,
   shortTextOptimized: card.capabilities.shortTextOptimized,
-  offlineExecution: card.capabilities.offlineExecution === "supported",
+  // "conditional" means the audited implementation has a local fallback.
+  // Keep it eligible for offline planning; limitations remain visible during
+  // plan review and the dry run verifies that the local path is available.
+  offlineExecution: card.capabilities.offlineExecution !== "unsupported",
   cpuExecution: card.capabilities.cpuExecution !== "unsupported",
   nativeOutputs: [...card.capabilities.nativeOutputs],
 });

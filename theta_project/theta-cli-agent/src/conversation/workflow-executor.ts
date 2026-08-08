@@ -200,11 +200,14 @@ const explain = (
   section: 'all' | 'model' | 'parameters' | 'protocol' | 'evidence',
 ): Record<string, unknown> => {
   const failed = latestEvent(evidence.orchestrationEvents, 'run.failed');
+  const failedPayload = record(failed?.payload);
+  const workflowFailure = record(failedPayload.error);
   const policy = latestEvent(evidence.toolEvents, 'tool.policy.checked');
   const receipt = record(status.trainingReceipt);
   const trainingFailure = record(receipt.failure);
   const reasonCode =
     stringField(trainingFailure, 'code') ??
+    stringField(workflowFailure, 'code') ??
     stringField(failed?.payload, 'reasonCode') ??
     stringField(failed?.payload, 'code') ??
     (status.pendingActionRef
@@ -219,6 +222,7 @@ const explain = (
   const rawReason =
     stringField(trainingFailure, 'summary') ??
     status.pendingReason ??
+    stringField(workflowFailure, 'message') ??
     stringField(failed?.payload, 'message') ??
     stringField(failed?.payload, 'reason');
   const explanationSections = explainPlanDecision(plan, section);
@@ -235,6 +239,7 @@ const explain = (
     pendingActionRef: status.pendingActionRef ?? null,
     stage:
       stringField(trainingFailure, 'stage') ??
+      stringField(workflowFailure, 'stateId') ??
       stringField(receipt, 'currentStep') ??
       null,
     technicalDetail:

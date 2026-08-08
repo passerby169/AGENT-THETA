@@ -11,6 +11,26 @@ const result = await runThetaModelRecommend({
     columnProfiles: [{ name: 'content', avgLength: 92 }],
   },
   researchGoal: 'time trend topic modeling',
+  researchBrief: {
+    schemaVersion: '1.0.0',
+    researchQuestion: 'How do topics evolve over time?',
+    dataSources: ['local-csv'],
+    analysisUnit: 'document',
+    language: 'en',
+    comparisonGroups: [],
+    topicGranularity: 'medium',
+    knownBiases: [],
+    sensitiveData: { status: 'no', categories: [] },
+    successCriteria: ['coherent temporal topics'],
+    hardwareLimit: { device: 'cpu', memoryGb: 16 },
+    textFieldIntent: 'document body',
+    trendAnalysis: true,
+    offlineOnly: true,
+    requestedEmbedding: 'local',
+    candidateTimeColumns: ['created_at'],
+    candidateGroupColumns: [],
+    unknownFields: [],
+  },
   columnConfirmation: {
     schemaVersion: '1.0.0',
     datasetSha256: 'a'.repeat(64),
@@ -31,6 +51,21 @@ const result = await runThetaModelRecommend({
 
 if (result.status !== 'completed' || !result.output) {
   throw new Error(`theta.model.recommend did not complete: ${JSON.stringify(result.error ?? result.status)}`);
+}
+
+const topRecommendation = result.output.recommendations[0];
+if (topRecommendation?.modelId !== 'dtm') {
+  throw new Error(
+    `Temporal offline research must select DTM, received ${topRecommendation?.modelId ?? 'none'}.`,
+  );
+}
+if (
+  topRecommendation.capabilityAssessment.offlineExecution !== true ||
+  topRecommendation.capabilityAssessment.unmetResearchRequirements.length > 0
+) {
+  throw new Error(
+    `DTM offline fallback was not preserved: ${JSON.stringify(topRecommendation.capabilityAssessment)}.`,
+  );
 }
 
 console.log(
