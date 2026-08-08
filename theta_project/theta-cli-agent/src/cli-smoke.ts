@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path, { resolve } from "node:path";
 import { parsePlanAdjustment } from "./conversation/turn-orchestrator.js";
@@ -347,6 +347,70 @@ const cases: CommandCase[] = [
 for (const commandCase of cases) {
   runJsonCommand(commandCase);
 }
+
+const understandingResult = asRecord(
+  runJsonCommand({
+    args: [
+      "dataset",
+      "understanding",
+      "--run-id",
+      agentRunId,
+      "--runtime-db",
+      runtimeDb,
+    ],
+    verify: (output) => {
+      const result = asRecord(output);
+      if (
+        result.currentState !== "AwaitDatasetUnderstandingConfirmation" ||
+        !result.facts ||
+        !result.understanding
+      ) {
+        throw new Error("dataset understanding did not read the V2 Run context.");
+      }
+    },
+  }),
+);
+const understanding = asRecord(understandingResult.understanding);
+const roleColumns = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((entry) => String(asRecord(entry).column))
+    : [];
+const confirmationFile = path.join(root, "dataset-confirmation.json");
+await writeFile(
+  confirmationFile,
+  JSON.stringify({
+    status: "confirmed",
+    domainLabel: String(asRecord(understanding.domain).label),
+    analysisUnit: String(understanding.analysisUnit),
+    textColumns: roleColumns(understanding.textColumns),
+    timeColumns: roleColumns(understanding.timeColumns),
+    idColumns: roleColumns(understanding.idColumns),
+    metadataColumns: roleColumns(understanding.metadataColumns),
+    groupColumns: roleColumns(understanding.groupColumns),
+    covariateColumns: roleColumns(understanding.covariateColumns),
+    evaluationColumns: roleColumns(understanding.evaluationColumns),
+    ignoredColumns: roleColumns(understanding.ignoredColumns),
+  }),
+  "utf8",
+);
+runJsonCommand({
+  args: [
+    "dataset",
+    "confirm",
+    "--run-id",
+    agentRunId,
+    "--file",
+    confirmationFile,
+    "--runtime-db",
+    runtimeDb,
+  ],
+  verify: (output) => {
+    const result = asRecord(output);
+    if (result.currentState === "AwaitDatasetUnderstandingConfirmation") {
+      throw new Error("dataset confirm did not advance the shared FSM Run.");
+    }
+  },
+});
 
 const registeredDataset = asRecord(
   runJsonCommand({

@@ -34,6 +34,11 @@ import type { ThetaTrainingDryRunInput } from "./tools/training-dry-run-tool.js"
 import type { ThetaTrainingStartInput } from "./tools/training-start-tool.js";
 import { runThetaWorkflowCliCommand } from "./theta-workflow-cli.js";
 import {
+  ThetaWorkflowService,
+  type ThetaWorkflowConversationContext,
+} from "./theta-workflow-service.js";
+import { datasetConfirmationDraftSchema } from "./dataset-understanding/contracts.js";
+import {
   isThetaAgentCommand,
   runThetaAgentCliCommand,
 } from "./agent-cli.js";
@@ -131,6 +136,12 @@ Commands:
   dataset explore --dataset-ref <ref> [--sample-size <number>] [--runtime-db <path>]
       Explore a registered dataset through the governed V2 read tool.
 
+  dataset understanding --run-id <id> [--runtime-db <path>] [--json]
+      Read the current data understanding from canonical Run events.
+
+  dataset confirm --run-id <id> --file <confirmation.json> [--runtime-db <path>]
+      Validate one data-understanding confirmation and resume the same FSM Run.
+
   models
       List models exposed by THETA through Hypha governance.
 
@@ -182,6 +193,8 @@ Examples:
   npm run cli -- dataset detect-columns --file fixtures/sample.jsonl
   npm run cli -- dataset register --file fixtures/sample.jsonl
   npm run cli -- dataset explore --dataset-ref <dataset_ref>
+  npm run cli -- dataset understanding --run-id <run_id>
+  npm run cli -- dataset confirm --run-id <run_id> --file <confirmation.json>
   npm run cli -- models
   npm run cli -- recommend --profile fixtures/data-profile.json --columns fixtures/model-recommend-columns.json
   npm run cli -- plan validate --file fixtures/training-plan.json
@@ -434,6 +447,84 @@ const exploreDatasetCommand = async (
       ...explored.qualityWarnings.map((warning) => `Warning: ${warning}`),
     ].join("\n"),
   );
+};
+
+const datasetUnderstandingCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput,
+): Promise<void> => {
+  const runId = requiredStringFlag(parsed, "run-id");
+  const context = await new ThetaWorkflowService().conversationContext(
+    runId,
+    stringFlag(parsed, "runtime-db"),
+  );
+  if (!context.datasetFacts || !context.datasetUnderstanding) {
+    throw new Error(
+      `Run ${runId} has not produced a dataset understanding yet; current state is ${context.status.currentState ?? "unknown"}.`,
+    );
+  }
+  const result = {
+    runId,
+    currentState: context.status.currentState,
+    pendingActionRef: context.status.pendingActionRef,
+    facts: context.datasetFacts,
+    understanding: context.datasetUnderstanding,
+    ...(context.datasetConfirmation
+      ? { confirmation: context.datasetConfirmation }
+      : {}),
+  };
+  writeResult(result, parsed, output, () => renderDatasetUnderstanding(context));
+};
+
+const confirmDatasetUnderstandingCommand = async (
+  parsed: ParsedArguments,
+  output: CliOutput,
+): Promise<void> => {
+  const runId = requiredStringFlag(parsed, "run-id");
+  const confirmation = datasetConfirmationDraftSchema.parse(
+    await readJsonObject(requiredStringFlag(parsed, "file")),
+  );
+  const runtimeDb = stringFlag(parsed, "runtime-db");
+  const result = await new ThetaWorkflowService().resume({
+    runId,
+    ...(runtimeDb ? { runtimeDb } : {}),
+    datasetConfirmation: confirmation,
+    approvedBy: stringFlag(parsed, "approved-by") ?? "local_user",
+  });
+  writeResult(result, parsed, output, () =>
+    [
+      "Dataset understanding confirmed.",
+      `Run: ${result.runId}`,
+      `Current state: ${result.currentState ?? result.status}`,
+      ...(result.pendingReason ? [`Next: ${result.pendingReason}`] : []),
+    ].join("\n"),
+  );
+};
+
+const renderDatasetUnderstanding = (
+  context: ThetaWorkflowConversationContext,
+): string => {
+  const facts = context.datasetFacts!;
+  const understanding = context.datasetUnderstanding!;
+  const roleNames = (entries: Array<{ column: string }>): string =>
+    entries.map((entry) => entry.column).join(", ") || "none";
+  return [
+    `Dataset: ${facts.fileName}`,
+    `Rows: ${facts.rowCount}`,
+    `Columns: ${facts.columns.map((column) => column.name).join(", ")}`,
+    `Domain: ${understanding.domain.label} (${(
+      understanding.domain.confidence * 100
+    ).toFixed(0)}%)`,
+    `Analysis unit: ${understanding.analysisUnit}`,
+    `Text columns: ${roleNames(understanding.textColumns)}`,
+    `Time columns: ${roleNames(understanding.timeColumns)}`,
+    `ID columns: ${roleNames(understanding.idColumns)}`,
+    `Metadata columns: ${roleNames(understanding.metadataColumns)}`,
+    ...understanding.qualityWarnings.map((warning) => `Warning: ${warning}`),
+    context.datasetConfirmation
+      ? "Confirmation: recorded"
+      : "Confirmation: required; use dataset confirm --file <confirmation.json>.",
+  ].join("\n");
 };
 
 const withWorkflowDbEnvironment = async <T>(
@@ -949,6 +1040,14 @@ export const runCli = async (
     }
     if (command === "dataset" && subcommand === "explore") {
       await exploreDatasetCommand(parsed, output);
+      return 0;
+    }
+    if (command === "dataset" && subcommand === "understanding") {
+      await datasetUnderstandingCommand(parsed, output);
+      return 0;
+    }
+    if (command === "dataset" && subcommand === "confirm") {
+      await confirmDatasetUnderstandingCommand(parsed, output);
       return 0;
     }
     if (command === "models" && subcommand === undefined) {
