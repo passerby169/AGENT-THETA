@@ -5,11 +5,13 @@ from typing import Any
 
 from .profiler import profile
 from .readers import load_dataset
-from .redactor import RULES, redact_rows
+from .redactor import MAX_OUTPUT_BYTES, RULES, redact_rows
 from .samplers import deterministic_sample
 
 
-MAX_SAMPLE_SIZE = 100
+DEFAULT_SAMPLE_SIZE = 10
+MAX_SAMPLE_SIZE = 20
+MAX_HEAD_SIZE = 10
 
 
 def explore_dataset(payload: dict[str, Any]) -> dict[str, Any]:
@@ -20,34 +22,74 @@ def explore_dataset(payload: dict[str, Any]) -> dict[str, Any]:
     dataset_hash = str(payload.get('datasetHash') or '').strip()
     if not dataset_ref or not dataset_hash:
         raise ValueError('datasetRef and datasetHash are required')
-    size = max(1, min(MAX_SAMPLE_SIZE, int(payload.get('sampleSize') or 20)))
+    size = max(1, min(MAX_SAMPLE_SIZE, int(payload.get('sampleSize') or DEFAULT_SAMPLE_SIZE)))
+    head_limit = max(1, min(MAX_HEAD_SIZE, int(payload.get('headLimit') or 5)))
     seed = str(payload.get('sampleSeed') or dataset_hash[:16])
-    table = load_dataset(path)
-    head, head_redactions = redact_rows(table.rows[: min(5, size)])
-    sample, sample_redactions = redact_rows(deterministic_sample(table.rows, size, seed))
+    selected_columns = _selected_columns(payload.get('selectedColumns'))
+    sheet_name = str(payload.get('sheetName') or '').strip() or None
+    table = load_dataset(path, seed=seed, sheet_name=sheet_name)
+    unknown_columns = [column for column in selected_columns if column not in table.columns]
+    if unknown_columns:
+        raise ValueError(f'Selected columns were not found: {unknown_columns}')
+    sample_rows = deterministic_sample(table.rows, size, seed)
+    head, head_redactions, head_truncated = redact_rows(
+        table.head_rows[:head_limit],
+        selected_columns=selected_columns,
+        byte_budget=MAX_OUTPUT_BYTES // 2,
+    )
+    sample, sample_redactions, sample_output_truncated = redact_rows(
+        sample_rows,
+        selected_columns=selected_columns,
+        byte_budget=MAX_OUTPUT_BYTES // 2,
+    )
     analysis = profile(table.rows, table.columns)
+    quality_warnings = list(analysis['qualityWarnings'])
+    if table.rows_truncated:
+        quality_warnings.append(
+            f'列统计基于确定性蓄水池样本（最多 {len(table.rows)} 行），完整行数仍为 {table.row_count}。'
+        )
+    if head_truncated or sample_output_truncated:
+        quality_warnings.append('展示样本已按单元格、单行或 50KB 输出预算截断。')
     return {
         'datasetRef': dataset_ref,
         'datasetHash': dataset_hash,
         'fileName': str(payload.get('fileName') or path.name),
         'format': table.suffix.lstrip('.'),
         'sizeBytes': int(payload.get('sizeBytes') or path.stat().st_size),
+        'encoding': table.encoding,
+        'delimiter': table.delimiter,
+        'sheets': table.sheets,
+        'selectedSheet': table.selected_sheet,
         'rowCount': table.row_count,
         'columns': table.columns,
         'profiles': analysis['profiles'],
         'head': head,
         'sample': sample,
         'sampleSeed': seed,
+        'samplePolicy': {
+            'method': 'deterministic_reservoir',
+            'requestedRows': size,
+            'returnedRows': len(sample),
+            'profileRows': len(table.rows),
+            'profileTruncated': table.rows_truncated,
+        },
         'sampleTruncated': table.row_count > len(sample),
+        'outputTruncated': head_truncated or sample_output_truncated,
         'redaction': {
             'applied': head_redactions + sample_redactions > 0,
             'redactedValueCount': head_redactions + sample_redactions,
-            'rules': list(RULES),
+            'rules': list(RULES) + ['sensitive_column'],
         },
         'columnRoles': analysis['columnRoles'],
         'languageDistribution': analysis['languageDistribution'],
         'duplicateRatio': analysis['duplicateRatio'],
         'timeCoverage': analysis['timeCoverage'],
         'inferredDomain': analysis['inferredDomain'],
-        'qualityWarnings': analysis['qualityWarnings'],
+        'qualityWarnings': list(dict.fromkeys(quality_warnings)),
     }
+
+
+def _selected_columns(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:50]

@@ -22,7 +22,16 @@ DOMAINS = [
 
 def profile(rows: list[dict[str, Any]], columns: list[str]) -> dict[str, Any]:
     profiles = [_profile_column(rows, column) for column in columns]
-    roles = {'text': [], 'time': [], 'id': [], 'metadata': []}
+    roles = {
+        'text': [],
+        'time': [],
+        'id': [],
+        'group': [],
+        'covariate': [],
+        'evaluation': [],
+        'metadata': [],
+        'ignored': [],
+    }
     for item in profiles:
         name = item['name']
         lower = name.lower()
@@ -38,7 +47,14 @@ def profile(rows: list[dict[str, Any]], columns: list[str]) -> dict[str, Any]:
         if id_score:
             roles['id'].append(_candidate(name, id_score, '字段名与高唯一性'))
         if item['inferredType'] in {'string', 'number'} and unique_ratio <= 0.5:
-            roles['metadata'].append(_candidate(name, 1 - unique_ratio, '低基数分组字段'))
+            score = max(0.1, 1 - unique_ratio)
+            roles['metadata'].append(_candidate(name, score, '低基数元数据字段'))
+            roles['group'].append(_candidate(name, score, '低基数分组候选'))
+        if item['inferredType'] == 'number' and item['nonEmptyCount'] > 0:
+            roles['covariate'].append(_candidate(name, 0.55, '数值协变量候选'))
+            roles['evaluation'].append(_candidate(name, 0.45, '数值评价字段候选'))
+        if item['inferredType'] == 'empty' or item['missingRatio'] >= 0.95:
+            roles['ignored'].append(_candidate(name, 0.95, '空值或近乎全缺失字段'))
     for values in roles.values():
         values.sort(key=lambda value: value['score'], reverse=True)
     text_column = roles['text'][0]['name'] if roles['text'] else None
@@ -63,9 +79,26 @@ def _profile_column(rows: list[dict[str, Any]], column: str) -> dict[str, Any]:
         'nonEmptyCount': len(values),
         'missingRatio': round((len(rows) - len(values)) / max(1, len(rows)), 4),
         'uniqueCount': len(set(values)),
+        'uniqueRatio': round(len(set(values)) / max(1, len(values)), 4),
         'averageLength': round(sum(lengths) / len(lengths), 2) if lengths else 0,
         'maximumLength': max(lengths) if lengths else 0,
+        'parseSuccessRatio': _parse_success_ratio(values),
+        'sampleValues': values[:5],
     }
+
+
+def _parse_success_ratio(values: list[str]) -> float:
+    if not values:
+        return 0
+    parsed = sum(1 for value in values if _number_or_datetime(value))
+    return round(parsed / len(values), 4)
+
+
+def _number_or_datetime(value: str) -> bool:
+    try:
+        return _number(value) or _datetime(value)
+    except ValueError:
+        return _datetime(value)
 
 
 def _infer_type(values: list[str]) -> str:
