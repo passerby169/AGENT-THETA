@@ -80,6 +80,32 @@ class DatasetExplorerTest(unittest.TestCase):
                 'selectedColumns': ['missing'],
             })
 
+    def test_column_roles_do_not_assign_identifiers_as_numeric_inputs(self) -> None:
+        path = self.root / 'roles.csv'
+        path.write_text(
+            'id,text,timestamp,category,score\n'
+            '1,first record,2026-01-01,A,0.8\n'
+            '2,second record,2026-01-02,B,0.6\n'
+            '3,third record,2026-01-03,A,0.9\n',
+            encoding='utf-8',
+        )
+
+        result = explore_dataset({
+            'filePath': str(path),
+            'datasetRef': 'dataset_roles',
+            'datasetHash': 'c' * 64,
+        })
+        roles = {
+            role: [candidate['name'] for candidate in candidates]
+            for role, candidates in result['columnRoles'].items()
+        }
+
+        self.assertIn('id', roles['id'])
+        self.assertNotIn('id', roles['covariate'])
+        self.assertNotIn('id', roles['evaluation'])
+        self.assertIn('score', roles['evaluation'])
+        self.assertNotIn('score', roles['covariate'])
+
 
 if __name__ == '__main__':
     unittest.main()

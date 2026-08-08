@@ -9,6 +9,7 @@ from typing import Any
 TEXT_NAMES = {'text', 'content', 'body', 'message', 'review', 'comment', 'title', 'abstract', 'description'}
 TIME_HINTS = ('time', 'date', 'created', 'updated', 'timestamp', 'year', 'month')
 ID_HINTS = ('id', 'uuid', 'guid', 'key')
+EVALUATION_HINTS = ('label', 'target', 'score', 'rating', 'outcome', 'ground_truth', 'gold')
 DOMAINS = [
     ('法律与司法', ('法律', '法院', '合同', '刑法', '民法', '判决', '诉讼', '律师')),
     ('教育与学习', ('学习', '教育', '课程', '学生', '教师', '考试', '知识', '学校')),
@@ -50,9 +51,13 @@ def profile(rows: list[dict[str, Any]], columns: list[str]) -> dict[str, Any]:
             score = max(0.1, 1 - unique_ratio)
             roles['metadata'].append(_candidate(name, score, '低基数元数据字段'))
             roles['group'].append(_candidate(name, score, '低基数分组候选'))
-        if item['inferredType'] == 'number' and item['nonEmptyCount'] > 0:
-            roles['covariate'].append(_candidate(name, 0.55, '数值协变量候选'))
-            roles['evaluation'].append(_candidate(name, 0.45, '数值评价字段候选'))
+        is_evaluation = any(hint in lower for hint in EVALUATION_HINTS)
+        is_primary_role = bool(text_score or time_score or id_score)
+        if item['inferredType'] == 'number' and item['nonEmptyCount'] > 0 and not is_primary_role:
+            if is_evaluation:
+                roles['evaluation'].append(_candidate(name, 0.7, '字段名与数值类型表明其可能是评价标签'))
+            else:
+                roles['covariate'].append(_candidate(name, 0.55, '数值协变量候选'))
         if item['inferredType'] == 'empty' or item['missingRatio'] >= 0.95:
             roles['ignored'].append(_candidate(name, 0.95, '空值或近乎全缺失字段'))
     for values in roles.values():
