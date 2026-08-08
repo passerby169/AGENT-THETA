@@ -1309,6 +1309,16 @@ const executeThetaState = async (
                 sampleSeed: facts.datasetHash.slice(0, 16),
               })) as unknown as ThetaDatasetExploreOutput,
           }).understand(facts, explored);
+          if (result.datasetHashChange) {
+            return transition(THETA_WORKFLOW_STATES.inspectDataset, {
+              datasetUnderstanding: null,
+              datasetConfirmation: null,
+              datasetInvalidation: {
+                reason: 'dataset_hash_changed_during_understanding',
+                ...result.datasetHashChange,
+              },
+            });
+          }
           understanding = result.draft;
           understandingMeta = {
             source: result.source,

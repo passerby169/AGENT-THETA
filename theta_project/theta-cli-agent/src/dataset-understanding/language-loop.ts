@@ -36,9 +36,15 @@ export interface DatasetUnderstandingLanguageLoopResult {
   fallbackReason?:
     | 'provider_not_configured'
     | 'provider_error'
+    | 'tool_error'
+    | 'dataset_changed'
     | 'invalid_output'
     | 'tool_budget_exhausted'
     | 'illegal_tool_request';
+  datasetHashChange?: {
+    previousDatasetHash: string;
+    detectedDatasetHash: string;
+  };
 }
 
 export class DatasetUnderstandingLanguageLoop {
@@ -117,13 +123,29 @@ export class DatasetUnderstandingLanguageLoop {
             explorationCalls,
           );
         }
-        const observation = await this.options.explore({
-          datasetRef: facts.datasetRef,
-          view: turn.decision.view,
-          selectedColumns,
-        });
+        let observation: ThetaDatasetExploreOutput;
+        try {
+          observation = await this.options.explore({
+            datasetRef: facts.datasetRef,
+            view: turn.decision.view,
+            selectedColumns,
+          });
+        } catch {
+          return this.fallback(facts, initial, 'tool_error', explorationCalls);
+        }
         if (observation.datasetHash !== facts.datasetHash) {
-          throw new Error('Dataset changed during governed understanding.');
+          return {
+            ...this.fallback(
+              facts,
+              initial,
+              'dataset_changed',
+              explorationCalls,
+            ),
+            datasetHashChange: {
+              previousDatasetHash: facts.datasetHash,
+              detectedDatasetHash: observation.datasetHash,
+            },
+          };
         }
         explorationCalls += 1;
         observations.push(

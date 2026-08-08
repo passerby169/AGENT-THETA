@@ -52,6 +52,31 @@ const noSample = await noSampleLoop.understand(facts, output);
 assert.equal(noSample.fallbackReason, 'illegal_tool_request');
 assert.equal(sanitizedRequest.includes('已脱敏样本'), false);
 
+const toolFailureLoop = new DatasetUnderstandingLanguageLoop({
+  generate: async () => ({
+    schemaVersion: '1.0.0', source: 'minimax', factsHash: 'd'.repeat(64),
+    decision: { kind: 'request_view', view: 'profiles', reason: 'need profiles' }, telemetry: {},
+  }),
+  explore: async () => { throw new Error('Governed explore unavailable.'); },
+});
+const toolFailure = await toolFailureLoop.understand(facts, output);
+assert.equal(toolFailure.source, 'deterministic');
+assert.equal(toolFailure.fallbackReason, 'tool_error');
+
+const changedDatasetLoop = new DatasetUnderstandingLanguageLoop({
+  generate: async () => ({
+    schemaVersion: '1.0.0', source: 'minimax', factsHash: 'e'.repeat(64),
+    decision: { kind: 'request_view', view: 'profiles', reason: 'need profiles' }, telemetry: {},
+  }),
+  explore: async () => ({ ...output, datasetHash: 'f'.repeat(64) }),
+});
+const changedDataset = await changedDatasetLoop.understand(facts, output);
+assert.equal(changedDataset.fallbackReason, 'dataset_changed');
+assert.deepEqual(changedDataset.datasetHashChange, {
+  previousDatasetHash: facts.datasetHash,
+  detectedDatasetHash: 'f'.repeat(64),
+});
+
 const understanding = buildDeterministicUnderstanding(facts, output);
 assert.equal(validateDatasetUnderstanding(understanding, facts).valid, true);
 assert.equal(validateDatasetUnderstanding({
