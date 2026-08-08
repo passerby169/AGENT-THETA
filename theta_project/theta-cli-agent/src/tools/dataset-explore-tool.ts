@@ -54,6 +54,8 @@ export interface ThetaDatasetExploreOutput {
   profiles: ExploreColumnProfile[];
   head: Array<Record<string, unknown>>;
   sample: Array<Record<string, unknown>>;
+  exceptionalSample: Array<Record<string, unknown>>;
+  columnSamples: Array<Record<string, unknown>>;
   sampleSeed: string;
   samplePolicy?: {
     method: 'deterministic_reservoir';
@@ -132,6 +134,8 @@ const outputSchema: JsonSchema = {
     'profiles',
     'head',
     'sample',
+    'exceptionalSample',
+    'columnSamples',
     'sampleSeed',
     'samplePolicy',
     'sampleTruncated',
@@ -159,6 +163,8 @@ const outputSchema: JsonSchema = {
     profiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
     head: { type: 'array', items: { type: 'object', additionalProperties: true } },
     sample: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    exceptionalSample: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    columnSamples: { type: 'array', items: { type: 'object', additionalProperties: true } },
     sampleSeed: { type: 'string' },
     samplePolicy: { type: 'object', additionalProperties: true },
     sampleTruncated: { type: 'boolean' },

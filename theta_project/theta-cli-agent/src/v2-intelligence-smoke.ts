@@ -16,6 +16,7 @@ const output = {
     { name: 'timestamp', inferredType: 'datetime', missingRatio: 0, uniqueCount: 20, averageLength: 10, maximumLength: 10 },
   ], languageDistribution: [{ language: 'zh', ratio: 1 }], duplicateRatio: 0,
   timeCoverage: { start: '2026-01-01', end: '2026-02-01' }, head: [{ text: '已脱敏样本' }], sample: [{ text: '已脱敏样本' }],
+  exceptionalSample: [{ text: '已脱敏异常样本' }], columnSamples: [{ text: '已脱敏列样本' }],
   sampleTruncated: false, redaction: { applied: true, redactedValueCount: 0, rules: ['email', 'phone', 'id'] },
   columnRoles: {
     text: [{ name: 'text', score: 0.96, reason: '文本列' }],

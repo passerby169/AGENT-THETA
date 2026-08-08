@@ -61,13 +61,41 @@ class DatasetExplorerTest(unittest.TestCase):
 
         self.assertEqual(result['samplePolicy']['requestedRows'], 20)
         self.assertLessEqual(len(result['sample']), 20)
+        self.assertLessEqual(len(result['exceptionalSample']), 3)
+        self.assertTrue(result['columnSamples'])
+        self.assertTrue(all('_theta_sample_id' in row for row in result['head']))
+        self.assertTrue(all('_theta_sample_id' in row for row in result['sample']))
         self.assertTrue(result['redaction']['applied'])
-        serialized = json.dumps(result['head'] + result['sample'], ensure_ascii=False)
+        serialized = json.dumps(
+            result['head'] + result['sample'] + result['exceptionalSample'] + result['columnSamples'],
+            ensure_ascii=False,
+        )
         self.assertNotIn('@example.com', serialized)
         self.assertNotIn('sk-secretvalue', serialized)
         self.assertNotIn('192.168.1.10', serialized)
         self.assertNotIn('person-0', serialized)
         self.assertLessEqual(len(serialized.encode('utf-8')), 50 * 1024)
+
+    def test_explore_returns_exceptional_and_role_column_samples(self) -> None:
+        path = self.root / 'sample-views.csv'
+        path.write_text(
+            'id,text,timestamp,category\n'
+            '1,short,2026-01-01,A\n'
+            '2,,not-a-date,B\n'
+            '3,a much longer representative text value,2026-01-03,A\n',
+            encoding='utf-8',
+        )
+
+        result = explore_dataset({
+            'filePath': str(path),
+            'datasetRef': 'dataset_samples',
+            'datasetHash': 'd' * 64,
+        })
+
+        self.assertEqual(len(result['exceptionalSample']), 3)
+        sampled_columns = {key for row in result['columnSamples'] for key in row}
+        self.assertIn('text', sampled_columns)
+        self.assertIn('timestamp', sampled_columns)
 
     def test_unknown_selected_column_is_rejected(self) -> None:
         path = self.root / 'dataset.csv'
