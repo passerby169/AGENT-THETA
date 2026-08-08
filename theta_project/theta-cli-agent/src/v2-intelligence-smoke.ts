@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { applyDecisionGapAnswer, createInitialResearchIntent, deriveDecisionGaps, emptyInterviewMemory, selectNextDecisionGap } from './agent/decision-gap.js';
+import { applyDecisionGapAnswer, applyDecisionGapDefaults, createInitialResearchIntent, deriveDecisionGaps, emptyInterviewMemory, isAutonomousDelegationAnswer, selectNextDecisionGap } from './agent/decision-gap.js';
 import { DatasetUnderstandingLanguageLoop, MAX_DATASET_EXPLORATION_CALLS } from './dataset-understanding/language-loop.js';
 import { buildDatasetFacts, buildDeterministicUnderstanding } from './dataset-understanding/service.js';
 import { plannerInputV2Hash, type PlannerDecisionV2, type PlannerInputV2 } from './planner/v2-contracts.js';
@@ -101,6 +101,18 @@ const gapAfterDefault = selectNextDecisionGap(
   turn.memory,
 );
 assert.notEqual(gapAfterDefault?.id, first.id);
+assert.equal(isAutonomousDelegationAnswer('后续你全部看着安排并继续分析'), true);
+const delegatedTurn = applyDecisionGapDefaults(
+  initialIntent,
+  gaps,
+  emptyInterviewMemory(),
+);
+assert.deepEqual(delegatedTurn.intent.unknowns, []);
+assert.equal(delegatedTurn.memory.defaultedGapIds.length, gaps.length);
+assert.equal(selectNextDecisionGap(
+  deriveDecisionGaps(understanding, confirmation, delegatedTurn.intent),
+  delegatedTurn.memory,
+), undefined);
 
 const multiIntentAnswer = [
   '我希望识别主要主题，比较不同来源，并分析按月的时间趋势。',

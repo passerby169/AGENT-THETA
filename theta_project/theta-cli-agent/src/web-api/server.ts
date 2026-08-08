@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { ThetaTurnOrchestrator } from '../conversation/turn-orchestrator.js';
+import { isAutonomousDelegationAnswer } from '../agent/decision-gap.js';
 import { DoctorService } from '../doctor-service.js';
 import { loadThetaProjectEnvironment } from '../environment.js';
 import { buildHumanResponse } from '../presentation/human-response-builder.js';
@@ -487,6 +488,16 @@ const executeRunAction = async (
           role: 'assistant',
           messageKind: 'research.decision-gap',
           content: context.decisionGap.question,
+          createdAt: new Date().toISOString(),
+        });
+      } else if (isAutonomousDelegationAnswer(action.text)) {
+        store.appendMessage({
+          messageId: `message.assistant.${randomUUID()}`,
+          sessionId,
+          runId: result.runId,
+          role: 'assistant',
+          messageKind: 'research.delegation-applied',
+          content: '已根据数据证据和系统建议补全剩余研究设置。接下来请审核训练方案；批准方案不会直接启动训练。',
           createdAt: new Date().toISOString(),
         });
       }

@@ -32,11 +32,13 @@ import {
   type ResearchAssessment,
 } from "./agent/research-service.js";
 import {
+  applyDecisionGapDefaults,
   applyDecisionGapAnswer,
   createInitialResearchIntent,
   deriveDecisionGaps,
   emptyInterviewMemory,
   interviewMemorySchema,
+  isAutonomousDelegationAnswer,
   selectNextDecisionGap,
   type DecisionGap,
   type InterviewMemory,
@@ -1447,7 +1449,10 @@ const executeThetaState = async (
           variables.decisionAnswer,
           "research intent answer",
         );
-        const turn = applyDecisionGapAnswer(intent, nextGap, answer, memory);
+        const delegated = isAutonomousDelegationAnswer(answer);
+        const turn = delegated
+          ? applyDecisionGapDefaults(intent, gaps, memory)
+          : applyDecisionGapAnswer(intent, nextGap, answer, memory);
         return transition(THETA_WORKFLOW_STATES.researchIntentInterview, {
           researchIntent: turn.intent,
           interviewMemory: turn.memory,
@@ -1455,6 +1460,7 @@ const executeThetaState = async (
             gapId: nextGap.id,
             appliedDefaults: turn.appliedDefaults,
             extractedFields: turn.extractedFields,
+            delegated,
           },
           processedDecisionAnswerCommandId: lastResume.commandId,
         });

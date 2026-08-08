@@ -236,7 +236,7 @@ export default function WorkbenchPage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 sm:py-8">
+      <main className={`mx-auto w-full max-w-[1500px] px-4 sm:px-6 ${activeRunId ? 'py-3 sm:py-4' : 'py-6 sm:py-8'}`}>
         {error ? <ErrorNotice message={error} /> : null}
         {activeRunId ? (
           <RunWorkspace
@@ -728,7 +728,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
   );
   return (
     <div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-8 w-fit text-slate-500"><ArrowLeft className="mr-1.5 h-4 w-4" />返回任务列表</Button>
         <div className="relative grid w-full grid-cols-2 items-center overflow-hidden rounded-md border border-blue-200 bg-white p-1 shadow-sm sm:w-[260px]" aria-label="工作模式切换">
           <span aria-hidden="true" className={`absolute bottom-1 left-1 top-1 w-[calc(50%-4px)] rounded bg-blue-600 shadow-sm transition-transform duration-500 ease-in-out ${workspaceMode === 'classic' ? 'translate-x-full' : 'translate-x-0'}`} />
@@ -736,7 +736,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
           <button type="button" aria-pressed={workspaceMode === 'classic'} onClick={() => changeWorkspaceMode('classic')} className={`relative z-10 flex min-h-9 items-center justify-center gap-2 rounded px-3 text-xs font-semibold transition-colors duration-300 ${workspaceMode === 'classic' ? 'text-white' : 'text-slate-600 hover:text-slate-900'}`}><Database className="h-4 w-4" />一代工作台</button>
         </div>
       </div>
-      <p className="mt-2 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
+      <p className="mt-1 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
       {notices}
       <ThetaOneWorkbench
         run={run}
@@ -757,8 +757,8 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
 
       <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
 
-      <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
-        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="text-xs font-normal text-slate-400">{Number.isFinite(status.eventCount) ? `${status.eventCount} 个事件` : '正在同步'}</span></summary>
+      <details className="group mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="flex items-center gap-2 text-xs font-normal text-slate-400"><span className="hidden sm:inline">点击展开查看</span><span>{Number.isFinite(status.eventCount) ? `${status.eventCount} 个事件` : '正在同步'}</span><ChevronRight className="h-4 w-4 transition-transform duration-200 group-open:rotate-90" /></span></summary>
         <ol className="border-t border-slate-100 px-4 py-3 sm:px-5">
           {uniquePath(status.statePath).map((state, index, states) => {
             const isLast = index === states.length - 1;
@@ -1007,14 +1007,18 @@ function VisualizationCard({ runId, item, selected, onSelectionChange, onOpen }:
 }
 
 function RunActivity({ timeline, monitoring, syncing }: { timeline?: ThetaRunTimeline; monitoring: boolean; syncing: boolean }) {
+  const [open, setOpen] = useState(monitoring);
   const recent = [...(timeline?.timeline ?? [])].reverse();
   const workflowEvents = recent.filter((event) => event.source !== 'tool').slice(0, 5);
   const technicalEvents = recent.filter((event) => event.source === 'tool').slice(0, 8);
+  useEffect(() => {
+    if (monitoring) setOpen(true);
+  }, [monitoring]);
   return (
-    <details className="mt-5 overflow-hidden rounded-md border border-slate-200 bg-slate-50/70" open={monitoring ? true : undefined}>
+    <details className="group mt-5 overflow-hidden rounded-md border border-slate-200 bg-slate-50/70" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 sm:px-5">
         <div><h2 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><Activity className="h-4 w-4 text-slate-500" />系统运行记录</h2><p className="mt-1 text-xs text-slate-400">后台流程与技术证据，仅供查看，不是待回答问题</p></div>
-        <Badge variant="outline" className={monitoring ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'}>{monitoring ? (syncing ? '正在同步' : '自动同步中') : '无需操作'}</Badge>
+        <div className="flex items-center gap-2"><span className="hidden text-xs text-slate-400 sm:inline">{open ? '点击收起' : '点击展开查看'}</span><Badge variant="outline" className={monitoring ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'}>{monitoring ? (syncing ? '正在同步' : '自动同步中') : '无需操作'}</Badge><ChevronRight className="h-4 w-4 text-slate-400 transition-transform duration-200 group-open:rotate-90" /></div>
       </summary>
       <div className="grid border-t border-slate-200 bg-white lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.72fr)]">
         <div className="px-4 py-3 sm:px-5">
@@ -1385,7 +1389,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
   };
 
   return (
-    <section className={`flex flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm transition-[height,margin] duration-500 ease-in-out ${compact ? 'h-[calc(100dvh-12rem)] min-h-[560px] max-h-[820px]' : 'h-[calc(100dvh-9rem)] min-h-[520px] max-h-none'}`}>
+    <section className={`flex flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm transition-[height,margin] duration-500 ease-in-out ${compact ? 'h-[calc(100dvh-12rem)] min-h-[560px] max-h-[820px]' : 'h-[calc(100dvh-11.5rem)] min-h-[540px] max-h-none'}`}>
       <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
@@ -1434,7 +1438,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
               void send();
             }}
             placeholder="回答研究问题，或直接询问 THETA 能力、模型、数据与当前步骤"
-            className={`${compact ? 'min-h-20' : 'min-h-28'} min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0`}
+            className={`${compact ? 'min-h-20' : 'min-h-24'} min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0`}
           />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
             <span className="text-xs text-slate-400">{draft.length} / 4000</span>
@@ -1667,7 +1671,7 @@ function HealthBadge({ health }: { health?: ThetaHealth }) {
       <DialogContent className="max-w-lg">
         <DialogHeader><DialogTitle>运行环境检查</DialogTitle><DialogDescription>“有提醒”表示核心功能仍可运行，但存在可选配置或性能项需要留意；它不等同于训练失败。“环境阻塞”才表示必须先修复。</DialogDescription></DialogHeader>
         <div className="space-y-2">
-          {issues.length ? issues.map((check) => <div key={check.id} className={`rounded-md border px-3 py-3 ${check.status === 'FAIL' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}><div className="flex items-center justify-between gap-3"><p className="text-sm font-medium text-slate-800">{check.message}</p><Badge variant="outline" className={check.status === 'FAIL' ? 'border-red-200 text-red-700' : 'border-amber-200 text-amber-700'}>{check.status}</Badge></div>{check.remediation ? <p className="mt-2 text-xs leading-5 text-slate-600">处理建议：{check.remediation}</p> : null}<p className="mt-1 font-mono text-[10px] text-slate-400">{check.id}</p></div>) : <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">所有运行环境检查均已通过。</div>}
+          {issues.length ? issues.map((check) => <div key={check.id} className={`rounded-md border px-3 py-3 ${check.status === 'FAIL' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}><div className="flex items-center justify-between gap-3"><p className="text-sm font-medium text-slate-800">{check.message}</p><Badge variant="outline" className={check.status === 'FAIL' ? 'border-red-200 text-red-700' : 'border-amber-200 text-amber-700'}>{check.status}</Badge></div>{check.id === 'gpu.visibility' ? <p className="mt-2 rounded bg-white/70 px-2 py-1.5 text-xs leading-5 text-slate-700">当前按 CPU 安全模式运行，无需处理，也不会阻止训练。只有明确要使用 GPU 时才需要配置。</p> : null}{check.remediation ? <p className="mt-2 text-xs leading-5 text-slate-600">处理建议：{check.remediation}</p> : null}<p className="mt-1 font-mono text-[10px] text-slate-400">{check.id}</p></div>) : <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">所有运行环境检查均已通过。</div>}
         </div>
       </DialogContent>
     </Dialog>

@@ -36,6 +36,34 @@ export interface DecisionGapTurn {
   extractedFields: string[];
 }
 
+export const isAutonomousDelegationAnswer = (value: string): boolean =>
+  /(?:后续|接下来|剩下|全部|都).{0,8}(?:交给|由|让).{0,4}(?:你|THETA|系统).{0,8}(?:安排|判断|决定|处理|分析|完成)|(?:你|THETA|系统).{0,6}(?:看着安排|看着办|自行安排|自行判断|自行分析|自动完成|全权处理)|按(?:照)?(?:你的|系统|THETA).{0,5}(?:建议|判断|方案).{0,5}(?:继续|执行|处理)|无需再问|不用再问/iu.test(value.trim());
+
+export const applyDecisionGapDefaults = (
+  current: ResearchIntent,
+  gaps: readonly DecisionGap[],
+  memory: InterviewMemory,
+): DecisionGapTurn => {
+  let intent = current;
+  let nextMemory = memory;
+  const appliedDefaults: string[] = [];
+  const extractedFields: string[] = [];
+  for (const gap of gaps) {
+    if (nextMemory.resolvedGapIds.includes(gap.id)) continue;
+    const turn = applyDecisionGapAnswer(intent, gap, '采用系统建议', nextMemory);
+    intent = turn.intent;
+    nextMemory = turn.memory;
+    appliedDefaults.push(...turn.appliedDefaults);
+    extractedFields.push(...turn.extractedFields);
+  }
+  return {
+    intent,
+    memory: nextMemory,
+    appliedDefaults: unique(appliedDefaults),
+    extractedFields: unique(extractedFields),
+  };
+};
+
 export const emptyInterviewMemory = (): InterviewMemory => ({
   askedQuestionHashes: [],
   resolvedGapIds: [],
@@ -211,7 +239,8 @@ const gap = (
 const splitValues = (value: string): string[] =>
   value.split(/[，,；;、\n]/u).map((item) => item.trim()).filter(Boolean).slice(0, 12);
 const isUnknownAnswer = (value: string): boolean => /^(?:不知道|不清楚|不确定|unknown|由你判断|采用系统建议)$/iu.test(value);
-const requestsProposalFirst = (value: string): boolean => /先.{0,4}(?:方案|建议|分析)|你先决定|按默认/iu.test(value);
+const requestsProposalFirst = (value: string): boolean =>
+  isAutonomousDelegationAnswer(value) || /先.{0,4}(?:方案|建议|分析)|你先决定|按默认/iu.test(value);
 const isNoComparison = (value: string): boolean => /不比较|无需比较|没有比较/iu.test(value);
 const isAffirmative = (value: string): boolean => /^(?:是|需要|要|启用|分析|yes|true)$/iu.test(value) || /时间|趋势/iu.test(value);
 const hasTemporalDecision = (value: string): boolean =>
