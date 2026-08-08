@@ -52,6 +52,9 @@ const workflowDefinition = first.domainPack.workflows.find(
 const columnStateDefinition = workflowDefinition?.states.find(
   (state) => state.id === THETA_WORKFLOW_STATES.awaitColumnConfirmation,
 );
+const analyzeStateDefinition = workflowDefinition?.states.find(
+  (state) => state.id === THETA_WORKFLOW_STATES.analyzeDataset,
+);
 const researchStateDefinition = workflowDefinition?.states.find(
   (state) => state.id === THETA_WORKFLOW_STATES.awaitResearchClarification,
 );
@@ -63,10 +66,32 @@ if (!inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.datasetExplore)) {
   throw new Error("InspectDataset does not allow theta.dataset.explore for V2 runs.");
 }
 if (
-  analyzeScope.allowedToolIds?.length !== 1 ||
-  analyzeScope.allowedToolIds[0] !== THETA_TOOL_IDS.datasetExplore
+  analyzeScope.allowedToolIds?.length !== 2 ||
+  !analyzeScope.allowedToolIds.includes(THETA_TOOL_IDS.datasetExplore) ||
+  !analyzeScope.allowedToolIds.includes(
+    THETA_TOOL_IDS.datasetUnderstandingLanguage,
+  ) ||
+  analyzeScope.allowedToolIds.includes(THETA_TOOL_IDS.trainingStart)
 ) {
-  throw new Error("AnalyzeDataset must be limited to bounded dataset exploration.");
+  throw new Error(
+    'AnalyzeDataset must be limited to bounded exploration and dataset-understanding inference.',
+  );
+}
+if (
+  analyzeStateDefinition?.permissionScopes?.length !== 2 ||
+  !analyzeStateDefinition.permissionScopes.includes(
+    THETA_PERMISSION_SCOPES.datasetRead,
+  ) ||
+  !analyzeStateDefinition.permissionScopes.includes(
+    THETA_PERMISSION_SCOPES.inferenceUse,
+  ) ||
+  analyzeScope.policyRefs?.length !== 2 ||
+  !analyzeScope.policyRefs.includes('policy.theta.readonly') ||
+  !analyzeScope.policyRefs.includes('policy.theta.language-inference')
+) {
+  throw new Error(
+    'AnalyzeDataset is missing its read and language-inference policy boundary.',
+  );
 }
 if (inspectScope.allowedToolIds?.includes(THETA_TOOL_IDS.trainingStart)) {
   throw new Error("InspectDataset improperly allows theta.training.start.");
