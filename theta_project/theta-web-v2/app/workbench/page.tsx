@@ -91,6 +91,7 @@ export default function WorkbenchPage() {
   const [activeStatus, setActiveStatus] = useState<ThetaRunStatus>();
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string>();
   const [error, setError] = useState<string>();
   const [datasets, setDatasets] = useState<ThetaDataset[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(true);
@@ -101,26 +102,42 @@ export default function WorkbenchPage() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
-    try {
-      const [nextHealth, runData] = await Promise.all([
-        ThetaAgentV2API.health(),
-        ThetaAgentV2API.runs(50),
-      ]);
-      setHealth(nextHealth);
-      setRuns(runData.runs);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setLoading(false);
+  const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
+
+    const [healthResult, runsResult] = await Promise.allSettled([
+      ThetaAgentV2API.health(),
+      ThetaAgentV2API.runs(50),
+    ]);
+    const issues: string[] = [];
+
+    if (healthResult.status === 'fulfilled') {
+      setHealth(healthResult.value);
+    } else {
+      issues.push(`运行环境检查失败：${errorMessage(healthResult.reason)}`);
     }
+
+    if (runsResult.status === 'fulfilled') {
+      setRuns(runsResult.value.runs);
+    } else {
+      issues.push(`任务列表刷新失败：${errorMessage(runsResult.reason)}`);
+    }
+
+    setSyncError(issues.length ? issues.join('；') : undefined);
+    if (!options?.silent) setLoading(false);
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!syncError) return;
+    const retryTimer = window.setInterval(() => {
+      void refresh({ silent: true });
+    }, 8_000);
+    return () => window.clearInterval(retryTimer);
+  }, [refresh, syncError]);
 
   const refreshDatasets = useCallback(async () => {
     setDatasetsLoading(true);
@@ -237,6 +254,14 @@ export default function WorkbenchPage() {
       </header>
 
       <main className={`mx-auto w-full max-w-[1500px] px-4 sm:px-6 ${activeRunId ? 'py-3 sm:py-4' : 'py-6 sm:py-8'}`}>
+        {syncError ? (
+          <ConnectionNotice
+            message={syncError}
+            hasStaleData={Boolean(health || runs.length || activeStatus)}
+            loading={loading}
+            onRetry={() => void refresh()}
+          />
+        ) : null}
         {error ? <ErrorNotice message={error} /> : null}
         {activeRunId ? (
           <RunWorkspace
@@ -1657,6 +1682,39 @@ function Metric({ label, value }: { label: string; value: string }) {
 const SectionHeading = ({ title, subtitle }: { title: string; subtitle: string }) => <div className="mb-3 flex items-end justify-between gap-4"><div><h2 className="text-base font-semibold">{title}</h2><p className="mt-1 text-xs text-slate-400">{subtitle}</p></div></div>;
 const EmptyPanel = ({ title, description, compact = false }: { title: string; description: string; compact?: boolean }) => <div className={`rounded-md border border-dashed border-slate-200 bg-white text-center ${compact ? 'px-4 py-8' : 'px-4 py-12'}`}><Database className="mx-auto h-5 w-5 text-slate-300" /><p className="mt-2 text-sm font-medium text-slate-600">{title}</p><p className="mt-1 text-xs text-slate-400">{description}</p></div>;
 const LoadingBlock = () => <div className="grid min-h-44 place-items-center rounded-md border border-slate-200 bg-white"><div className="text-center"><RefreshCw className="mx-auto h-5 w-5 animate-spin text-blue-600" /><p className="mt-2 text-sm text-slate-500">正在读取事件状态...</p></div></div>;
+function ConnectionNotice({
+  message,
+  hasStaleData,
+  loading,
+  onRetry,
+}: {
+  message: string;
+  hasStaleData: boolean;
+  loading: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="my-5 flex flex-col gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-start gap-2">
+        <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+        <div className="min-w-0">
+          <p className="font-medium">工作台暂时无法完成实时同步</p>
+          <p className="mt-1 break-words text-xs leading-5">{message}</p>
+          {hasStaleData ? (
+            <p className="mt-1 text-xs leading-5 text-amber-700">
+              页面正在保留上次成功加载的内容；连接恢复后会自动刷新，请勿将其视为最新状态。
+            </p>
+          ) : null}
+        </div>
+      </div>
+      <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onRetry} className="flex-shrink-0 border-red-200 bg-white text-red-700 hover:bg-red-100">
+        <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+        立即重试
+      </Button>
+    </div>
+  );
+}
+
 const ErrorNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
 const ActionNotice = ({ message }: { message: string }) => <div className="my-5 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800"><CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{message}</span></div>;
 function HealthBadge({ health }: { health?: ThetaHealth }) {
