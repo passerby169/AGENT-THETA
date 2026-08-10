@@ -883,9 +883,21 @@ function RunResults({ runId, results, loading }: { runId: string; results?: Thet
             {selectionCount ? `清除已选 ${selectionCount}` : '选择全部结果'}
           </Button>
           <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">训练完成</Badge>
-          <Badge variant="outline" className={results.researchStatus === 'passed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}>{researchStatusLabel(results.researchStatus)}</Badge>
+          <Badge
+            variant="outline"
+            title={researchStatusDescription(results.researchStatus)}
+            className={results.researchStatus === 'passed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}
+          >
+            {researchStatusLabel(results.researchStatus)}
+          </Badge>
         </div>
       </div>
+
+      {results.researchStatus === 'not_evaluated' ? (
+        <div className="border-b border-amber-100 bg-amber-50/80 px-5 py-3 text-xs leading-5 text-amber-800">
+          训练已经完成并生成结果，但现有产物还不足以自动证明研究目标是否达成，需要结合成功标准进行人工核对；这不代表训练失败。
+        </div>
+      ) : null}
 
       <div className="grid border-b border-slate-100 sm:grid-cols-3">
         <ResultSummary label="识别主题" value={`${results.topics.length} 个`} />
@@ -1765,7 +1777,12 @@ const splitColumnNames = (value: string): string[] => [...new Set(
   value.split(/[,，、;；\n\r]+/u).map((item) => item.trim()).filter(Boolean),
 )];
 const stateTitle = (state?: string): string => workflowStateLabel(state);
-const researchStatusLabel = (status?: ThetaRunResults['researchStatus']): string => status === 'passed' ? '研究目标已满足' : status === 'needs_review' ? '结果需要复核' : '研究目标未评估';
+const researchStatusLabel = (status?: ThetaRunResults['researchStatus']): string => status === 'passed' ? '研究目标已满足' : status === 'needs_review' ? '结果需要复核' : '研究目标待人工核对';
+const researchStatusDescription = (status?: ThetaRunResults['researchStatus']): string => status === 'passed'
+  ? '现有训练产物已经满足自动核验的研究成功标准。'
+  : status === 'needs_review'
+    ? '部分研究成功标准尚未满足或需要研究者复核。'
+    : '训练已经完成，但现有产物不足以自动判断研究目标是否达成，不代表训练失败。';
 const metricLabels: Record<string, string> = {
   td: '主题多样性',
   topic_diversity: '主题多样性',
