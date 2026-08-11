@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { ThetaTurnOrchestrator } from '../conversation/turn-orchestrator.js';
 import { isAutonomousDelegationAnswer } from '../agent/decision-gap.js';
+import { DatasetCorrectionService } from '../dataset-understanding/correction-service.js';
+import type {
+  DatasetFacts,
+  DatasetUnderstandingDraft,
+} from '../dataset-understanding/contracts.js';
 import { DoctorService } from '../doctor-service.js';
 import { loadThetaProjectEnvironment } from '../environment.js';
 import { buildHumanResponse } from '../presentation/human-response-builder.js';
@@ -131,9 +136,17 @@ const routeRequest = async (
           workflowVersion: '2.0.0',
           ...(input.researchGoal ? { researchGoal: input.researchGoal } : {}),
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
+          allowRemoteSamples: input.allowRemoteSamples,
         },
         runtimeDb: options.runtimeDb,
       });
+      const initialContext = await workflow.conversationContext(result.runId, options.runtimeDb);
+      persistInitialDatasetConversation(
+        options.runtimeDb,
+        result.runId,
+        initialContext.datasetFacts,
+        initialContext.datasetUnderstanding,
+      );
       writeJson(response, 201, {
         ok: true,
         data: presentRun(result),
@@ -218,6 +231,8 @@ const routeRequest = async (
         ...(context.researchBrief ? { researchBrief: context.researchBrief } : {}),
         ...(context.datasetFacts ? { datasetFacts: context.datasetFacts } : {}),
         ...(context.datasetUnderstanding ? { datasetUnderstanding: context.datasetUnderstanding } : {}),
+        ...(context.datasetUnderstandingMeta ? { datasetUnderstandingMeta: context.datasetUnderstandingMeta } : {}),
+        ...(context.remoteSampleReceipt ? { remoteSampleReceipt: context.remoteSampleReceipt } : {}),
         ...(context.datasetConfirmation ? { datasetConfirmation: context.datasetConfirmation } : {}),
         ...(context.researchIntent ? { researchIntent: context.researchIntent } : {}),
         ...(context.interviewMemory ? { interviewMemory: context.interviewMemory } : {}),
@@ -433,6 +448,44 @@ const presentRun = (value: unknown): Record<string, unknown> => {
   };
 };
 
+const appendRunMessage = (
+  runtimeDb: string,
+  runId: string,
+  role: 'user' | 'assistant',
+  messageKind: string,
+  content: string,
+): void => {
+  const store = new SQLiteConversationStore(runtimeDb);
+  try {
+    const sessionId = `theta-web-${runId}`;
+    store.getOrCreateSession(sessionId, { activeRunId: runId });
+    store.appendMessage({
+      messageId: `message.${role}.${randomUUID()}`,
+      sessionId,
+      runId,
+      role,
+      messageKind,
+      content,
+      createdAt: new Date().toISOString(),
+    });
+  } finally {
+    store.close();
+  }
+};
+
+const recordFailedRunAction = (
+  runtimeDb: string,
+  runId: string,
+  actionName: string,
+  error: unknown,
+): void => appendRunMessage(
+  runtimeDb,
+  runId,
+  'assistant',
+  'operation.failed',
+  `${actionName}未完成：${error instanceof Error ? error.message : String(error)}。本次输入已保存，可以修正后重试。`,
+);
+
 const executeRunAction = async (
   runId: string,
   action: ThetaWebRunAction,
@@ -446,40 +499,129 @@ const executeRunAction = async (
     return workflow.resume({ runId, runtimeDb });
   }
   if (action.action === 'confirmDataset') {
-    return workflow.resume({
-      runId,
-      runtimeDb,
-      datasetConfirmation: {
-        status: action.status,
-        domainLabel: action.domainLabel,
-        analysisUnit: action.analysisUnit,
-        textColumns: action.textColumns,
-        timeColumns: action.timeColumns,
-        idColumns: action.idColumns,
-        metadataColumns: action.metadataColumns,
-      },
-    });
+    appendRunMessage(
+      runtimeDb, runId, 'user', 'dataset.confirmation',
+      action.status === 'confirmed'
+        ? `确认数据理解，正文列为 ${action.textColumns.join('、')}。`
+        : `修正并确认数据理解，正文列为 ${action.textColumns.join('、')}。`,
+    );
+    let result;
+    try {
+      result = await workflow.resume({
+        runId,
+        runtimeDb,
+        datasetConfirmation: {
+          status: action.status,
+          domainLabel: action.domainLabel,
+          analysisUnit: action.analysisUnit,
+          textColumns: action.textColumns,
+          timeColumns: action.timeColumns,
+          idColumns: action.idColumns,
+          metadataColumns: action.metadataColumns,
+          groupColumns: action.groupColumns,
+          covariateColumns: action.covariateColumns,
+          evaluationColumns: action.evaluationColumns,
+          ignoredColumns: action.ignoredColumns,
+        },
+      });
+    } catch (error) {
+      recordFailedRunAction(runtimeDb, runId, '数据确认', error);
+      throw error;
+    }
+    const context = await workflow.conversationContext(runId, runtimeDb);
+    const store = new SQLiteConversationStore(runtimeDb);
+    try {
+      const sessionId = `theta-web-${runId}`;
+      store.getOrCreateSession(sessionId, { activeRunId: runId });
+      if (context.decisionGap) {
+        store.appendMessage({
+          messageId: `message.assistant.${randomUUID()}`,
+          sessionId,
+          runId,
+          role: 'assistant',
+          messageKind: 'research.decision-gap',
+          content: context.decisionGap.question,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } finally {
+      store.close();
+    }
+    return result;
+  }
+  if (action.action === 'correctDataset') {
+    appendRunMessage(runtimeDb, runId, 'user', 'dataset.correction', action.text);
+    const context = await workflow.conversationContext(runId, runtimeDb);
+    if (!context.datasetFacts || !context.datasetUnderstanding) {
+      const error = new Error('当前 Run 尚未形成可纠正的数据理解。');
+      recordFailedRunAction(runtimeDb, runId, '数据修正', error);
+      throw error;
+    }
+    let correction;
+    let result;
+    try {
+      correction = await new DatasetCorrectionService().interpret({
+        facts: context.datasetFacts,
+        understanding: context.datasetUnderstanding,
+        message: action.text,
+      });
+      result = await workflow.resume({
+        runId,
+        runtimeDb,
+        datasetConfirmation: correction.draft,
+      });
+    } catch (error) {
+      recordFailedRunAction(runtimeDb, runId, '数据修正', error);
+      throw error;
+    }
+    const correctedContext = await workflow.conversationContext(runId, runtimeDb);
+    const store = new SQLiteConversationStore(runtimeDb);
+    try {
+      const sessionId = `theta-web-${runId}`;
+      store.getOrCreateSession(sessionId, { activeRunId: runId });
+      store.appendMessage({
+        messageId: `message.assistant.${randomUUID()}`,
+        sessionId,
+        runId,
+        role: 'assistant',
+        messageKind: 'dataset.correction-applied',
+        content: `已应用数据理解纠正：${correction.correctionSummary}`,
+        createdAt: new Date().toISOString(),
+      });
+      if (correctedContext.decisionGap) {
+        store.appendMessage({
+          messageId: `message.assistant.${randomUUID()}`,
+          sessionId,
+          runId,
+          role: 'assistant',
+          messageKind: 'research.decision-gap',
+          content: correctedContext.decisionGap.question,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } finally {
+      store.close();
+    }
+    return result;
   }
   if (action.action === 'decisionAnswer') {
-    const result = await workflow.resume({
-      runId,
-      runtimeDb,
-      decisionAnswer: action.text,
-    });
+    appendRunMessage(runtimeDb, runId, 'user', 'research.decision-answer', action.text);
+    let result;
+    try {
+      result = await workflow.resume({
+        runId,
+        runtimeDb,
+        decisionAnswer: action.text,
+      });
+    } catch (error) {
+      recordFailedRunAction(runtimeDb, runId, '研究意图更新', error);
+      throw error;
+    }
     const context = await workflow.conversationContext(result.runId, runtimeDb);
     const store = new SQLiteConversationStore(runtimeDb);
     try {
       const sessionId = `theta-web-${result.runId}`;
       store.getOrCreateSession(sessionId, { activeRunId: result.runId });
-      store.appendMessage({
-        messageId: `message.user.${randomUUID()}`,
-        sessionId,
-        runId: result.runId,
-        role: 'user',
-        messageKind: 'research.decision-answer',
-        content: action.text,
-        createdAt: new Date().toISOString(),
-      });
       if (context.decisionGap) {
         store.appendMessage({
           messageId: `message.assistant.${randomUUID()}`,
@@ -490,14 +632,24 @@ const executeRunAction = async (
           content: context.decisionGap.question,
           createdAt: new Date().toISOString(),
         });
-      } else if (isAutonomousDelegationAnswer(action.text)) {
+      } else {
         store.appendMessage({
           messageId: `message.assistant.${randomUUID()}`,
           sessionId,
           runId: result.runId,
           role: 'assistant',
-          messageKind: 'research.delegation-applied',
-          content: '已根据数据证据和系统建议补全剩余研究设置。接下来请审核训练方案；批准方案不会直接启动训练。',
+          messageKind: context.status.status === 'failed'
+            ? 'workflow.failed'
+            : isAutonomousDelegationAnswer(action.text)
+            ? 'research.delegation-applied'
+            : 'research.intent-complete',
+          content: context.status.status === 'failed'
+            ? `研究意图已保存，但后续工作流执行失败：${context.status.pendingReason ?? '请查看状态详情后重试。'}`
+            : isAutonomousDelegationAnswer(action.text)
+            ? '已根据数据证据和系统建议补全剩余研究设置。接下来请审核训练方案；批准方案不会直接启动训练。'
+            : context.status.currentState === 'AwaitPlanCreationApproval'
+              ? '研究意图已经明确。MiniMax 已依据数据事实、能力目录和 RAG 证据形成可执行方案；请审核方案，批准方案不会直接启动训练。'
+              : '研究意图已经明确；请查看当前状态和下一步提示。',
           createdAt: new Date().toISOString(),
         });
       }
@@ -698,6 +850,37 @@ const presentDataset = (dataset: DatasetRecord) => ({
   suffix: dataset.suffix,
   createdAt: dataset.createdAt,
 });
+
+const persistInitialDatasetConversation = (
+  runtimeDb: string,
+  runId: string,
+  facts: DatasetFacts | undefined,
+  understanding: DatasetUnderstandingDraft | undefined,
+): void => {
+  if (!facts || !understanding) return;
+  const store = new SQLiteConversationStore(runtimeDb);
+  try {
+    const sessionId = `theta-web-${runId}`;
+    store.getOrCreateSession(sessionId, { activeRunId: runId });
+    store.appendMessage({
+      messageId: `message.assistant.${randomUUID()}`,
+      sessionId,
+      runId,
+      role: 'assistant',
+      messageKind: 'dataset.understanding-review',
+      content: [
+        `我已检查数据：共 ${facts.rowCount} 行、${facts.columns.length} 列。`,
+        `列名：${facts.columns.map((column) => column.name).join('、')}。`,
+        `初步判断这是${understanding.domain.label}数据；分析单位是${understanding.analysisUnit}。`,
+        `建议正文列为 ${understanding.textColumns.map((item) => item.column).join('、') || '尚未确定'}。`,
+        '请确认以上理解；如有错误，可以直接用自然语言指出。',
+      ].join(' '),
+      createdAt: new Date().toISOString(),
+    });
+  } finally {
+    store.close();
+  }
+};
 
 const storeUploadedDataset = async (
   request: IncomingMessage,

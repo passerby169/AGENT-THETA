@@ -2,3 +2,4 @@ dist/
 node_modules/
 .theta_agent/
 package-lock.json
+.env.local

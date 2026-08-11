@@ -34,6 +34,13 @@ export const resolveNextActions = (
       action('help', '查看可用命令', '显示当前可用的交互命令。', '/help'),
     ];
   }
+  if (status === 'failed') {
+    return [
+      action('why', '查看失败原因', '查看错误原因和建议的修复方式。', '/why', true),
+      action('retry', '修复后重试', '创建新的恢复 Run，并保留已经确认的研究信息。', '/retry'),
+      action('status', '查看技术状态', '查看当前失败阶段和持久化状态。', '/status'),
+    ];
+  }
   const current = typeof state === 'string' ? state : '';
   switch (current) {
     case 'ResearchClarification':
@@ -58,6 +65,18 @@ export const resolveNextActions = (
           true,
         ),
         action('status', '查看数据状态', '查看当前数据检查结果。', '/status'),
+      ];
+    case 'AwaitDatasetUnderstandingConfirmation':
+      return [
+        action('confirm-dataset', '确认数据理解', '确认数据量、领域、分析单位和全部列角色。', undefined, true),
+        action('correct-dataset', '自然语言修正', '直接说明领域或任一列角色的错误。'),
+        action('status', '查看识别详情', '查看数据事实、识别来源和脱敏样本回执。', '/status'),
+      ];
+    case 'ResearchIntentInterview':
+      return [
+        action('answer', '回答当前问题', '用一段自然语言回答；可一次补充多个研究要求。', undefined, true),
+        action('done', '采用建议并继续', '对仍未明确的非阻断项采用系统建议。', '/done'),
+        action('status', '查看研究意图', '查看已提取的目标、比较维度和约束。', '/status'),
       ];
     case 'AwaitPlanCreationApproval':
       return [

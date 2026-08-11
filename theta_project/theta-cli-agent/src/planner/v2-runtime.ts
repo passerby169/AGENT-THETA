@@ -1,14 +1,13 @@
-import type { DatasetConfirmation, DatasetFacts, ResearchIntent } from '../dataset-understanding/contracts.js';
-import type { PlanProposalResult } from './contracts.js';
+import { CapabilityRegistry } from '../capabilities/registry.js';
+import type {
+  DatasetConfirmation,
+  DatasetFacts,
+  ResearchIntent,
+} from '../dataset-understanding/contracts.js';
 import {
-  plannerInputV2Hash,
   plannerInputV2Schema,
-  plannerDecisionV2Schema,
-  type PlannerDecisionV2,
   type PlannerInputV2,
 } from './v2-contracts.js';
-import type { RecommendationResult } from '../recommendation/contracts.js';
-import type { ThetaTrainingPlan } from '../tools/plan-validate-tool.js';
 
 type Scalar = string | number | boolean | null;
 
@@ -16,110 +15,94 @@ export interface PlannerRuntimeV2Context {
   facts: DatasetFacts;
   confirmation: DatasetConfirmation;
   intent: ResearchIntent;
-  recommendation: RecommendationResult;
+  evidenceRefs?: string[];
   constraints?: Record<string, unknown>;
   userOverrides?: Record<string, unknown>;
-}
-
-export interface PlannerDecisionV2Context {
-  input: PlannerInputV2;
-  plan: ThetaTrainingPlan;
-  proposal: PlanProposalResult;
-  recommendation: RecommendationResult;
+  catalog?: {
+    source?: string;
+    runnableSource?: string;
+    models?: Array<{ id: string; runnable?: boolean }>;
+  };
 }
 
 export const buildPlannerInputV2 = (
   context: PlannerRuntimeV2Context,
 ): PlannerInputV2 => {
-  const constraints = context.constraints ?? {};
+  const registry = new CapabilityRegistry();
+  const eligible = new Set(registry.plannerEligibleModelIds());
+  const catalogModels = new Map(
+    (context.catalog?.models ?? []).map((model) => [model.id.toLowerCase(), model] as const),
+  );
+  const hasRuntimeCatalog = catalogModels.size > 0;
+  const constrainedDevice = context.constraints?.device;
+  const device = constrainedDevice === 'cpu' || constrainedDevice === 'gpu' || constrainedDevice === 'unknown'
+    ? constrainedDevice
+    : context.intent.resourceBudget.device;
+  const constrainedMemory = context.constraints?.memoryGb;
+  const memoryGb = typeof constrainedMemory === 'number' && constrainedMemory > 0
+    ? constrainedMemory
+    : context.intent.resourceBudget.memoryGb;
+  const offlineOnly = typeof context.constraints?.offlineOnly === 'boolean'
+    ? context.constraints.offlineOnly
+    : !context.intent.constraints.some((item) => /允许联网|network allowed/iu.test(item));
+  const forbidden = new Set(stringList(context.constraints?.forbiddenModelIds));
+  const eligibleCards = registry.cards
+    .filter((card) => eligible.has(card.modelId) && !forbidden.has(card.modelId))
+    .filter((card) => !hasRuntimeCatalog || catalogModels.get(card.modelId)?.runnable === true)
+    .filter((card) => !context.intent.temporalAnalysis || card.capabilities.temporalTopics)
+    .filter((card) => !(context.confirmation.covariateColumns?.length ?? 0) || card.capabilities.metadataEffects)
+    .filter((card) => !card.catalog.requires.includes('time') || context.confirmation.timeColumns.length > 0)
+    .filter((card) => !card.catalog.requires.includes('covariates') || (context.confirmation.covariateColumns?.length ?? 0) > 0)
+    .filter((card) => !offlineOnly || card.capabilities.offlineExecution !== 'unsupported')
+    .filter((card) => device !== 'cpu' || card.capabilities.cpuExecution !== 'unsupported');
   return plannerInputV2Schema.parse({
     schemaVersion: '2.0.0',
     facts: context.facts,
     confirmation: context.confirmation,
     intent: context.intent,
     hardware: {
-      device: hardwareDevice(constraints.device),
-      ...(positiveNumber(constraints.memoryGb) === undefined
-        ? {}
-        : { memoryGb: positiveNumber(constraints.memoryGb) }),
-      offlineOnly: constraints.offlineOnly !== false,
+      device,
+      ...(memoryGb
+        ? { memoryGb }
+        : {}),
+      offlineOnly,
     },
-    catalogVersion: `${context.recommendation.catalogSource}@${context.recommendation.recommendationVersion}`,
-    candidates: context.recommendation.recommendations.map((candidate) => ({
-      modelId: candidate.modelId,
-      runnable:
-        candidate.maturity !== 'unavailable' &&
-        candidate.maturity !== 'incomplete',
-      capabilities: candidateCapabilities(candidate.capabilityAssessment),
-    })),
-    evidenceRefs: unique(
-      context.recommendation.recommendations.flatMap((candidate) =>
-        candidate.evidenceRefs.map((evidence) => evidence.evidenceId),
+    catalogVersion: [
+      'theta-capability-cards@1.0.0',
+      context.catalog?.source,
+      context.catalog?.runnableSource,
+    ].filter(Boolean).join('+'),
+    candidates: eligibleCards.map((card) => ({
+      modelId: card.modelId,
+      runnable: hasRuntimeCatalog
+        ? catalogModels.get(card.modelId)?.runnable === true
+        : true,
+      capabilities: unique([
+        ...(card.capabilities.temporalTopics ? ['temporal_topics'] : []),
+        ...(card.capabilities.metadataEffects ? ['metadata_effects'] : []),
+        ...(card.capabilities.shortTextOptimized ? ['short_text_optimized'] : []),
+        ...(card.capabilities.offlineExecution !== 'unsupported' ? ['offline_execution'] : []),
+        ...(card.capabilities.cpuExecution !== 'unsupported' ? ['cpu_execution'] : []),
+        ...card.capabilities.nativeOutputs,
+      ]),
+      parameterDefaults: Object.fromEntries(
+        card.parameters
+          .filter((parameter) => parameter.planField)
+          .map((parameter) => [parameter.planField!, parameter.defaultValue]),
       ),
-    ).slice(0, 20),
+      parameterConstraints: card.parameters
+        .filter((parameter) => parameter.planField)
+        .map((parameter) => ({
+          parameterId: parameter.planField!,
+          minimum: parameter.minimum ?? null,
+          maximum: parameter.maximum ?? null,
+          choices: parameter.choices,
+        })),
+    })),
+    evidenceRefs: unique(context.evidenceRefs ?? []).slice(0, 20),
     userOverrides: scalarRecord(context.userOverrides),
   });
 };
-
-export const buildPlannerDecisionV2 = (
-  context: PlannerDecisionV2Context,
-): PlannerDecisionV2 => {
-  const selectedRecommendation = context.recommendation.recommendations.find(
-    (candidate) => candidate.modelId === context.plan.modelId,
-  );
-  const selectedDraft = [
-    context.proposal.draft.primary,
-    context.proposal.draft.baseline,
-    ...context.proposal.draft.alternatives,
-  ].find((candidate) => candidate?.modelId === context.plan.modelId);
-  const evaluation = unique(
-    context.proposal.draft.evaluation.map((item) => item.choice),
-  );
-  const visualizations = unique(context.proposal.draft.visualizations);
-  return plannerDecisionV2Schema.parse({
-    schemaVersion: '2.0.0',
-    inputHash: plannerInputV2Hash(context.input),
-    modelId: context.plan.modelId,
-    parameters: scalarRecord(context.plan),
-    evaluation:
-      evaluation.length > 0
-        ? evaluation
-        : context.input.intent.successCriteria.length > 0
-          ? context.input.intent.successCriteria
-          : ['人工复核主题质量与研究目标一致性'],
-    visualizations:
-      visualizations.length > 0 ? visualizations : ['主题分布与关键词摘要'],
-    warnings: unique([
-      ...context.recommendation.warnings,
-      ...(selectedRecommendation?.warnings ?? []),
-    ]),
-    assumptions: unique(selectedDraft?.assumptions ?? []),
-  });
-};
-
-const candidateCapabilities = (assessment: {
-  temporalTopics: boolean;
-  metadataEffects: boolean;
-  shortTextOptimized: boolean;
-  offlineExecution: boolean;
-  cpuExecution: boolean;
-  nativeOutputs: string[];
-}): string[] => unique([
-  ...(assessment.temporalTopics ? ['temporal_topics'] : []),
-  ...(assessment.metadataEffects ? ['metadata_effects'] : []),
-  ...(assessment.shortTextOptimized ? ['short_text_optimized'] : []),
-  ...(assessment.offlineExecution ? ['offline_execution'] : []),
-  ...(assessment.cpuExecution ? ['cpu_execution'] : []),
-  ...assessment.nativeOutputs,
-]);
-
-const hardwareDevice = (value: unknown): 'cpu' | 'gpu' | 'unknown' =>
-  value === 'cpu' || value === 'gpu' ? value : 'unknown';
-
-const positiveNumber = (value: unknown): number | undefined =>
-  typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? value
-    : undefined;
 
 const scalarRecord = (
   value: Record<string, unknown> | undefined,
@@ -130,9 +113,11 @@ const scalarRecord = (
 );
 
 const isScalar = (value: unknown): value is Scalar =>
-  value === null ||
-  typeof value === 'string' ||
-  typeof value === 'number' ||
-  typeof value === 'boolean';
+  value === null || ['string', 'number', 'boolean'].includes(typeof value);
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)];
+const stringList = (value: unknown): string[] => Array.isArray(value)
+  ? value
+      .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+      .map((item) => item.trim().toLowerCase())
+  : [];

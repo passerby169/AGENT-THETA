@@ -397,7 +397,11 @@ export class ResultService {
     const current = asRecord(status.trainingReceipt);
     const priorTrainingRunId = string(current?.trainingRunId);
     if (!priorTrainingRunId) {
-      if (status.status !== 'failed') {
+      const legacyPlanningStall =
+        status.status === 'running' &&
+        ['RecommendModel', 'ValidatePlan'].includes(status.currentState ?? '') &&
+        Date.now() - Date.parse(status.lastEventAt) > 11 * 60_000;
+      if (status.status !== 'failed' && !legacyPlanningStall) {
         throw new Error('当前任务既不是失败 Run，也没有可重试的训练记录。');
       }
       return this.retryFailedWorkflow(
@@ -506,6 +510,8 @@ export class ResultService {
     }
     const researchBrief = asRecord(planContext.researchBrief);
     const columnConfirmation = asRecord(planContext.columnConfirmation);
+    const datasetConfirmation = asRecord(planContext.datasetConfirmation);
+    const researchIntent = asRecord(planContext.researchIntent);
     const research = researchBrief
       ? Object.fromEntries(
           Object.entries(researchBrief).filter(
@@ -519,10 +525,39 @@ export class ResultService {
         ...(originalInput as Record<string, unknown>),
         filePath: string(originalInput.filePath) as string,
         ...(research ? { research } : {}),
+        ...(researchIntent ? { recoveredResearchIntent: researchIntent } : {}),
         recoveryOfRunId: runId,
         recoveryReason: reason,
       },
     });
+    if (
+      recovered.currentState === 'AwaitDatasetUnderstandingConfirmation' &&
+      datasetConfirmation
+    ) {
+      const context = await this.workflow.conversationContext(recovered.runId, runtimeDb);
+      if (
+        context.datasetFacts?.datasetHash === string(datasetConfirmation.datasetHash)
+      ) {
+        recovered = await this.workflow.resume({
+          runId: recovered.runId,
+          runtimeDb,
+          datasetConfirmation: {
+            status: 'corrected',
+            domainLabel: string(datasetConfirmation.domainLabel) ?? '通用文本分析',
+            analysisUnit: string(datasetConfirmation.analysisUnit) ?? '每行一条文本记录',
+            textColumns: strings(datasetConfirmation.textColumns),
+            timeColumns: strings(datasetConfirmation.timeColumns),
+            idColumns: strings(datasetConfirmation.idColumns),
+            metadataColumns: strings(datasetConfirmation.metadataColumns),
+            groupColumns: strings(datasetConfirmation.groupColumns),
+            covariateColumns: strings(datasetConfirmation.covariateColumns),
+            evaluationColumns: strings(datasetConfirmation.evaluationColumns),
+            ignoredColumns: strings(datasetConfirmation.ignoredColumns),
+          },
+          approvedBy: 'local_user',
+        });
+      }
+    }
     if (
       recovered.currentState === 'ColumnConfirmation' &&
       columnConfirmation
@@ -549,7 +584,7 @@ export class ResultService {
       status: recovered.status,
       currentState: recovered.currentState,
       pendingActionRef: recovered.pendingActionRef,
-      response: '已创建受治理的恢复 Run；原失败 Run 保持不可变，新 Run 已复用可验证的研究档案和列绑定。',
+      response: '已创建受治理的恢复 Run；原失败 Run 保持不可变。数据哈希一致时，新 Run 会复用已确认的数据角色与 ResearchIntent，并重新执行原生 Planner V2。',
       workflow: recovered,
     };
   }

@@ -25,6 +25,16 @@ import {
   sanitizePlannerInput,
 } from '../planner/input-snapshot.js';
 import { PLAN_VALIDATOR_VERSION } from "./validator-v2.js";
+import {
+  datasetConfirmationSchema,
+  datasetFactsSchema,
+  researchIntentSchema,
+} from "../dataset-understanding/contracts.js";
+import {
+  plannerDecisionV2Schema,
+  plannerInputV2Schema,
+  plannerValidationResultV2Schema,
+} from "../planner/v2-contracts.js";
 
 export interface CreateTrainingPlanRecordInput {
   validatedPlan: Record<string, unknown>;
@@ -36,6 +46,19 @@ export interface CreateTrainingPlanRecordInput {
   planProposal?: unknown;
   plannerResolution?: unknown;
   validation?: unknown;
+  domainPack: { id: string; version: string };
+  createdAt: string;
+}
+
+export interface CreateTrainingPlanRecordV2Input {
+  validatedPlan: Record<string, unknown>;
+  facts: unknown;
+  confirmation: unknown;
+  intent: unknown;
+  plannerInput: unknown;
+  plannerDecision: unknown;
+  evidenceBundle: unknown;
+  validation: unknown;
   domainPack: { id: string; version: string };
   createdAt: string;
 }
@@ -287,6 +310,131 @@ export const createTrainingPlanRecord = (
       validatorVersion,
     },
     createdAt: input.createdAt,
+  });
+};
+
+/** Create the canonical record directly from the native Planner V2 contract. */
+export const createTrainingPlanRecordV2 = (
+  input: CreateTrainingPlanRecordV2Input,
+): TrainingPlanRecord => {
+  const facts = datasetFactsSchema.parse(input.facts);
+  const confirmation = datasetConfirmationSchema.parse(input.confirmation);
+  const intent = researchIntentSchema.parse(input.intent);
+  const plannerInput = plannerInputV2Schema.parse(input.plannerInput);
+  const decision = plannerDecisionV2Schema.parse(input.plannerDecision);
+  const evidenceBundle = evidenceBundleSchema.parse(input.evidenceBundle);
+  const plannerValidation = plannerValidationResultV2Schema.parse(input.validation);
+  const raw = record(input.validatedPlan);
+
+  if (!plannerValidation.valid) {
+    throw new Error(`Planner V2 decision is invalid: ${plannerValidation.errors.join("; ")}`);
+  }
+  if (facts.datasetHash !== confirmation.datasetHash) {
+    throw new Error("Dataset confirmation is not bound to the active dataset hash.");
+  }
+  if (decision.inputHash !== sha256Canonical(plannerInput)) {
+    throw new Error("Planner V2 decision is not bound to the active input snapshot.");
+  }
+  const modelId = requiredString(raw.modelId, "validatedPlan.modelId");
+  if (modelId !== decision.modelId) {
+    throw new Error("Validated plan model does not match the native Planner V2 decision.");
+  }
+  const evidenceById = new Map(
+    evidenceBundle.evidence.map((item) => [item.evidenceId, item] as const),
+  );
+  const acceptedEvidence = decision.evidenceRefs.map((evidenceId) => {
+    const evidence = evidenceById.get(evidenceId);
+    if (!evidence) throw new Error(`Planner referenced evidence outside the bundle: ${evidenceId}`);
+    return evidence;
+  });
+  const card = new CapabilityRegistry().require(modelId);
+  const parameters = scalarParameters(
+    raw,
+    card.parameters.flatMap((parameter) =>
+      parameter.planField && !["mode", "numTopics", "maxTopics"].includes(parameter.planField)
+        ? [parameter.planField]
+        : [],
+    ),
+  );
+  const canonicalPlan = canonicalTrainingPlanSchema.parse({
+    schemaVersion: TRAINING_PLAN_SCHEMA_VERSION,
+    datasetId: facts.datasetRef,
+    datasetSha256: facts.datasetHash,
+    model: {
+      modelId,
+      mode: raw.mode,
+      topicCountMode: raw.topicCountMode ?? "fixed",
+      numTopics: raw.numTopics ?? null,
+      maxTopics: raw.maxTopics ?? null,
+      parameters,
+    },
+    columns: {
+      textColumns: confirmation.textColumns,
+      timeColumn: confirmation.timeColumns[0] ?? null,
+      idColumn: confirmation.idColumns[0] ?? null,
+      covariateColumns: confirmation.covariateColumns ?? [],
+      metadataColumns: confirmation.metadataColumns,
+      groupingColumns: confirmation.groupColumns ?? [],
+      evaluationLabelColumns: confirmation.evaluationColumns ?? [],
+    },
+    preprocessing: {
+      trimWhitespace: true,
+      dropEmptyText: true,
+      deduplicate: decision.preprocessing.some((item) => /dedup|去重/iu.test(item)),
+    },
+    resources: {
+      device: intent.resourceBudget.device,
+      memoryGb: intent.resourceBudget.memoryGb ?? null,
+      networkAllowed: !plannerInput.hardware.offlineOnly,
+    },
+    experimentProtocol: {
+      mode: decision.experiment.mode,
+      primarySeeds: decision.experiment.primarySeeds,
+      baselineModelId: decision.baselineModelId,
+      baselineSeeds: decision.experiment.baselineSeeds,
+      rationale: decision.experiment.rationale,
+      evidenceRefs: decision.evidenceRefs.slice(0, 8),
+      confidence: decision.evidenceRefs.length > 0 ? "high" : "low",
+    },
+    bindings: {
+      researchBriefHash: sha256Canonical(intent),
+      datasetProfileHash: sha256Canonical(facts),
+      columnConfirmationHash: sha256Canonical(confirmation),
+      recommendationHash: sha256Canonical(plannerInput.candidates),
+      evidenceBundleHash: evidenceBundle.bundleHash,
+      planProposalHash: sha256Canonical(decision),
+      plannerResolutionHash: sha256Canonical({
+        inputHash: decision.inputHash,
+        evidenceRefs: decision.evidenceRefs,
+      }),
+      domainPackId: requiredString(input.domainPack.id, "domainPack.id"),
+      domainPackVersion: requiredString(input.domainPack.version, "domainPack.version"),
+      recommendationVersion: plannerInput.catalogVersion,
+      validatorVersion: PLAN_VALIDATOR_VERSION,
+    },
+  });
+  const planHash = sha256Canonical(canonicalPlan);
+  return trainingPlanRecordSchema.parse({
+    schemaVersion: TRAINING_PLAN_SCHEMA_VERSION,
+    planId: `plan_${planHash.slice(0, 16)}`,
+    planHash,
+    planVersion: 1,
+    status: "draft",
+    canonicalPlan,
+    review: {
+      researchQuestion: intent.researchQuestion,
+      datasetFileName: facts.fileName,
+      datasetRowCount: facts.rowCount,
+      warnings: [...new Set([...decision.warnings, ...plannerValidation.warnings])],
+      reasonCodes: ["NATIVE_PLANNER_V2"],
+      evidence: acceptedEvidence,
+      evidenceBundleHash: evidenceBundle.bundleHash,
+      planProposalSource: "minimax",
+      plannerAcceptedEvidenceRefs: decision.evidenceRefs,
+      evidenceSelectionReceipts: [],
+      validatorVersion: PLAN_VALIDATOR_VERSION,
+    },
+    createdAt: new Date(input.createdAt).toISOString(),
   });
 };
 

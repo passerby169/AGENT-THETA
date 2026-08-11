@@ -17,6 +17,13 @@ const candidateSchema = z.object({
   runnable: z.boolean(),
   capabilities: z.array(z.string().min(1)),
   estimatedMemoryGb: z.number().nonnegative().optional(),
+  parameterDefaults: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  parameterConstraints: z.array(z.object({
+    parameterId: z.string().min(1),
+    minimum: z.number().nullable().optional(),
+    maximum: z.number().nullable().optional(),
+    choices: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).default([]),
+  })).default([]),
 });
 
 export const plannerInputV2Schema = z.object({
@@ -35,7 +42,25 @@ export const plannerDecisionV2Schema = z.object({
   schemaVersion: z.literal('2.0.0'),
   inputHash: z.string().regex(/^[a-f0-9]{64}$/),
   modelId: z.string().min(1),
+  baselineModelId: z.string().min(1).nullable().default(null),
+  rationale: z.string().min(1),
   parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])),
+  evidenceRefs: z.array(z.string().min(1)).max(20).default([]),
+  evidenceSelectionReceipts: z.array(z.object({
+    attempt: z.number().int().min(1).max(2),
+    outcome: z.enum(['accepted', 'rejected']),
+    errorCode: z.string().min(1).nullable(),
+    targetId: z.string().min(1).nullable(),
+    evidenceId: z.string().min(1).nullable(),
+    message: z.string().min(1),
+  }).strict()).max(2).optional(),
+  experiment: z.object({
+    mode: z.enum(['quick', 'comparative', 'stability']),
+    primarySeeds: z.array(z.number().int().nonnegative()).min(1).max(5),
+    baselineSeeds: z.array(z.number().int().nonnegative()).max(3),
+    rationale: z.string().min(1),
+  }),
+  preprocessing: z.array(z.string().min(1)).min(1),
   evaluation: z.array(z.string().min(1)).min(1),
   visualizations: z.array(z.string().min(1)).min(1),
   warnings: z.array(z.string()),

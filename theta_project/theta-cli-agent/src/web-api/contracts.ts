@@ -17,9 +17,17 @@ export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
     timeColumns: z.array(z.string().trim().min(1)).max(12).default([]),
     idColumns: z.array(z.string().trim().min(1)).max(12).default([]),
     metadataColumns: z.array(z.string().trim().min(1)).max(24).default([]),
+    groupColumns: z.array(z.string().trim().min(1)).max(24).default([]),
+    covariateColumns: z.array(z.string().trim().min(1)).max(24).default([]),
+    evaluationColumns: z.array(z.string().trim().min(1)).max(24).default([]),
+    ignoredColumns: z.array(z.string().trim().min(1)).max(24).default([]),
   }).strict(),
   z.object({
     action: z.literal('decisionAnswer'),
+    text: z.string().trim().min(1).max(4000),
+  }).strict(),
+  z.object({
+    action: z.literal('correctDataset'),
     text: z.string().trim().min(1).max(4000),
   }).strict(),
   z.object({ action: z.literal('finishInterview') }).strict(),
@@ -35,6 +43,7 @@ export const thetaWebCreateRunSchema = z.object({
   filePath: z.string().trim().min(1).optional(),
   researchGoal: z.string().trim().min(8).max(2000).optional(),
   useMiniMax: z.boolean().default(true),
+  allowRemoteSamples: z.boolean().default(false),
 }).strict().refine(
   (input) => Boolean(input.datasetRef || input.filePath),
   { message: 'datasetRef 或 filePath 至少提供一项。' },

@@ -1,23 +1,12 @@
 import type { JsonSchema } from '@hypha/core';
+import type { InferenceToolDescriptor } from '@hypha/inference';
 import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
 import { SQLiteDatasetRegistry } from '../storage/dataset-registry.js';
 import { callThetaBridge } from './bridge.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 
-export type DatasetExploreView =
-  | 'schema'
-  | 'head'
-  | 'sample'
-  | 'profiles'
-  | 'quality';
-
 export interface ThetaDatasetExploreInput {
   datasetRef: string;
-  views?: DatasetExploreView[];
-  sampleSize?: number;
-  sampleSeed?: string;
-  headLimit?: number;
-  selectedColumns?: string[];
   sheetName?: string;
 }
 
@@ -51,11 +40,8 @@ export interface ThetaDatasetExploreOutput {
   selectedSheet?: string | null;
   rowCount: number;
   columns: string[];
-  profiles: ExploreColumnProfile[];
-  head: Array<Record<string, unknown>>;
-  sample: Array<Record<string, unknown>>;
-  exceptionalSample: Array<Record<string, unknown>>;
-  columnSamples: Array<Record<string, unknown>>;
+  columnProfiles: ExploreColumnProfile[];
+  sampleRows: Array<Record<string, unknown>>;
   sampleSeed: string;
   samplePolicy?: {
     method: 'deterministic_reservoir';
@@ -66,12 +52,12 @@ export interface ThetaDatasetExploreOutput {
   };
   sampleTruncated: boolean;
   outputTruncated?: boolean;
-  redaction: {
+  redactionSummary: {
     applied: boolean;
     redactedValueCount: number;
     rules: string[];
   };
-  columnRoles: {
+  candidateRoles: {
     text: ExploreColumnCandidate[];
     time: ExploreColumnCandidate[];
     id: ExploreColumnCandidate[];
@@ -97,24 +83,17 @@ const inputSchema: JsonSchema = {
   required: ['datasetRef'],
   properties: {
     datasetRef: { type: 'string', minLength: 1 },
-    views: {
-      type: 'array',
-      uniqueItems: true,
-      items: { enum: ['schema', 'head', 'sample', 'profiles', 'quality'] },
-      maxItems: 5,
-    },
-    sampleSize: { type: 'integer', minimum: 1, maximum: 20 },
-    sampleSeed: { type: 'string', minLength: 1, maxLength: 128 },
-    headLimit: { type: 'integer', minimum: 1, maximum: 10 },
-    selectedColumns: {
-      type: 'array',
-      uniqueItems: true,
-      items: { type: 'string', minLength: 1 },
-      maxItems: 50,
-    },
     sheetName: { type: 'string', minLength: 1, maxLength: 256 },
   },
   additionalProperties: false,
+};
+
+export const thetaDatasetExploreInferenceTool: InferenceToolDescriptor = {
+  id: THETA_TOOL_IDS.datasetExplore,
+  name: 'theta_dataset_explore',
+  description:
+    'Read one registered dataset and return its schema, profiles, and at most ten deterministic random rows after local redaction.',
+  inputSchema: inputSchema as Record<string, unknown>,
 };
 
 const outputSchema: JsonSchema = {
@@ -131,17 +110,14 @@ const outputSchema: JsonSchema = {
     'selectedSheet',
     'rowCount',
     'columns',
-    'profiles',
-    'head',
-    'sample',
-    'exceptionalSample',
-    'columnSamples',
+    'columnProfiles',
+    'sampleRows',
     'sampleSeed',
     'samplePolicy',
     'sampleTruncated',
     'outputTruncated',
-    'redaction',
-    'columnRoles',
+    'redactionSummary',
+    'candidateRoles',
     'languageDistribution',
     'duplicateRatio',
     'timeCoverage',
@@ -160,17 +136,14 @@ const outputSchema: JsonSchema = {
     selectedSheet: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     rowCount: { type: 'integer', minimum: 0 },
     columns: { type: 'array', items: { type: 'string' } },
-    profiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    head: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    sample: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    exceptionalSample: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    columnSamples: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    columnProfiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    sampleRows: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: true } },
     sampleSeed: { type: 'string' },
     samplePolicy: { type: 'object', additionalProperties: true },
     sampleTruncated: { type: 'boolean' },
     outputTruncated: { type: 'boolean' },
-    redaction: { type: 'object', additionalProperties: true },
-    columnRoles: { type: 'object', additionalProperties: true },
+    redactionSummary: { type: 'object', additionalProperties: true },
+    candidateRoles: { type: 'object', additionalProperties: true },
     languageDistribution: { type: 'array', items: { type: 'object', additionalProperties: true } },
     duplicateRatio: { type: 'number', minimum: 0, maximum: 1 },
     timeCoverage: { type: 'object', additionalProperties: true },
@@ -224,11 +197,6 @@ export const thetaDatasetExploreHandler: ToolHandler<
         datasetHash: record.sha256,
         fileName: record.displayName,
         sizeBytes: record.sizeBytes,
-        views: input.views ?? ['schema', 'head', 'sample', 'profiles', 'quality'],
-        sampleSize: input.sampleSize ?? 10,
-        sampleSeed: input.sampleSeed ?? record.sha256.slice(0, 16),
-        headLimit: input.headLimit ?? 5,
-        selectedColumns: input.selectedColumns ?? [],
         sheetName: input.sheetName,
       },
       { runId: context.runId, stepId: context.stepId },

@@ -456,19 +456,19 @@ npm run cli -- recommend --profile fixtures/data-profile.json --goal "time trend
 Validate a training plan:
 
 ```powershell
-npm run cli -- plan validate --file fixtures/training-plan.json
+npm run cli -- plan validate --file <planner-v2-bundle.json>
 ```
 
 Request canonical plan creation without approving the governed write:
 
 ```powershell
-npm run cli -- plan create --file fixtures/training-plan.json
+npm run cli -- plan create --file <planner-v2-bundle.json>
 ```
 
 Create and print the canonical plan record after explicit tool approval:
 
 ```powershell
-npm run cli -- plan create --file fixtures/training-plan.json --approve
+npm run cli -- plan create --file <planner-v2-bundle.json> --approve
 ```
 
 `plan approve` remains available only as a legacy compatibility command. It is

@@ -13,7 +13,6 @@ export type {
   ThetaDatasetInspectOutput,
 } from "./dataset-inspect-tool.js";
 export type {
-  DatasetExploreView,
   ExploreColumnCandidate,
   ExploreColumnProfile,
   ThetaDatasetExploreInput,

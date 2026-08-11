@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { evidenceRefSchema, type EvidenceRef } from "./contracts.js";
 import type { RetrievalTrace } from "./fts-index.js";
+import type {
+  DatasetConfirmation,
+  DatasetFacts,
+  ResearchIntent,
+} from '../dataset-understanding/contracts.js';
 
 export const EVIDENCE_BUNDLE_VERSION = "1.0.0";
 
@@ -115,6 +120,37 @@ export interface PlanEvidenceQueryInput {
   columnConfirmation: Record<string, unknown>;
   researchGoal?: string;
 }
+
+export const planEvidenceQueriesV2 = (input: {
+  facts: DatasetFacts;
+  confirmation: DatasetConfirmation;
+  intent: ResearchIntent;
+}): EvidenceQuery[] => {
+  const context = compact([
+    input.intent.researchQuestion,
+    `rows ${input.facts.rowCount}`,
+    `text columns ${input.confirmation.textColumns.join(' ')}`,
+    input.intent.temporalAnalysis
+      ? `temporal analysis ${input.confirmation.timeColumns.join(' ')}`
+      : 'static topic analysis',
+    input.confirmation.groupColumns?.length
+      ? `group comparison ${input.confirmation.groupColumns.join(' ')}`
+      : '',
+    input.confirmation.covariateColumns?.length
+      ? `training covariates ${input.confirmation.covariateColumns.join(' ')}`
+      : '',
+    `topic granularity ${input.intent.topicGranularity}`,
+    input.intent.successCriteria.join(' '),
+    input.intent.constraints.join(' '),
+  ]);
+  return [
+    query('v2-model-selection', 'model_selection', `${context} LDA BTM HDP DTM STM BERTopic THETA applicability baseline`, '为原生 Planner V2 检索模型选择依据。', ['implementation', 'model', 'paper']),
+    query('v2-parameters', 'hyperparameter', `${context} topic count parameters seeds hyperparameter ranges`, '检索参数和实验设计依据。', ['parameter', 'implementation', 'paper']),
+    query('v2-preprocessing', 'preprocessing', `${context} preprocessing tokenization empty duplicate vocabulary`, '检索预处理依据。', ['preprocessing', 'implementation']),
+    query('v2-evaluation', 'evaluation', `${context} coherence diversity stability human interpretation evaluation visualization`, '检索评价和展示依据。', ['evaluation', 'paper']),
+    query('v2-resources', 'resource_and_environment', `${context} CPU GPU memory offline runtime dependencies`, '检索资源约束依据。', ['resource', 'implementation']),
+  ];
+};
 
 export const planEvidenceQueries = (
   input: PlanEvidenceQueryInput,

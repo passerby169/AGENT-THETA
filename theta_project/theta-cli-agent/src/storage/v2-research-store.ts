@@ -16,6 +16,15 @@ import {
   type InterviewMemory,
 } from '../agent/decision-gap.js';
 import { defaultThetaWorkflowDb } from '../theta-workflow-runtime.js';
+import {
+  plannerDecisionV2Schema,
+  plannerInputV2Hash,
+  plannerInputV2Schema,
+  plannerValidationResultV2Schema,
+  type PlannerDecisionV2,
+  type PlannerInputV2,
+  type PlannerValidationResultV2,
+} from '../planner/v2-contracts.js';
 
 type RevisionKind = 'facts' | 'understanding' | 'intent';
 
@@ -25,6 +34,39 @@ export interface ResearchRevision<T> {
   datasetRef?: string;
   datasetHash?: string;
   value: T;
+  createdAt: string;
+}
+
+export interface RemoteSampleConsentRecord {
+  runId: string;
+  datasetRef: string;
+  datasetHash: string;
+  allowed: boolean;
+  maxRows: 10;
+  policyVersion: '1.0.0';
+  grantedBy: string;
+  grantedAt: string;
+}
+
+export interface RemoteSampleReceiptRecord {
+  runId: string;
+  datasetHash: string;
+  provider: string;
+  model: string;
+  payloadHash: string;
+  rowCount: number;
+  redactedValueCount: number;
+  redactionRules: string[];
+  createdAt: string;
+}
+
+export interface PlannerV2Record {
+  runId: string;
+  datasetHash: string;
+  input: PlannerInputV2;
+  decision: PlannerDecisionV2;
+  validation: PlannerValidationResultV2;
+  presentation: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -82,6 +124,41 @@ export class SQLiteV2ResearchStore {
         run_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS theta_remote_sample_consents (
+        run_id TEXT PRIMARY KEY,
+        dataset_ref TEXT NOT NULL,
+        dataset_hash TEXT NOT NULL,
+        allowed INTEGER NOT NULL,
+        max_rows INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        granted_by TEXT NOT NULL,
+        granted_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS theta_remote_sample_receipts (
+        run_id TEXT NOT NULL,
+        dataset_hash TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        row_count INTEGER NOT NULL,
+        redacted_value_count INTEGER NOT NULL,
+        redaction_rules_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(run_id, payload_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS theta_planner_v2_records (
+        run_id TEXT PRIMARY KEY,
+        dataset_hash TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        decision_json TEXT NOT NULL,
+        validation_json TEXT NOT NULL,
+        presentation_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
     `);
   }
@@ -187,6 +264,94 @@ export class SQLiteV2ResearchStore {
     return row ? interviewMemorySchema.parse(JSON.parse(row.payload_json)) : undefined;
   }
 
+  saveRemoteSampleConsent(value: RemoteSampleConsentRecord): RemoteSampleConsentRecord {
+    this.database.prepare(`
+      INSERT INTO theta_remote_sample_consents
+        (run_id, dataset_ref, dataset_hash, allowed, max_rows, policy_version, granted_by, granted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        dataset_ref = excluded.dataset_ref,
+        dataset_hash = excluded.dataset_hash,
+        allowed = excluded.allowed,
+        max_rows = excluded.max_rows,
+        policy_version = excluded.policy_version,
+        granted_by = excluded.granted_by,
+        granted_at = excluded.granted_at
+    `).run(
+      value.runId, value.datasetRef, value.datasetHash, value.allowed ? 1 : 0,
+      value.maxRows, value.policyVersion, value.grantedBy, value.grantedAt,
+    );
+    return value;
+  }
+
+  saveRemoteSampleReceipt(value: RemoteSampleReceiptRecord): RemoteSampleReceiptRecord {
+    this.database.prepare(`
+      INSERT OR IGNORE INTO theta_remote_sample_receipts
+        (run_id, dataset_hash, provider, model, payload_hash, row_count,
+         redacted_value_count, redaction_rules_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      value.runId, value.datasetHash, value.provider, value.model, value.payloadHash,
+      value.rowCount, value.redactedValueCount, JSON.stringify(value.redactionRules), value.createdAt,
+    );
+    return value;
+  }
+
+  savePlannerV2(value: PlannerV2Record): PlannerV2Record {
+    const input = plannerInputV2Schema.parse(value.input);
+    const decision = plannerDecisionV2Schema.parse(value.decision);
+    const validation = plannerValidationResultV2Schema.parse(value.validation);
+    if (input.facts.datasetHash !== value.datasetHash) {
+      throw new Error('Planner V2 record does not bind the active dataset hash.');
+    }
+    if (decision.inputHash !== plannerInputV2Hash(input)) {
+      throw new Error('Planner V2 record contains a stale decision.');
+    }
+    this.database.prepare(`
+      INSERT INTO theta_planner_v2_records
+        (run_id, dataset_hash, input_hash, input_json, decision_json,
+         validation_json, presentation_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        dataset_hash = excluded.dataset_hash,
+        input_hash = excluded.input_hash,
+        input_json = excluded.input_json,
+        decision_json = excluded.decision_json,
+        validation_json = excluded.validation_json,
+        presentation_json = excluded.presentation_json,
+        created_at = excluded.created_at
+    `).run(
+      value.runId, value.datasetHash, decision.inputHash, JSON.stringify(input),
+      JSON.stringify(decision), JSON.stringify(validation),
+      JSON.stringify(value.presentation), value.createdAt,
+    );
+    return { ...value, input, decision, validation };
+  }
+
+  plannerV2(runId: string): PlannerV2Record | undefined {
+    const row = this.database.prepare(`
+      SELECT dataset_hash, input_json, decision_json, validation_json,
+             presentation_json, created_at
+      FROM theta_planner_v2_records WHERE run_id = ?
+    `).get(runId) as {
+      dataset_hash: string;
+      input_json: string;
+      decision_json: string;
+      validation_json: string;
+      presentation_json: string;
+      created_at: string;
+    } | undefined;
+    return row ? {
+      runId,
+      datasetHash: row.dataset_hash,
+      input: plannerInputV2Schema.parse(JSON.parse(row.input_json)),
+      decision: plannerDecisionV2Schema.parse(JSON.parse(row.decision_json)),
+      validation: plannerValidationResultV2Schema.parse(JSON.parse(row.validation_json)),
+      presentation: JSON.parse(row.presentation_json) as Record<string, unknown>,
+      createdAt: row.created_at,
+    } : undefined;
+  }
+
   invalidateAfterDatasetHashChange(runId: string, currentHash: string): void {
     this.database.exec('BEGIN IMMEDIATE;');
     try {
@@ -205,6 +370,15 @@ export class SQLiteV2ResearchStore {
       this.database
         .prepare('DELETE FROM theta_interview_memory WHERE run_id = ?')
         .run(runId);
+      this.database
+        .prepare('DELETE FROM theta_remote_sample_consents WHERE run_id = ? AND dataset_hash <> ?')
+        .run(runId, currentHash);
+      this.database
+        .prepare('DELETE FROM theta_remote_sample_receipts WHERE run_id = ? AND dataset_hash <> ?')
+        .run(runId, currentHash);
+      this.database
+        .prepare('DELETE FROM theta_planner_v2_records WHERE run_id = ? AND dataset_hash <> ?')
+        .run(runId, currentHash);
       this.database.exec('COMMIT;');
     } catch (error) {
       this.database.exec('ROLLBACK;');

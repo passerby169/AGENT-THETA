@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createPlanningFixture } from "./planning/test-fixture.js";
+import { createPlannerV2Fixture } from "./planning/v2-test-fixture.js";
 import {
   requestThetaPlanApprove,
   requestThetaPlanCreate,
@@ -197,9 +197,9 @@ Examples:
   npm run cli -- dataset confirm --run-id <run_id> --file <confirmation.json>
   npm run cli -- models
   npm run cli -- recommend --profile fixtures/data-profile.json --columns fixtures/model-recommend-columns.json
-  npm run cli -- plan validate --file fixtures/training-plan.json
-  npm run cli -- plan create --file fixtures/training-plan.json
-  npm run cli -- plan create --file fixtures/training-plan.json --approve
+  npm run cli -- plan validate --file <planner-v2-bundle.json>
+  npm run cli -- plan create --file <planner-v2-bundle.json>
+  npm run cli -- plan create --file <planner-v2-bundle.json> --approve
   npm run cli -- plan approve --plan-id <id> --plan-hash <hash> --approved-by local_user --approve
   npm run cli -- training dry-run --file <dry-run-request.json>
   npm run cli -- training start --file <training-start-request.json>
@@ -423,10 +423,8 @@ const exploreDatasetCommand = async (
   parsed: ParsedArguments,
   output: CliOutput,
 ): Promise<void> => {
-  const sampleSize = integerFlag(parsed, "sample-size");
   const input: ThetaDatasetExploreInput = {
     datasetRef: requiredStringFlag(parsed, "dataset-ref"),
-    ...(sampleSize === undefined ? {} : { sampleSize }),
   };
   const result = await withWorkflowDbEnvironment(
     stringFlag(parsed, "runtime-db"),
@@ -442,8 +440,8 @@ const exploreDatasetCommand = async (
       `Inferred domain: ${explored.inferredDomain.label} (${(
         explored.inferredDomain.confidence * 100
       ).toFixed(0)}%)`,
-      `Sample rows: ${explored.sample.length}`,
-      `Redacted values: ${explored.redaction.redactedValueCount}`,
+      `Sample rows: ${explored.sampleRows.length}`,
+      `Redacted values: ${explored.redactionSummary.redactedValueCount}`,
       ...explored.qualityWarnings.map((warning) => `Warning: ${warning}`),
     ].join("\n"),
   );
@@ -600,14 +598,33 @@ const readPlanInput = async (
   return value as unknown as ThetaPlanCreateInput;
 };
 
+const planValidationDataProfile = (
+  planInput: ThetaPlanCreateInput,
+): Record<string, unknown> => {
+  const facts = planInput.facts as Record<string, unknown>;
+  const columnProfiles = Array.isArray(facts.columns)
+    ? facts.columns.filter(
+        (column): column is Record<string, unknown> =>
+          Boolean(column) && typeof column === 'object' && !Array.isArray(column),
+      )
+    : [];
+  return {
+    rowCount: facts.rowCount,
+    columns: columnProfiles.map((column) => column.name),
+    columnProfiles,
+    languageDistribution: facts.languageDistribution,
+    qualityWarnings: facts.qualityWarnings,
+  };
+};
+
 const validatePlanCommand = async (
   parsed: ParsedArguments,
   output: CliOutput,
 ): Promise<void> => {
   const planInput = await readPlanInput(parsed);
   const input: ThetaPlanValidateInput = {
-    plan: planInput.validatedPlan,
-    dataProfile: planInput.datasetProfile as Record<string, unknown>,
+    plan: planInput.validatedPlan as ThetaPlanValidateInput['plan'],
+    dataProfile: planValidationDataProfile(planInput),
   };
   const result = await runThetaPlanValidate(input);
   const validation = requireCompleted(result, "Plan validation");
@@ -944,7 +961,7 @@ const demoColumnConfirmation: Record<string, unknown> = {
   confirmedAt: "2026-08-04T00:00:00.000Z",
 };
 
-const demoPlan: ThetaPlanCreateInput = createPlanningFixture();
+const demoPlan: ThetaPlanCreateInput = createPlannerV2Fixture();
 
 const demoCommand = async (
   parsed: ParsedArguments,
@@ -965,8 +982,8 @@ const demoCommand = async (
   );
   const validation = requireCompleted(
     await runThetaPlanValidate({
-      plan: demoPlan.validatedPlan,
-      dataProfile: demoPlan.datasetProfile as Record<string, unknown>,
+      plan: demoPlan.validatedPlan as ThetaPlanValidateInput['plan'],
+      dataProfile: planValidationDataProfile(demoPlan),
     }),
     "Demo plan validation",
   );

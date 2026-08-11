@@ -1,174 +1,123 @@
-import type { JsonSchema } from "@hypha/core";
-import type { ToolCallContext, ToolHandler, ToolSpec } from "@hypha/tools";
+import type { JsonSchema } from '@hypha/core';
+import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
 import {
-  createTrainingPlanRecord,
-  type CreateTrainingPlanRecordInput,
-} from "../planning/engine.js";
-import type { TrainingPlanRecord } from "../planning/contracts.js";
-import type { ThetaTrainingPlan } from "./plan-validate-tool.js";
-import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tool-ids.js";
-import { callThetaBridge } from "./bridge.js";
-import { validateTrainingPlanV2 } from "../planning/validator-v2.js";
-import type { CapabilityCatalogModel } from "../capabilities/contracts.js";
-import {
-  datasetProfileSchema,
-  researchBriefSchema,
-} from "../agent/research-contracts.js";
+  createTrainingPlanRecordV2,
+  type CreateTrainingPlanRecordV2Input,
+} from '../planning/engine.js';
+import type { TrainingPlanRecord } from '../planning/contracts.js';
+import { validateTrainingPlanV2 } from '../planning/validator-v2.js';
+import type { CapabilityCatalogModel } from '../capabilities/contracts.js';
+import { datasetFactsSchema, researchIntentSchema } from '../dataset-understanding/contracts.js';
+import { callThetaBridge } from './bridge.js';
+import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 
-export interface ThetaPlanCreateInput extends Omit<
-  CreateTrainingPlanRecordInput,
-  "validatedPlan" | "createdAt"
-> {
-  validatedPlan: ThetaTrainingPlan;
+export interface ThetaPlanCreateInput extends Omit<CreateTrainingPlanRecordV2Input, 'createdAt'> {
   createdAt?: string;
 }
-
 export type ThetaPlanCreateOutput = TrainingPlanRecord;
 
 const planCreateInputSchema: JsonSchema = {
-  type: "object",
+  type: 'object',
   required: [
-    "validatedPlan",
-    "researchBrief",
-    "datasetProfile",
-    "columnConfirmation",
-    "recommendation",
-    "domainPack",
+    'validatedPlan', 'facts', 'confirmation', 'intent', 'plannerInput',
+    'plannerDecision', 'evidenceBundle', 'validation', 'domainPack',
   ],
   properties: {
-    validatedPlan: {
-      type: "object",
-      required: ["datasetId", "modelId", "mode"],
-      additionalProperties: true,
-    },
-    researchBrief: { type: "object", additionalProperties: true },
-    datasetProfile: { type: "object", additionalProperties: true },
-    columnConfirmation: { type: "object", additionalProperties: true },
-    recommendation: { type: "object", additionalProperties: true },
-    evidenceBundle: { type: "object", additionalProperties: true },
-    planProposal: { type: "object", additionalProperties: true },
-    plannerResolution: { type: "object", additionalProperties: true },
-    validation: { type: "object", additionalProperties: true },
+    validatedPlan: { type: 'object', additionalProperties: true },
+    facts: { type: 'object', additionalProperties: true },
+    confirmation: { type: 'object', additionalProperties: true },
+    intent: { type: 'object', additionalProperties: true },
+    plannerInput: { type: 'object', additionalProperties: true },
+    plannerDecision: { type: 'object', additionalProperties: true },
+    evidenceBundle: { type: 'object', additionalProperties: true },
+    validation: { type: 'object', additionalProperties: true },
     domainPack: {
-      type: "object",
-      required: ["id", "version"],
-      properties: {
-        id: { type: "string", minLength: 1 },
-        version: { type: "string", minLength: 1 },
-      },
+      type: 'object',
+      required: ['id', 'version'],
+      properties: { id: { type: 'string' }, version: { type: 'string' } },
       additionalProperties: false,
     },
-    createdAt: { type: "string", format: "date-time" },
+    createdAt: { type: 'string', format: 'date-time' },
   },
   additionalProperties: false,
 };
 
 const planCreateOutputSchema: JsonSchema = {
-  type: "object",
-  required: [
-    "schemaVersion",
-    "planId",
-    "planHash",
-    "planVersion",
-    "status",
-    "canonicalPlan",
-    "review",
-    "createdAt",
-  ],
+  type: 'object',
+  required: ['schemaVersion', 'planId', 'planHash', 'planVersion', 'status', 'canonicalPlan', 'review', 'createdAt'],
   properties: {
-    schemaVersion: { enum: ["1.0.0", "2.0.0"] },
-    planId: { type: "string" },
-    planHash: { type: "string" },
-    planVersion: { type: "integer", minimum: 1 },
-    status: { enum: ["draft", "superseded"] },
-    canonicalPlan: { type: "object", additionalProperties: true },
-    review: { type: "object", additionalProperties: true },
-    createdAt: { type: "string" },
+    schemaVersion: { const: '2.0.0' },
+    planId: { type: 'string' },
+    planHash: { type: 'string' },
+    planVersion: { type: 'integer', minimum: 1 },
+    status: { enum: ['draft', 'superseded'] },
+    canonicalPlan: { type: 'object', additionalProperties: true },
+    review: { type: 'object', additionalProperties: true },
+    createdAt: { type: 'string' },
   },
   additionalProperties: false,
 };
 
 export const thetaPlanCreateToolSpec: ToolSpec = {
   id: THETA_TOOL_IDS.planCreate,
-  version: "2.1.0",
-  displayName: "Create Training Plan",
-  description:
-    "Create the TypeScript-authoritative canonical THETA plan after Hypha HumanPlanReview.",
-  tags: ["theta", "plan"],
+  version: '3.0.0',
+  displayName: 'Create Native Planner V2 Training Plan',
+  description: 'Create the canonical plan directly from DatasetFacts, ResearchIntent and the validated native MiniMax Planner V2 decision.',
+  tags: ['theta', 'plan', 'planner-v2'],
   inputSchema: planCreateInputSchema,
   outputSchema: planCreateOutputSchema,
-  sideEffectLevel: "write",
+  sideEffectLevel: 'write',
   permissionScope: [THETA_PERMISSION_SCOPES.planWrite],
   humanApprovalPolicy: {
     required: true,
-    reason:
-      "Creating the canonical plan requires the HumanPlanReview decision recorded by Hypha.",
+    reason: 'Creating the canonical plan requires the recorded HumanPlanReview decision.',
   },
-  idempotencyPolicy: { mode: "required" },
-  timeoutPolicy: { timeoutMs: 30000, onTimeout: "fail" },
+  idempotencyPolicy: { mode: 'required' },
+  timeoutPolicy: { timeoutMs: 30_000, onTimeout: 'fail' },
   retryPolicy: { maxAttempts: 1 },
-  auditPolicy: {
-    enabled: true,
-    includeInput: false,
-    includeOutput: true,
-  },
-  source: "local",
+  auditPolicy: { enabled: true, includeInput: false, includeOutput: true },
+  source: 'local',
 };
 
-const normalizePlanCreateInput = (input: unknown): ThetaPlanCreateInput => {
-  if (!input || typeof input !== "object" || !("validatedPlan" in input)) {
-    throw new Error(
-      "plan.create input must include validatedPlan and binding snapshots.",
-    );
+export const thetaPlanCreateHandler: ToolHandler<unknown, ThetaPlanCreateOutput> = async (
+  input,
+  context: ToolCallContext,
+) => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('plan.create input must be an object.');
   }
-  return input as ThetaPlanCreateInput;
-};
-
-export const thetaPlanCreateHandler: ToolHandler<
-  unknown,
-  ThetaPlanCreateOutput
-> = async (input: unknown, context: ToolCallContext) => {
-  const value = normalizePlanCreateInput(input);
-  const response = await callThetaBridge(
-    "model.catalog",
-    {},
-    {
-      runId: context.runId,
-      stepId: `${context.stepId}.validator-v2.catalog`,
-    },
-  );
-  if (
-    response.status !== "ok" ||
-    !response.data ||
-    typeof response.data !== "object"
-  ) {
-    throw new Error(
-      response.error?.message ?? "model.catalog bridge command failed.",
-    );
+  const value = input as ThetaPlanCreateInput;
+  const facts = datasetFactsSchema.parse(value.facts);
+  const intent = researchIntentSchema.parse(value.intent);
+  const response = await callThetaBridge('model.catalog', {}, {
+    runId: context.runId,
+    stepId: `${context.stepId}.validator-v2.catalog`,
+  });
+  if (response.status !== 'ok' || !response.data || typeof response.data !== 'object') {
+    throw new Error(response.error?.message ?? 'model.catalog bridge command failed.');
   }
-  const models = Array.isArray(
-    (response.data as Record<string, unknown>).models,
-  )
-    ? ((response.data as Record<string, unknown>)
-        .models as CapabilityCatalogModel[])
+  const models = Array.isArray((response.data as Record<string, unknown>).models)
+    ? (response.data as Record<string, unknown>).models as CapabilityCatalogModel[]
     : [];
-  const brief = researchBriefSchema.parse(value.researchBrief);
-  const profile = datasetProfileSchema.parse(value.datasetProfile);
-  const validation = validateTrainingPlanV2({
+  const validated = validateTrainingPlanV2({
     plan: value.validatedPlan,
     models,
-    dataProfile: profile,
-    offlineOnly: brief.offlineOnly,
-    device: brief.hardwareLimit.device,
+    dataProfile: {
+      rowCount: facts.rowCount,
+      columns: facts.columns.map((column) => column.name),
+      columnProfiles: facts.columns,
+      languageDistribution: facts.languageDistribution,
+      qualityWarnings: facts.qualityWarnings,
+    },
+    offlineOnly: !intent.constraints.some((item) => /允许联网|network allowed/iu.test(item)),
+    device: intent.resourceBudget.device,
   });
-  if (!validation.valid) {
-    throw new Error(
-      `Validator V2 rejected plan.create: ${validation.errors.join("; ")}`,
-    );
+  if (!validated.valid) {
+    throw new Error(`Validator V2 rejected plan.create: ${validated.errors.join('; ')}`);
   }
-  return createTrainingPlanRecord({
+  return createTrainingPlanRecordV2({
     ...value,
-    validatedPlan: validation.normalizedPlan,
+    validatedPlan: validated.normalizedPlan,
     createdAt: value.createdAt ?? new Date().toISOString(),
   });
 };

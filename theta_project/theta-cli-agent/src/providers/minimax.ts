@@ -187,14 +187,38 @@ const providerInput = (value: unknown): MiniMaxProviderInput => {
   return { messages: messages as PromptMessage[] };
 };
 
-const apiRole = (role: PromptMessage['role']): 'system' | 'user' | 'assistant' =>
-  role === 'system' || role === 'assistant' ? role : 'user';
+const apiRole = (
+  role: PromptMessage['role'],
+): 'system' | 'user' | 'assistant' | 'tool' =>
+  role === 'system' || role === 'assistant' || role === 'tool' ? role : 'user';
 
-const apiMessage = (message: PromptMessage): Record<string, unknown> => ({
-  role: apiRole(message.role),
-  content: message.content,
-  ...(message.name ? { name: message.name } : {}),
-});
+const apiMessage = (message: PromptMessage): Record<string, unknown> => {
+  const metadata = record(message.metadata);
+  const toolCalls = Array.isArray(metadata.toolCalls) ? metadata.toolCalls : [];
+  return {
+    role: apiRole(message.role),
+    content: message.content,
+    ...(message.name ? { name: message.name } : {}),
+    ...(message.role === 'tool' && typeof metadata.toolCallId === 'string'
+      ? { tool_call_id: metadata.toolCallId }
+      : {}),
+    ...(message.role === 'assistant' && toolCalls.length > 0
+      ? {
+          tool_calls: toolCalls.map((rawCall) => {
+            const call = record(rawCall);
+            return {
+              id: String(call.id ?? ''),
+              type: 'function',
+              function: {
+                name: String(call.name ?? ''),
+                arguments: JSON.stringify(record(call.arguments)),
+              },
+            };
+          }),
+        }
+      : {}),
+  };
+};
 
 const miniMaxToolChoice = (value: unknown): 'auto' | 'none' =>
   value === 'none' ? 'none' : 'auto';
@@ -248,7 +272,7 @@ const responseToolCalls = (
     let args: unknown = fn.arguments;
     if (typeof args === 'string') {
       try {
-        args = JSON.parse(args);
+        args = parseJsonWithConservativeRepair(args);
       } catch (error) {
         throw new MiniMaxProviderError(
           'non_json_response',
@@ -284,8 +308,9 @@ const parseJsonObject = (content: string): Record<string, unknown> => {
       'MiniMax response did not contain a JSON object.',
     );
   }
+  const candidate = withoutThinking.slice(start, end + 1);
   try {
-    const value = JSON.parse(withoutThinking.slice(start, end + 1));
+    const value = parseJsonWithConservativeRepair(candidate);
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('Parsed response is not an object.');
     }
@@ -296,6 +321,43 @@ const parseJsonObject = (content: string): Record<string, unknown> => {
       error instanceof Error ? error.message : String(error),
     );
   }
+};
+
+/**
+ * MiniMax occasionally returns otherwise valid JSON with a trailing comma or
+ * full-width structural punctuation.  Repair only punctuation outside quoted
+ * strings; never attempt to invent a missing field or value.
+ */
+const parseJsonWithConservativeRepair = (value: string): unknown => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    const normalized = normalizeJsonPunctuation(value)
+      .replace(/,\s*([}\]])/gu, '$1');
+    return JSON.parse(normalized);
+  }
+};
+
+const normalizeJsonPunctuation = (value: string): string => {
+  let result = '';
+  let quoted = false;
+  let escaped = false;
+  for (const character of value) {
+    if (quoted) {
+      result += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      result += character;
+      continue;
+    }
+    result += character === '，' ? ',' : character === '：' ? ':' : character;
+  }
+  return result;
 };
 
 const normalizeBaseUrl = (value: string): string => {

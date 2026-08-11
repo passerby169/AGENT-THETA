@@ -111,8 +111,15 @@ const workflow = (
   raw: unknown,
 ): HumanFacingResponse => {
   const state = text(record.currentState);
-  const label = stateLabel(state);
   const status = text(record.status) ?? text(record.disposition);
+  const effectiveState = status === 'failed'
+    ? 'Failed'
+    : status === 'quarantined'
+      ? 'Quarantined'
+      : status === 'cancelled'
+        ? 'Cancelled'
+        : state;
+  const label = stateLabel(effectiveState);
   const output = asRecord(record.output);
   const receipt =
     asRecord(record.trainingReceipt) ?? asRecord(output?.trainingReceipt);
@@ -160,6 +167,27 @@ const workflow = (
       lines: ['请确认正文列、时间列、ID 列和元数据列。'],
     });
   }
+  if (
+    state === 'AwaitDatasetUnderstandingConfirmation' &&
+    text(record.pendingReason)
+  ) {
+    sections.push({
+      title: '需要确认',
+      lines: [
+        text(record.pendingReason)!,
+        '确认无误后继续；如果领域、分析单位或列角色不正确，请直接用自然语言指出。',
+      ],
+    });
+  }
+  if (
+    state === 'ResearchIntentInterview' &&
+    text(record.pendingReason)
+  ) {
+    sections.push({
+      title: '请回答',
+      lines: [text(record.pendingReason)!],
+    });
+  }
   return {
     kind: 'workflow.status',
     title: label.title,
@@ -176,7 +204,7 @@ const workflow = (
     },
     ...(sections.length ? { sections } : {}),
     ...(warnings.length ? { warnings } : {}),
-    nextActions: resolveNextActions(state, status),
+    nextActions: resolveNextActions(effectiveState, status),
     technicalDetails: raw,
   };
 };
@@ -331,6 +359,8 @@ const plan = (
   record: Record<string, unknown>,
   raw: unknown,
 ): HumanFacingResponse => {
+  const nativePresentation = asRecord(record.plannerPresentationV2);
+  if (nativePresentation) return nativePlannerPlan(record, nativePresentation, raw);
   const candidate =
     asRecord(record.validatedPlan) ??
     asRecord(record.candidatePlan) ??
@@ -692,6 +722,123 @@ const plan = (
           ],
         }
       : {}),
+    nextActions: resolveNextActions(state ?? 'AwaitPlanCreationApproval'),
+    technicalDetails: raw,
+  };
+};
+
+const nativePlannerPlan = (
+  record: Record<string, unknown>,
+  presentation: Record<string, unknown>,
+  raw: unknown,
+): HumanFacingResponse => {
+  const candidate = asRecord(record.validatedPlan) ?? asRecord(record.candidatePlan) ?? {};
+  const facts = asRecord(record.datasetFacts) ?? {};
+  const confirmation = asRecord(record.datasetConfirmation) ?? {};
+  const intent = asRecord(record.researchIntent) ?? {};
+  const experiment = asRecord(presentation.experiment) ?? {};
+  const primary = asRecord(presentation.primaryModel) ?? {};
+  const baseline = asRecord(presentation.baselineModel);
+  const keyParameters = Array.isArray(presentation.keyParameters)
+    ? presentation.keyParameters.map(asRecord).filter(Boolean)
+    : [];
+  const preprocessing = Array.isArray(presentation.preprocessing)
+    ? presentation.preprocessing.map(asRecord).filter(Boolean)
+    : [];
+  const evidenceIds = new Set(strings(presentation.evidenceRefs));
+  const evidenceBundle = asRecord(record.evidenceBundle) ?? {};
+  const evidence = Array.isArray(evidenceBundle.evidence)
+    ? evidenceBundle.evidence.map(asRecord).filter(Boolean)
+    : [];
+  const selectedEvidence = evidence.filter((item) => evidenceIds.has(text(item?.evidenceId) ?? ''));
+  const evidenceReceipts = Array.isArray(presentation.evidenceSelectionReceipts)
+    ? presentation.evidenceSelectionReceipts.map(asRecord).filter(Boolean)
+    : [];
+  const state = text(record.currentState);
+  const sourceLabel = (source: unknown): string =>
+    source === 'user_override' ? '用户覆盖' : source === 'validated_default' ? '校验默认值' : 'MiniMax 建议';
+  const parameterLines = keyParameters.map((item) =>
+    `${fieldLabel(human(item?.field))}：${human(item?.value)}（${sourceLabel(item?.source)}）${text(item?.rationale) ? `；${text(item?.rationale)}` : ''}`,
+  );
+  const experimentLines = [
+    pair('实验模式', experiment.mode),
+    pair('主模型随机种子', numbers(experiment.primarySeeds).join('、')),
+    baseline ? pair('基线模型', baseline.modelId) : '基线模型：无',
+    baseline ? pair('基线随机种子', numbers(experiment.baselineSeeds).join('、')) : undefined,
+    text(experiment.rationale) ? `设计理由：${text(experiment.rationale)}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  const dataLines = [
+    `数据量：${human(facts.rowCount)} 行，${Array.isArray(facts.columns) ? facts.columns.length : 0} 列`,
+    `正文列：${strings(confirmation.textColumns).join('、') || human(candidate.textColumn)}`,
+    strings(confirmation.timeColumns).length
+      ? `时间列：${strings(confirmation.timeColumns).join('、')}`
+      : '时间列：无',
+    strings(confirmation.covariateColumns).length
+      ? `训练协变量：${strings(confirmation.covariateColumns).join('、')}`
+      : '训练协变量：无',
+    strings(confirmation.groupColumns).length
+      ? `展示分组：${strings(confirmation.groupColumns).join('、')}`
+      : '展示分组：无',
+  ];
+  const evidenceLines = selectedEvidence.map((item) => {
+    const citation = [text(item?.authority), text(item?.sourceId)].filter(Boolean).join(' · ');
+    return `${human(item?.title ?? item?.objectId ?? item?.evidenceId)}${citation ? `（${citation}）` : ''}`;
+  });
+  const warnings = uniqueStrings([
+    ...strings(presentation.cautions),
+    ...strings(presentation.assumptions).map((item) => `规划假设：${item}`),
+  ]);
+  return {
+    kind: 'plan.review',
+    title: state === 'AwaitTrainingStartApproval'
+      ? '审批 2/2：启动真实训练'
+      : state === 'Completed'
+        ? '已执行的训练方案'
+        : text(presentation.title) ?? '审批 1/2：确认 MiniMax 训练方案',
+    summary: text(presentation.summary) ??
+      `MiniMax 建议使用 ${human(primary.modelId ?? presentation.model)} 完成“${human(intent.researchQuestion)}”。`,
+    sections: [
+      {
+        title: '为什么选择这个模型',
+        lines: [
+          `主模型：${human(primary.modelId ?? presentation.model)}`,
+          text(primary.rationale) ?? '模型理由已通过 Planner V2 硬约束校验。',
+          ...(baseline ? [`对照模型：${human(baseline.modelId)}；${human(baseline.rationale)}`] : []),
+        ],
+      },
+      { title: '数据依据', lines: dataLines },
+      ...(parameterLines.length ? [{ title: '最终参数', lines: parameterLines }] : []),
+      { title: '本次实验设计', lines: experimentLines },
+      ...(preprocessing.length
+        ? [{ title: '数据准备', lines: preprocessing.map((item) => `${human(item?.choice)}${text(item?.rationale) ? `：${text(item?.rationale)}` : ''}`) }]
+        : []),
+      ...(strings(presentation.evaluation).length
+        ? [{ title: '验收与评估', lines: strings(presentation.evaluation) }]
+        : []),
+      ...(strings(presentation.visualizations).length
+        ? [{ title: '计划生成的图表', lines: strings(presentation.visualizations) }]
+        : []),
+      ...(evidenceLines.length
+        ? [{ title: 'Planner 实际采用的证据', lines: evidenceLines }]
+        : []),
+      ...(evidenceReceipts.some((receipt) => receipt?.outcome === 'rejected')
+        ? [{
+            title: '证据工具重试记录',
+            lines: evidenceReceipts
+              .filter((receipt) => receipt?.outcome === 'rejected')
+              .map((receipt) =>
+                `第 ${human(receipt?.attempt)} 次：${human(receipt?.errorCode)}；目标 ${human(receipt?.targetId ?? '未识别')}；证据 ${human(receipt?.evidenceId ?? '未识别')}；${human(receipt?.message)}`,
+              ),
+          }]
+        : []),
+      {
+        title: '审批说明',
+        lines: state === 'AwaitTrainingStartApproval'
+          ? ['批准后才会启动真实训练并写入本地结果目录。']
+          : ['本次批准只固化方案，不会立即启动训练。', '如需修改，先使用 /adjust；系统会带着覆盖值重新调用 Planner。'],
+      },
+    ],
+    ...(warnings.length ? { warnings } : {}),
     nextActions: resolveNextActions(state ?? 'AwaitPlanCreationApproval'),
     technicalDetails: raw,
   };

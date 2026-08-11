@@ -12,9 +12,9 @@ import { thetaHyphaToolSpecs } from "./tools/hypha-registry.js";
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from "./tools/tool-ids.js";
 
 export const THETA_DOMAIN_PACK_ID = "domain.theta.training";
-export const THETA_DOMAIN_PACK_VERSION = "4.0.0";
+export const THETA_DOMAIN_PACK_VERSION = "5.0.0";
 export const THETA_WORKFLOW_ID = "workflow.theta.training";
-export const THETA_WORKFLOW_VERSION = "4.0.0";
+export const THETA_WORKFLOW_VERSION = "5.0.0";
 export const THETA_AGENT_REF: SpecRef = {
   id: "agent.theta.cli",
   version: "1.0.0",
@@ -167,7 +167,7 @@ const workflowStates: WorkflowStateSpec[] = [
       ],
       allowedToolRefs: [
         toolRef(THETA_TOOL_IDS.datasetExplore, "2.0.0"),
-        toolRef(THETA_TOOL_IDS.datasetUnderstandingLanguage),
+        toolRef(THETA_TOOL_IDS.datasetUnderstandingLanguage, "2.0.0"),
       ],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.datasetRead,
@@ -226,7 +226,7 @@ const workflowStates: WorkflowStateSpec[] = [
         toolRef(THETA_TOOL_IDS.modelCatalog),
         toolRef(THETA_TOOL_IDS.ragSearch, "1.1.0"),
         toolRef(THETA_TOOL_IDS.modelRecommend, "2.0.0"),
-        toolRef(THETA_TOOL_IDS.planPropose, "1.3.0"),
+        toolRef(THETA_TOOL_IDS.planPropose, "2.0.0"),
       ],
       permissionScopes: [
         THETA_PERMISSION_SCOPES.modelRead,
@@ -260,7 +260,7 @@ const workflowStates: WorkflowStateSpec[] = [
     "Create the approved canonical training plan.",
     {
       allowedTools: [THETA_TOOL_IDS.planCreate],
-      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate, "2.1.0")],
+      allowedToolRefs: [toolRef(THETA_TOOL_IDS.planCreate, "3.0.0")],
       permissionScopes: [THETA_PERMISSION_SCOPES.planWrite],
       humanApprovalPolicyRef: toolRef(stateWritePolicy.id),
       policyRefs: [stateWritePolicy.id],
@@ -409,6 +409,10 @@ const forwardTransitions = [
   [
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
     THETA_WORKFLOW_STATES.validatePlan,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitPlanCreationApproval,
+    THETA_WORKFLOW_STATES.recommendModel,
   ],
   [THETA_WORKFLOW_STATES.createPlan, THETA_WORKFLOW_STATES.dryRun],
   [

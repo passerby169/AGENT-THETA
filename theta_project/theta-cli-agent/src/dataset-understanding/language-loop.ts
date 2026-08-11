@@ -1,38 +1,40 @@
+import { createHash } from 'node:crypto';
 import { ZodError } from 'zod';
 import {
   datasetUnderstandingDraftSchema,
   type DatasetFacts,
   type DatasetUnderstandingDraft,
 } from './contracts.js';
-import { buildDeterministicUnderstanding } from './service.js';
+import { buildDatasetFacts, buildDeterministicUnderstanding } from './service.js';
 import { validateDatasetUnderstanding } from './validator.js';
-import type {
-  DatasetUnderstandingLanguageRequest,
-  DatasetUnderstandingLanguageResult,
+import {
+  datasetUnderstandingToolOutput,
+  type DatasetUnderstandingLanguageRequest,
+  type DatasetUnderstandingLanguageResult,
 } from '../tools/dataset-understanding-language-tool.js';
-import type {
-  DatasetExploreView,
-  ThetaDatasetExploreOutput,
-} from '../tools/dataset-explore-tool.js';
+import type { ThetaDatasetExploreOutput } from '../tools/dataset-explore-tool.js';
 
-export const MAX_DATASET_EXPLORATION_CALLS = 3;
+export const MAX_DATASET_EXPLORATION_CALLS = 1;
 
 export interface DatasetUnderstandingLanguageLoopOptions {
   generate: (
     request: DatasetUnderstandingLanguageRequest,
   ) => Promise<DatasetUnderstandingLanguageResult>;
-  explore: (input: {
-    datasetRef: string;
-    view: DatasetExploreView;
-    selectedColumns?: string[];
-  }) => Promise<ThetaDatasetExploreOutput>;
+  explore: (input: { datasetRef: string; sheetName?: string }) => Promise<ThetaDatasetExploreOutput>;
   allowRemoteSamples?: boolean;
 }
 
 export interface DatasetUnderstandingLanguageLoopResult {
+  facts: DatasetFacts;
   draft: DatasetUnderstandingDraft;
   source: 'minimax' | 'deterministic';
   explorationCalls: number;
+  sampleReceipt?: {
+    payloadHash: string;
+    rowCount: number;
+    redactedValueCount: number;
+    redactionRules: string[];
+  };
   fallbackReason?:
     | 'provider_not_configured'
     | 'provider_error'
@@ -40,221 +42,249 @@ export interface DatasetUnderstandingLanguageLoopResult {
     | 'dataset_changed'
     | 'invalid_output'
     | 'tool_budget_exhausted'
-    | 'illegal_tool_request';
-  datasetHashChange?: {
-    previousDatasetHash: string;
-    detectedDatasetHash: string;
-  };
+    | 'illegal_tool_request'
+    | 'consent_required';
 }
 
 export class DatasetUnderstandingLanguageLoop {
-  constructor(
-    private readonly options: DatasetUnderstandingLanguageLoopOptions,
-  ) {}
+  constructor(private readonly options: DatasetUnderstandingLanguageLoopOptions) {}
 
-  async understand(
-    facts: DatasetFacts,
-    initial: ThetaDatasetExploreOutput,
-  ): Promise<DatasetUnderstandingLanguageLoopResult> {
-    const observations: Array<Record<string, unknown>> = [
-      boundedObservation(initial, this.options.allowRemoteSamples === true),
-    ];
-    let explorationCalls = 0;
-    let validationRetryUsed = false;
+  async understand(datasetRef: string): Promise<DatasetUnderstandingLanguageLoopResult> {
+    const consent = this.options.allowRemoteSamples === true;
+    let first: DatasetUnderstandingLanguageResult;
+    try {
+      first = await this.options.generate({
+        schemaVersion: '2.0.0',
+        datasetRef,
+        allowRemoteSamples: consent,
+        validationErrors: [],
+      });
+    } catch {
+      return this.fallback(datasetRef, 'provider_error');
+    }
+    if (first.source !== 'minimax' || first.decision.kind === 'fallback') {
+      return this.fallback(datasetRef, first.fallbackReason ?? 'provider_not_configured');
+    }
+    if (first.decision.kind !== 'tool_call') {
+      return this.fallback(datasetRef, 'illegal_tool_request');
+    }
+    if (!consent || first.decision.arguments.datasetRef !== datasetRef) {
+      return this.fallback(datasetRef, consent ? 'illegal_tool_request' : 'consent_required');
+    }
+    let output: ThetaDatasetExploreOutput;
+    try {
+      output = await this.options.explore(first.decision.arguments);
+    } catch {
+      return this.fallback(datasetRef, 'tool_error');
+    }
+    const facts = buildDatasetFacts(output);
+    const observation = {
+      callId: first.decision.callId,
+      output: datasetUnderstandingToolOutput(output),
+    };
+    const sampleReceipt = buildSampleReceipt(output);
     let validationErrors: string[] = [];
-
-    while (explorationCalls <= MAX_DATASET_EXPLORATION_CALLS) {
-      let turn: DatasetUnderstandingLanguageResult;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        turn = await this.options.generate({
-          schemaVersion: '1.0.0',
-          facts: languageFacts(facts, this.options.allowRemoteSamples === true),
-          observations,
-          allowRemoteSamples: this.options.allowRemoteSamples === true,
-          remainingExplorationCalls:
-            MAX_DATASET_EXPLORATION_CALLS - explorationCalls,
+        const turn = await this.options.generate({
+          schemaVersion: '2.0.0',
+          datasetRef,
+          facts,
+          observation,
+          allowRemoteSamples: true,
           validationErrors,
         });
-      } catch {
-        return this.fallback(facts, initial, 'provider_error', explorationCalls);
-      }
-
-      if (turn.source !== 'minimax' || turn.decision.kind === 'fallback') {
-        return this.fallback(
+        if (turn.source !== 'minimax' || turn.decision.kind !== 'final') {
+          return this.deterministic(
+            facts,
+            output,
+            turn.fallbackReason ?? 'invalid_output',
+            1,
+            sampleReceipt,
+          );
+        }
+        const normalized = normalizeLanguageUnderstanding(
+          turn.decision.understanding,
           facts,
-          initial,
-          turn.fallbackReason ?? 'provider_not_configured',
-          explorationCalls,
+          output,
         );
-      }
-
-      if (turn.decision.kind === 'request_view') {
-        if (explorationCalls >= MAX_DATASET_EXPLORATION_CALLS) {
-          return this.fallback(
-            facts,
-            initial,
-            'tool_budget_exhausted',
-            explorationCalls,
-          );
-        }
-        if (
-          !this.options.allowRemoteSamples &&
-          (turn.decision.view === 'head' || turn.decision.view === 'sample')
-        ) {
-          return this.fallback(
-            facts,
-            initial,
-            'illegal_tool_request',
-            explorationCalls,
-          );
-        }
-        const available = new Set(facts.columns.map((column) => column.name));
-        const selectedColumns = turn.decision.selectedColumns?.filter((column) =>
-          available.has(column),
-        );
-        if (
-          turn.decision.selectedColumns &&
-          selectedColumns?.length !== turn.decision.selectedColumns.length
-        ) {
-          return this.fallback(
-            facts,
-            initial,
-            'illegal_tool_request',
-            explorationCalls,
-          );
-        }
-        let observation: ThetaDatasetExploreOutput;
-        try {
-          observation = await this.options.explore({
-            datasetRef: facts.datasetRef,
-            view: turn.decision.view,
-            selectedColumns,
-          });
-        } catch {
-          return this.fallback(facts, initial, 'tool_error', explorationCalls);
-        }
-        if (observation.datasetHash !== facts.datasetHash) {
-          return {
-            ...this.fallback(
-              facts,
-              initial,
-              'dataset_changed',
-              explorationCalls,
-            ),
-            datasetHashChange: {
-              previousDatasetHash: facts.datasetHash,
-              detectedDatasetHash: observation.datasetHash,
-            },
-          };
-        }
-        explorationCalls += 1;
-        observations.push(
-          boundedObservation(
-            observation,
-            this.options.allowRemoteSamples === true,
-          ),
-        );
-        continue;
-      }
-
-      try {
         const draft = datasetUnderstandingDraftSchema.parse({
-          ...turn.decision.understanding,
+          ...normalized,
           schemaVersion: '2.0.0',
           datasetRef: facts.datasetRef,
           datasetHash: facts.datasetHash,
           provenance: {
             source: 'minimax',
-            toolIds: [
-              'theta.dataset.understanding.language',
-              'theta.dataset.explore',
-            ],
-            sampleSeed: initial.sampleSeed,
+            toolIds: ['theta.dataset.understanding.language', 'theta.dataset.explore'],
+            sampleSeed: output.sampleSeed,
             generatedAt: new Date().toISOString(),
           },
         });
-        const validation = validateDatasetUnderstanding(draft, facts);
-        if (!validation.valid) {
-          if (validationRetryUsed) {
-            return this.fallback(
-              facts,
-              initial,
-              'invalid_output',
-              explorationCalls,
-            );
-          }
-          validationRetryUsed = true;
-          validationErrors = validation.errors;
-          continue;
-        }
-        return { draft, source: 'minimax', explorationCalls };
-      } catch (error) {
-        if (!(error instanceof ZodError) || validationRetryUsed) {
-          return this.fallback(
+        const receipt = validateDatasetUnderstanding(draft, facts);
+        if (receipt.valid) {
+          return {
             facts,
-            initial,
-            'invalid_output',
-            explorationCalls,
-          );
+            draft,
+            source: 'minimax',
+            explorationCalls: 1,
+            sampleReceipt,
+          };
         }
-        validationRetryUsed = true;
-        validationErrors = error.issues.map((issue) => issue.message);
+        validationErrors = receipt.errors;
+      } catch (error) {
+        validationErrors = error instanceof ZodError
+          ? error.issues.map((issue) => issue.message)
+          : [error instanceof Error ? error.message : String(error)];
       }
     }
-
-    return this.fallback(
-      facts,
-      initial,
-      'tool_budget_exhausted',
-      explorationCalls,
-    );
+    return this.deterministic(facts, output, 'invalid_output', 1, sampleReceipt);
   }
 
-  private fallback(
+  private async fallback(
+    datasetRef: string,
+    reason: NonNullable<DatasetUnderstandingLanguageLoopResult['fallbackReason']>,
+  ): Promise<DatasetUnderstandingLanguageLoopResult> {
+    try {
+      const output = await this.options.explore({ datasetRef });
+      return this.deterministic(buildDatasetFacts(output), output, reason, 1);
+    } catch {
+      throw new Error(`Dataset exploration failed after ${reason}.`);
+    }
+  }
+
+  private deterministic(
     facts: DatasetFacts,
-    initial: ThetaDatasetExploreOutput,
+    output: ThetaDatasetExploreOutput,
     fallbackReason: NonNullable<DatasetUnderstandingLanguageLoopResult['fallbackReason']>,
     explorationCalls: number,
+    sampleReceipt?: DatasetUnderstandingLanguageLoopResult['sampleReceipt'],
   ): DatasetUnderstandingLanguageLoopResult {
     return {
-      draft: buildDeterministicUnderstanding(facts, initial),
+      facts,
+      draft: buildDeterministicUnderstanding(facts, output),
       source: 'deterministic',
       explorationCalls,
       fallbackReason,
+      ...(sampleReceipt ? { sampleReceipt } : {}),
     };
   }
 }
 
-const boundedObservation = (
+const buildSampleReceipt = (
   output: ThetaDatasetExploreOutput,
-  allowSamples: boolean,
-): Record<string, unknown> => ({
-  datasetRef: output.datasetRef,
-  datasetHash: output.datasetHash,
-  rowCount: output.rowCount,
-  profiles: output.profiles.slice(0, 80).map((profile) => ({
-    ...profile,
-    sampleValues: allowSamples ? (profile.sampleValues ?? []).slice(0, 5) : [],
-  })),
-  columnRoles: output.columnRoles,
-  inferredDomain: output.inferredDomain,
-  qualityWarnings: output.qualityWarnings.slice(0, 20),
-  ...(allowSamples
-    ? {
-        head: output.head.slice(0, 5),
-        samples: output.sample.slice(0, 10),
-      }
-    : {}),
-});
+): NonNullable<DatasetUnderstandingLanguageLoopResult['sampleReceipt']> => {
+  const toolPayload = datasetUnderstandingToolOutput(output);
+  return {
+    payloadHash: createHash('sha256').update(JSON.stringify(toolPayload)).digest('hex'),
+    rowCount: output.sampleRows.length,
+    redactedValueCount: output.redactionSummary.redactedValueCount,
+    redactionRules: output.redactionSummary.rules,
+  };
+};
 
-const languageFacts = (
+const normalizeLanguageUnderstanding = (
+  value: Record<string, unknown>,
   facts: DatasetFacts,
-  allowSamples: boolean,
-): DatasetFacts => ({
-  ...facts,
-  fileName: 'registered-dataset',
-  columns: facts.columns.map((column) => ({
-    ...column,
-    sampleValues: allowSamples ? column.sampleValues : [],
-  })),
-});
+  output: ThetaDatasetExploreOutput,
+): Record<string, unknown> => {
+  const fallback = buildDeterministicUnderstanding(facts, output);
+  const available = new Set(facts.columns.map((column) => column.name));
+  const rawDomain = record(value.domain);
+  const domainLabel = firstText(rawDomain.label, value.domain, fallback.domain.label);
+  const role = (field: keyof Pick<DatasetUnderstandingDraft,
+    'textColumns' | 'timeColumns' | 'idColumns' | 'metadataColumns' |
+    'groupColumns' | 'covariateColumns' | 'evaluationColumns' | 'ignoredColumns'>) => {
+    const normalized = normalizeRoleEntries(value[field], available, String(field));
+    return normalized.length > 0 || field !== 'textColumns'
+      ? normalized
+      : fallback[field];
+  };
+  const evidenceReferences = Array.isArray(value.evidenceReferences)
+    ? value.evidenceReferences.flatMap((entry) => {
+        const item = record(entry);
+        const kind = item.kind === 'sample_row' ? 'sample_row' : 'column_profile';
+        const column = typeof item.column === 'string' && available.has(item.column)
+          ? item.column
+          : undefined;
+        const sampleIndex = Number.isInteger(item.sampleIndex) && Number(item.sampleIndex) >= 0 &&
+          Number(item.sampleIndex) < output.sampleRows.length
+          ? Number(item.sampleIndex)
+          : undefined;
+        const claim = firstText(item.claim);
+        if (!claim || (kind === 'column_profile' && !column) || (kind === 'sample_row' && sampleIndex === undefined)) {
+          return [];
+        }
+        return [{ kind, ...(column ? { column } : {}), ...(sampleIndex !== undefined ? { sampleIndex } : {}), claim }];
+      }).slice(0, 24)
+    : fallback.evidenceReferences;
+  return {
+    domain: {
+      label: domainLabel,
+      confidence: boundedConfidence(rawDomain.confidence, fallback.domain.confidence),
+      evidence: stringArray(rawDomain.evidence).slice(0, 8),
+    },
+    analysisUnit: firstText(value.analysisUnit, fallback.analysisUnit),
+    evidenceReferences,
+    textColumns: role('textColumns'),
+    timeColumns: role('timeColumns'),
+    idColumns: role('idColumns'),
+    metadataColumns: role('metadataColumns'),
+    groupColumns: role('groupColumns'),
+    covariateColumns: role('covariateColumns'),
+    evaluationColumns: role('evaluationColumns'),
+    ignoredColumns: role('ignoredColumns'),
+    qualityWarnings: stringArray(value.qualityWarnings),
+    assumptions: stringArray(value.assumptions),
+    confidence: boundedConfidence(value.confidence, fallback.confidence),
+  };
+};
+
+const normalizeRoleEntries = (
+  value: unknown,
+  available: Set<string>,
+  field: string,
+): DatasetUnderstandingDraft['textColumns'] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((entry) => {
+    const item = record(entry);
+    const column = firstText(
+      typeof entry === 'string' ? entry : undefined,
+      item.column,
+      item.name,
+    );
+    if (!column || !available.has(column) || seen.has(column)) return [];
+    seen.add(column);
+    return [{
+      column,
+      confidence: boundedConfidence(item.confidence ?? item.score, 0.7),
+      reason: firstText(item.reason, `MiniMax classified ${column} as ${field}.`),
+    }];
+  });
+};
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+
+const firstText = (...values: unknown[]): string => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+};
+
+const stringArray = (value: unknown): string[] => Array.isArray(value)
+  ? value.flatMap((item) => {
+      if (typeof item === 'string' && item.trim()) return [item.trim()];
+      const entry = record(item);
+      const text = firstText(entry.label, entry.name, entry.description, entry.reason, entry.claim);
+      return text ? [text] : [];
+    })
+  : [];
+
+const boundedConfidence = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : fallback;

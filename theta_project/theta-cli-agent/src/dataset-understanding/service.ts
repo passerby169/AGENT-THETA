@@ -21,7 +21,7 @@ export const buildDatasetFacts = (
     sheets: output.sheets ?? [],
     selectedSheet: output.selectedSheet ?? null,
     rowCount: output.rowCount,
-    columns: output.profiles.map((profile) => ({
+    columns: output.columnProfiles.map((profile) => ({
       name: profile.name,
       inferredType: profile.inferredType,
       missingRatio: profile.missingRatio,
@@ -38,12 +38,12 @@ export const buildDatasetFacts = (
     samplePolicy: output.samplePolicy ?? {
       method: 'deterministic_reservoir',
       requestedRows: 10,
-      returnedRows: output.sample.length,
+      returnedRows: output.sampleRows.length,
       profileRows: output.rowCount,
       profileTruncated: false,
     },
-    redactionApplied: output.redaction.applied,
-    sensitiveDataRisk: output.redaction.applied ? 'redacted' : 'none_detected',
+    redactionApplied: output.redactionSummary.applied,
+    sensitiveDataRisk: output.redactionSummary.applied ? 'redacted' : 'none_detected',
     qualityWarnings: output.qualityWarnings,
     generatedAt: new Date().toISOString(),
   });
@@ -57,28 +57,28 @@ export const buildDeterministicUnderstanding = (
     confidence,
     reason,
   });
-  const textColumns = output.columnRoles.text.map((entry) =>
+  const textColumns = output.candidateRoles.text.map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const timeColumns = output.columnRoles.time.map((entry) =>
+  const timeColumns = output.candidateRoles.time.map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const idColumns = output.columnRoles.id.map((entry) =>
+  const idColumns = output.candidateRoles.id.map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const metadataColumns = output.columnRoles.metadata.map((entry) =>
+  const metadataColumns = output.candidateRoles.metadata.map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const groupColumns = (output.columnRoles.group ?? []).map((entry) =>
+  const groupColumns = (output.candidateRoles.group ?? []).map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const covariateColumns = (output.columnRoles.covariate ?? []).map((entry) =>
+  const covariateColumns = (output.candidateRoles.covariate ?? []).map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const evaluationColumns = (output.columnRoles.evaluation ?? []).map((entry) =>
+  const evaluationColumns = (output.candidateRoles.evaluation ?? []).map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
-  const ignoredColumns = (output.columnRoles.ignored ?? []).map((entry) =>
+  const ignoredColumns = (output.candidateRoles.ignored ?? []).map((entry) =>
     candidate(entry.name, entry.score, entry.reason),
   );
   const analysisUnit = textColumns[0]

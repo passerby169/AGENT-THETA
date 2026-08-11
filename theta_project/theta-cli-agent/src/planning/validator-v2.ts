@@ -56,6 +56,8 @@ const STRUCTURAL_FIELDS = new Set([
   "idColumn",
   "covariateColumns",
   "metadataColumns",
+  "groupingColumns",
+  "evaluationLabelColumns",
   "parameters",
   "acceptDegradation",
   "experimentProtocol",
@@ -564,6 +566,8 @@ const validateColumns = (
 
   const covariateColumns = stringArray(input.plan.covariateColumns);
   const metadataColumns = stringArray(input.plan.metadataColumns);
+  const groupingColumns = stringArray(input.plan.groupingColumns);
+  const evaluationLabelColumns = stringArray(input.plan.evaluationLabelColumns);
   if (card.catalog.requires.includes("covariates") && covariateColumns.length === 0) {
     add(
       "error",
@@ -590,8 +594,16 @@ const validateColumns = (
   for (const column of metadataColumns) {
     validateColumnExists(column, "$.metadataColumns", profileColumns, add);
   }
+  for (const column of groupingColumns) {
+    validateColumnExists(column, "$.groupingColumns", profileColumns, add);
+  }
+  for (const column of evaluationLabelColumns) {
+    validateColumnExists(column, "$.evaluationLabelColumns", profileColumns, add);
+  }
   normalized.covariateColumns = [...new Set(covariateColumns)];
   normalized.metadataColumns = [...new Set(metadataColumns)];
+  normalized.groupingColumns = [...new Set(groupingColumns)];
+  normalized.evaluationLabelColumns = [...new Set(evaluationLabelColumns)];
 };
 
 const validateTopicCount = (

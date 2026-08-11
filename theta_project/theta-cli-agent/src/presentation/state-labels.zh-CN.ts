@@ -22,6 +22,21 @@ export const stateLabelsZhCN: Readonly<Record<string, StateLabel>> = {
     explanation: '正在读取数据结构并识别可用列，不会把原始数据发送给语言模型。',
     step: 2,
   },
+  AnalyzeDataset: {
+    title: '理解数据内容',
+    explanation: '正在通过受限的数据查看工具分析列结构和最多十条脱敏样本。',
+    step: 2,
+  },
+  AwaitDatasetUnderstandingConfirmation: {
+    title: '确认数据理解',
+    explanation: '请确认数据规模、领域方向、分析单位和列角色；有误可直接用自然语言修正。',
+    step: 2,
+  },
+  ResearchIntentInterview: {
+    title: '明确研究意图',
+    explanation: '正在围绕已确认的数据内容补齐会影响模型和评价方案的研究决策。',
+    step: 3,
+  },
   ColumnConfirmation: {
     title: '确认数据列',
     explanation: '请确认正文、时间、ID 和元数据列，系统不会替你做业务语义决定。',
