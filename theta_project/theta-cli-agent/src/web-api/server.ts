@@ -17,7 +17,7 @@ import { loadThetaProjectEnvironment } from '../environment.js';
 import { buildHumanResponse } from '../presentation/human-response-builder.js';
 import { ResultAnalysisService } from '../results/result-analysis-service.js';
 import { ResultService } from '../results/result-service.js';
-import { listLocalRuns } from '../storage/run-catalog.js';
+import { deleteLocalRun, listLocalRuns } from '../storage/run-catalog.js';
 import { SQLiteConversationStore } from '../storage/sqlite-conversation-store.js';
 import { SQLiteDatasetRegistry, type DatasetRecord } from '../storage/dataset-registry.js';
 import { ThetaWorkflowService } from '../theta-workflow-service.js';
@@ -39,6 +39,7 @@ const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultAgentRoot = path.resolve(moduleDirectory, '..', '..');
 const resultRootCache = new Map<string, string>();
 const localOwner = { userId: 'local_user', workspaceId: 'local_workspace' } as const;
+const autonomousDatasetDirection = '数据集主题和方向由THETA自行进行读取和分析。';
 const supportedUploadSuffixes = new Set([
   '.csv', '.tsv', '.json', '.jsonl', '.txt', '.xlsx', '.xls', '.parquet',
 ]);
@@ -134,7 +135,7 @@ const routeRequest = async (
           filePath: dataset.filePath,
           datasetRef: datasetRecord.datasetRef,
           workflowVersion: '2.0.0',
-          ...(input.researchGoal ? { researchGoal: input.researchGoal } : {}),
+          researchGoal: input.researchGoal ?? autonomousDatasetDirection,
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
           allowRemoteSamples: input.allowRemoteSamples,
         },
@@ -187,6 +188,37 @@ const routeRequest = async (
     writeJson(response, 200, {
       ok: true,
       data: { runs: visibleRuns },
+    });
+    return;
+  }
+
+  const runMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)$/);
+  if (runMatch) {
+    if (method !== 'DELETE') return methodNotAllowed(response);
+    const runId = decodeURIComponent(runMatch[1]);
+    let resultRoot = resultRootCache.get(runId);
+    if (!resultRoot) {
+      try {
+        resultRoot = (await new ResultService(workflow).overview(runId, options.runtimeDb)).resultRoot;
+      } catch {
+        resultRoot = undefined;
+      }
+    }
+
+    const deletion = deleteLocalRun(runId, options.runtimeDb);
+    if (!deletion.existed) {
+      writeJson(response, 404, {
+        ok: false,
+        error: { code: 'THETA_WEB_API_RUN_NOT_FOUND', message: '未找到要删除的研究项目。' },
+      });
+      return;
+    }
+
+    resultRootCache.delete(runId);
+    const resultArtifactsDeleted = await removeRunResultArtifacts(resultRoot, options.agentRoot);
+    writeJson(response, 200, {
+      ok: true,
+      data: { runId, deletedRecords: deletion.deletedRecords, resultArtifactsDeleted },
     });
     return;
   }
@@ -946,6 +978,19 @@ const safeDatasetName = (value: string): string => {
 const configuredUploadLimit = (): number => {
   const parsed = Number.parseInt(process.env.THETA_MAX_DATASET_BYTES ?? '', 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 100 * 1024 * 1024;
+};
+
+const removeRunResultArtifacts = async (
+  resultRoot: string | undefined,
+  agentRoot: string,
+): Promise<boolean> => {
+  if (!resultRoot) return false;
+  const allowedRoot = path.resolve(agentRoot, '..', 'THETA', 'result');
+  const candidate = path.resolve(resultRoot);
+  const relative = path.relative(allowedRoot, candidate);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+  await rm(candidate, { recursive: true, force: true });
+  return true;
 };
 
 const readJsonBody = async (request: IncomingMessage): Promise<unknown> => {

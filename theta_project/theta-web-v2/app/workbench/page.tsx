@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -85,6 +86,8 @@ interface DisplayConversationMessage {
 
 type WorkspaceMode = 'agent' | 'classic';
 
+const autonomousDatasetDirection = '数据集主题和方向由THETA自行进行读取和分析。';
+
 export default function WorkbenchPage() {
   const router = useRouter();
   const [health, setHealth] = useState<ThetaHealth>();
@@ -103,6 +106,8 @@ export default function WorkbenchPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
+  const [deleteCandidate, setDeleteCandidate] = useState<ThetaRunSummary>();
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const refresh = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
@@ -200,13 +205,13 @@ export default function WorkbenchPage() {
 
   const createResearch = useCallback(async () => {
     const goal = researchGoal.trim();
-    if (!selectedDataset || (goal.length > 0 && goal.length < 8) || goal.length > 2000 || createBusy) return;
+    if (!selectedDataset || (goal.length > 0 && goal.length < 4) || goal.length > 2000 || createBusy) return;
     setCreateBusy(true);
     setError(undefined);
     try {
       const status = await ThetaAgentV2API.createRun({
         datasetRef: selectedDataset,
-        ...(goal ? { researchGoal: goal } : {}),
+        researchGoal: goal || autonomousDatasetDirection,
         useMiniMax: true,
       });
       const detailedStatus = await ThetaAgentV2API.status(status.runId);
@@ -220,6 +225,26 @@ export default function WorkbenchPage() {
       setCreateBusy(false);
     }
   }, [createBusy, refresh, researchGoal, selectedDataset]);
+
+  const deleteResearch = useCallback(async () => {
+    if (!deleteCandidate || deleteBusy) return;
+    setDeleteBusy(true);
+    setError(undefined);
+    try {
+      await ThetaAgentV2API.deleteRun(deleteCandidate.runId);
+      setRuns((current) => current.filter((run) => run.runId !== deleteCandidate.runId));
+      if (activeRunId === deleteCandidate.runId) {
+        setActiveRunId(undefined);
+        setActiveStatus(undefined);
+      }
+      setDeleteCandidate(undefined);
+      await refresh({ silent: true });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [activeRunId, deleteBusy, deleteCandidate, refresh]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -263,6 +288,7 @@ export default function WorkbenchPage() {
               setResearchGoal('');
             }}
             onOpen={(runId) => void openRun(runId)}
+            onDelete={setDeleteCandidate}
             onRefresh={() => void refresh()}
           />
 
@@ -309,16 +335,39 @@ export default function WorkbenchPage() {
           <p className="mt-2">{health?.checks.filter((check) => check.status === 'PASS').length ?? 0} 项通过，{health?.checks.filter((check) => check.status !== 'PASS').length ?? 0} 项提醒或阻塞。这里仅展示环境状态，不参与研究对话。</p>
         </details>
       </main>
+
+      <Dialog open={Boolean(deleteCandidate)} onOpenChange={(open) => { if (!open && !deleteBusy) setDeleteCandidate(undefined); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除研究项目</DialogTitle>
+            <DialogDescription>
+              将删除该项目的运行事件、对话、审批记录和结果产物。原始数据集不会被删除，此操作无法撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-sm font-semibold text-slate-800">{deleteCandidate ? runLabel(deleteCandidate) : ''}</p>
+            <p className="mt-1 break-all text-xs text-slate-500">{deleteCandidate?.runId}</p>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="outline" disabled={deleteBusy} onClick={() => setDeleteCandidate(undefined)}>取消</Button>
+            <Button type="button" disabled={deleteBusy} onClick={() => void deleteResearch()} className="bg-red-600 text-white hover:bg-red-700">
+              {deleteBusy ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              确认删除
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ProjectSidebar({ runs, activeRunId, loading, onNew, onOpen, onRefresh }: {
+function ProjectSidebar({ runs, activeRunId, loading, onNew, onOpen, onDelete, onRefresh }: {
   runs: ThetaRunSummary[];
   activeRunId?: string;
   loading: boolean;
   onNew: () => void;
   onOpen: (runId: string) => void;
+  onDelete: (run: ThetaRunSummary) => void;
   onRefresh: () => void;
 }) {
   const pending = runs.filter((run) => actionableStates.has(run.currentState ?? ''));
@@ -350,9 +399,9 @@ function ProjectSidebar({ runs, activeRunId, loading, onNew, onOpen, onRefresh }
           <div className="flex items-center gap-2 px-3 py-5 text-xs text-slate-400"><RefreshCw className="h-3.5 w-3.5 animate-spin" />正在读取项目...</div>
         ) : runs.length ? (
           <div className="space-y-4">
-            <ProjectGroup label="需要处理" runs={pending} activeRunId={activeRunId} onOpen={onOpen} />
-            <ProjectGroup label="正在运行" runs={running} activeRunId={activeRunId} onOpen={onOpen} />
-            <ProjectGroup label="最近项目" runs={recent} activeRunId={activeRunId} onOpen={onOpen} />
+            <ProjectGroup label="需要处理" runs={pending} activeRunId={activeRunId} onOpen={onOpen} onDelete={onDelete} />
+            <ProjectGroup label="正在运行" runs={running} activeRunId={activeRunId} onOpen={onOpen} onDelete={onDelete} />
+            <ProjectGroup label="最近项目" runs={recent} activeRunId={activeRunId} onOpen={onOpen} onDelete={onDelete} />
           </div>
         ) : (
           <div className="px-3 py-6 text-center text-xs leading-5 text-slate-400">还没有研究项目。<br />从上方新建一项分析。</div>
@@ -362,11 +411,12 @@ function ProjectSidebar({ runs, activeRunId, loading, onNew, onOpen, onRefresh }
   );
 }
 
-function ProjectGroup({ label, runs, activeRunId, onOpen }: {
+function ProjectGroup({ label, runs, activeRunId, onOpen, onDelete }: {
   label: string;
   runs: ThetaRunSummary[];
   activeRunId?: string;
   onOpen: (runId: string) => void;
+  onDelete: (run: ThetaRunSummary) => void;
 }) {
   if (!runs.length) return null;
   return (
@@ -377,18 +427,18 @@ function ProjectGroup({ label, runs, activeRunId, onOpen }: {
           const state = statusKind(run);
           const selected = run.runId === activeRunId;
           return (
-            <button
-              key={run.runId}
-              type="button"
-              onClick={() => onOpen(run.runId)}
-              className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${selected ? 'border-blue-200 bg-blue-50' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}
-            >
-              <p className="truncate text-xs font-semibold text-slate-800">{runLabel(run)}</p>
-              <div className="mt-1.5 flex items-center justify-between gap-2">
-                <span className={`truncate text-[10px] ${state.tone.includes('amber') ? 'text-amber-700' : state.tone.includes('emerald') ? 'text-emerald-700' : 'text-slate-400'}`}>{state.label}</span>
-                <span className="shrink-0 text-[10px] text-slate-400">{formatDate(run.lastEventAt ?? run.updatedAt)}</span>
-              </div>
-            </button>
+            <div key={run.runId} className={`group flex w-full items-stretch rounded-md border transition-colors ${selected ? 'border-blue-200 bg-blue-50' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}>
+              <button type="button" onClick={() => onOpen(run.runId)} className="min-w-0 flex-1 px-3 py-2.5 text-left">
+                <p className="truncate text-xs font-semibold text-slate-800">{runLabel(run)}</p>
+                <div className="mt-1.5 flex items-center justify-between gap-2">
+                  <span className={`truncate text-[10px] ${state.tone.includes('amber') ? 'text-amber-700' : state.tone.includes('emerald') ? 'text-emerald-700' : 'text-slate-400'}`}>{state.label}</span>
+                  <span className="shrink-0 text-[10px] text-slate-400">{formatDate(run.lastEventAt ?? run.updatedAt)}</span>
+                </div>
+              </button>
+              <button type="button" onClick={() => onDelete(run)} title="删除项目" aria-label={`删除 ${runLabel(run)}`} className="m-1 grid w-8 shrink-0 place-items-center rounded-md text-slate-300 opacity-100 transition hover:bg-red-50 hover:text-red-600 focus-visible:opacity-100 lg:opacity-0 lg:group-hover:opacity-100">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           );
         })}
       </div>
@@ -455,7 +505,7 @@ function ResearchStartPanel({
   const goal = researchGoal.trim();
   const selected = datasets.find((dataset) => dataset.datasetRef === selectedDataset);
   const datasetReady = Boolean(selected);
-  const goalReady = (goal.length === 0 || goal.length >= 8) && goal.length <= 2000;
+  const goalReady = (goal.length === 0 || goal.length >= 4) && goal.length <= 2000;
   const canCreate = datasetReady && goalReady && !busy;
 
   return (
@@ -512,8 +562,8 @@ function ResearchStartPanel({
         <div className="flex max-w-4xl items-start gap-3">
           <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span>
           <div className="rounded-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
-            <p className="text-xs font-semibold text-blue-600">研究目标</p>
-            <p className="mt-1 text-sm leading-6 text-slate-700">你希望从这批数据中得到什么？可以直接说明方向，也可以留空，让我先理解数据后再与你确认。</p>
+            <p className="text-xs font-semibold text-blue-600">数据集主题方向</p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">说明数据集的主题方向，4字符以上；也可以空白，让THETA自行进行读取理解。</p>
           </div>
         </div>
 
@@ -531,9 +581,9 @@ function ResearchStartPanel({
 
       <div className="shrink-0 border-t border-slate-100 bg-white p-4 sm:p-5">
         <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
-          <Textarea value={researchGoal} maxLength={2000} disabled={busy} onChange={(event) => onGoalChange(event.target.value)} onKeyDown={(event) => { if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || !canCreate) return; event.preventDefault(); void onCreate(); }} placeholder="说明研究目标；也可以留空，让 THETA 先理解数据" className="min-h-24 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0" />
+          <Textarea value={researchGoal} maxLength={2000} disabled={busy} onChange={(event) => onGoalChange(event.target.value)} onKeyDown={(event) => { if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || !canCreate) return; event.preventDefault(); void onCreate(); }} placeholder="说明数据集的主题方向，4字符以上；也可以空白，让THETA自行进行读取理解。" className="min-h-24 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0" />
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
-            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-400"><span>{goal.length} / 2000</span><RequirementItem met={datasetReady}>数据集已就绪</RequirementItem>{goal.length > 0 && !goalReady ? <span className="text-amber-700">目标至少 8 个字符</span> : null}</div>
+            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-400"><span>{goal.length} / 2000</span><RequirementItem met={datasetReady}>数据集已就绪</RequirementItem>{goal.length > 0 && !goalReady ? <span className="text-amber-700">主题方向至少 4 个字符，或留空由 THETA 判断</span> : null}</div>
             <Button type="button" size="icon" disabled={!canCreate} onClick={() => void onCreate()} title={goal ? '发送并创建项目' : '让 THETA 先理解数据'} className="h-10 w-10 shrink-0 rounded-md bg-blue-600 hover:bg-blue-700">{busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}</Button>
           </div>
         </div>
@@ -772,7 +822,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       <p className="mt-1 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
       {notices}
       {workspaceMode === 'agent' ? (
-        <div className="mt-4 min-h-[calc(100dvh-150px)] min-w-0">{actionPanel}</div>
+        <div className={`mt-4 min-w-0 ${terminalStates.has(status.currentState ?? '') ? '' : 'min-h-[calc(100dvh-150px)]'}`}>{actionPanel}</div>
       ) : (
         <ThetaOneWorkbench
           run={run}
@@ -792,9 +842,9 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 
-      <RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} />
+      <div className="mt-10"><RunActivity timeline={timeline} monitoring={monitoring} syncing={syncing} /></div>
 
-      <details className="group mt-5 overflow-hidden rounded-md border border-slate-200 bg-white">
+      <details className="group mt-8 overflow-hidden rounded-md border border-slate-200 bg-white">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 sm:px-5"><span className="flex items-center gap-2"><Settings2 className="h-4 w-4" />技术执行记录</span><span className="flex items-center gap-2 text-xs font-normal text-slate-400"><span className="hidden sm:inline">点击展开查看</span><span>{Number.isFinite(status.eventCount) ? `${status.eventCount} 个事件` : '正在同步'}</span><ChevronRight className="h-4 w-4 transition-transform duration-200 group-open:rotate-90" /></span></summary>
         <ol className="border-t border-slate-100 px-4 py-3 sm:px-5">
           {uniquePath(status.statePath).map((state, index, states) => {
@@ -1132,14 +1182,40 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
     />
   );
 
-  if (state === 'AwaitDatasetUnderstandingConfirmation') return (
-    <DatasetUnderstandingConfirmation
-      status={status}
-      busy={busy}
-      notice={notice}
-      onAction={onAction}
-    />
-  );
+  if (state === 'AwaitDatasetUnderstandingConfirmation') {
+    const autonomousUnderstanding = status.researchBrief?.researchQuestion === autonomousDatasetDirection;
+    if (!autonomousUnderstanding) {
+      return <DatasetUnderstandingConfirmation status={status} busy={busy} notice={notice} onAction={onAction} />;
+    }
+    return (
+      <>
+        <ResearchConversation
+          status={status}
+          messages={conversation}
+          loading={conversationLoading}
+          busy={busy}
+          notice={notice}
+          compact={compact}
+          onAction={onAction}
+        />
+        <Dialog open>
+          <DialogContent className="max-h-[90dvh] max-w-5xl overflow-y-auto p-0">
+            <DialogHeader className="sr-only">
+              <DialogTitle>确认 THETA 对数据的理解</DialogTitle>
+              <DialogDescription>确认或修正系统从数据集中识别出的主题方向和列角色。</DialogDescription>
+            </DialogHeader>
+            <DatasetUnderstandingConfirmation
+              status={status}
+              busy={busy}
+              notice={notice}
+              onAction={onAction}
+              embedded
+            />
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
 
   if (state === 'ResearchIntentInterview') return (
     <ResearchConversation
@@ -1187,14 +1263,27 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
     <ActionShell title="选择并确认训练方案" description="这是审批 1/2。批准后只固化方案，不会立即训练。">
       {!plan ? <p className="text-sm text-slate-500">正在读取模型方案...</p> : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label><span className="mb-1.5 block text-xs font-medium text-slate-600">训练模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500">{compatibleModels(plan, models).map((item) => <option key={item.id} value={item.id}>{item.name} ({item.id.toUpperCase()})</option>)}</select></label>
-            <label><span className="mb-1.5 block text-xs font-medium text-slate-600">主题数量</span><Input type="number" min={2} max={200} value={topics} onChange={(event) => setTopics(event.target.value)} /></label>
-          </div>
+          {compact ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label><span className="mb-1.5 block text-xs font-medium text-slate-600">训练模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500">{compatibleModels(plan, models).map((item) => <option key={item.id} value={item.id}>{item.name} ({item.id.toUpperCase()})</option>)}</select></label>
+              <label><span className="mb-1.5 block text-xs font-medium text-slate-600">主题数量</span><Input type="number" min={2} max={200} value={topics} onChange={(event) => setTopics(event.target.value)} /></label>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-2">
+                <Metric label="建议训练模型" value={compatibleModels(plan, models).find((item) => item.id === model)?.name ?? model.toUpperCase()} />
+                <Metric label="建议主题数量" value={topics ? `${topics} 个` : '由模型确定'} />
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-400">此处为建议模型和分析主题数量，若有偏差和需求，可进入切换至自主模式进行调整。</p>
+            </>
+          )}
           <PlannerV2Summary plan={plan} />
           {plan.presentation.warnings?.length ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800"><p className="font-semibold">运行提醒</p><ul className="mt-1 space-y-1">{plan.presentation.warnings.map((warning) => <li key={warning}>· {warning}</li>)}</ul></div> : null}
           <label className="mt-3 flex items-start gap-2 text-xs text-slate-600"><input type="checkbox" checked={acceptDegradation} onChange={(event) => setAcceptDegradation(event.target.checked)} className="mt-0.5" />我已阅读能力缺口，并在仍有警告时接受该降级方案。</label>
-          <div className="mt-4 flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy || !model || !topics || !planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'adjustPlan', text: `将模型改为 ${model.toUpperCase()}，主题数改为 ${topics}` })}>{planSettingsDirty(plan, model, topics) ? '应用模型设置' : '设置已应用'}</Button><Button type="button" disabled={busy || !model || planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'approvePlan', acceptDegradation })} className="bg-blue-600 hover:bg-blue-700">批准该方案</Button></div>
+          <div className="mt-8 flex flex-wrap gap-3 border-t border-slate-100 pt-6">
+            {compact ? <Button type="button" variant="outline" disabled={busy || !model || !topics || !planSettingsDirty(plan, model, topics)} onClick={() => void onAction({ action: 'adjustPlan', text: `将模型改为 ${model.toUpperCase()}，主题数改为 ${topics}` })} className="h-12 px-6">{planSettingsDirty(plan, model, topics) ? '应用模型设置' : '设置已应用'}</Button> : <Button type="button" variant="outline" disabled className="h-12 px-6">设置已应用</Button>}
+            <Button type="button" disabled={busy || !model || (compact && planSettingsDirty(plan, model, topics))} onClick={() => void onAction({ action: 'approvePlan', acceptDegradation })} className="h-12 min-w-36 bg-blue-600 px-7 text-base hover:bg-blue-700">批准该方案</Button>
+          </div>
         </>
       )}
     </ActionShell>
@@ -1218,11 +1307,12 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   return <ActionShell title="系统正在处理" description="当前步骤无需人工输入。稍后刷新状态。"><RefreshCw className="h-5 w-5 animate-spin text-blue-600" /></ActionShell>;
 }
 
-function DatasetUnderstandingConfirmation({ status, busy, notice, onAction }: {
+function DatasetUnderstandingConfirmation({ status, busy, notice, onAction, embedded = false }: {
   status: ThetaRunStatus;
   busy: boolean;
   notice?: string;
   onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
+  embedded?: boolean;
 }) {
   const facts = status.datasetFacts;
   const understanding = status.datasetUnderstanding;
@@ -1266,8 +1356,8 @@ function DatasetUnderstandingConfirmation({ status, busy, notice, onAction }: {
   const corrected = JSON.stringify(draft) !== JSON.stringify(original);
   const valid = draft.domainLabel.length > 0 && draft.analysisUnit.length > 0 && draft.textColumns.length > 0;
 
-  return (
-    <ActionShell title="确认 THETA 对数据的理解" description="系统已先完成结构、质量和领域预判。只需确认有业务含义的部分，文件哈希变化后本确认会自动失效。">
+  const content = (
+    <>
       <div className="grid gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 sm:grid-cols-3">
         <Metric label="数据规模" value={`${facts.rowCount} 行 · ${facts.columns.length} 列`} />
         <Metric label="格式" value={facts.format.toUpperCase()} />
@@ -1305,8 +1395,17 @@ function DatasetUnderstandingConfirmation({ status, busy, notice, onAction }: {
         <p className="text-xs text-slate-500">列名用逗号、顿号或换行分隔；空白表示不使用。</p>
       </div>
       {notice ? <ClarificationFeedback message={notice} /> : null}
-    </ActionShell>
+    </>
   );
+
+  if (embedded) return (
+    <div className="p-6 sm:p-8">
+      <h2 className="text-xl font-semibold text-slate-900">确认 THETA 对数据的理解</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-500">系统已先完成结构、质量和领域预判。只需确认有业务含义的部分，文件哈希变化后本确认会自动失效。</p>
+      <div className="mt-6">{content}</div>
+    </div>
+  );
+  return <ActionShell title="确认 THETA 对数据的理解" description="系统已先完成结构、质量和领域预判。只需确认有业务含义的部分，文件哈希变化后本确认会自动失效。">{content}</ActionShell>;
 }
 
 function LabeledInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

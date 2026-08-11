@@ -13,6 +13,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
   return proxy(request, context);
 }
 
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  return proxy(request, context);
+}
+
 async function proxy(request: NextRequest, context: RouteContext) {
   const { path } = await context.params;
   const baseUrl = process.env.THETA_AGENT_API_URL ?? 'http://127.0.0.1:4318';

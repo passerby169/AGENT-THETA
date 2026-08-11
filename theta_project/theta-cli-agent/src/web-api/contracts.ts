@@ -41,7 +41,7 @@ export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
 export const thetaWebCreateRunSchema = z.object({
   datasetRef: z.string().trim().min(1).optional(),
   filePath: z.string().trim().min(1).optional(),
-  researchGoal: z.string().trim().min(8).max(2000).optional(),
+  researchGoal: z.string().trim().min(4).max(2000).optional(),
   useMiniMax: z.boolean().default(true),
   allowRemoteSamples: z.boolean().default(false),
 }).strict().refine(
