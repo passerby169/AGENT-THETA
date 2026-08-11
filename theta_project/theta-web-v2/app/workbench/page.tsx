@@ -13,10 +13,12 @@ import {
   CircleDot,
   Database,
   ExternalLink,
+  FolderOpen,
   Home,
   ImageIcon,
   MessageSquareText,
   Play,
+  Plus,
   RefreshCw,
   Send,
   Settings2,
@@ -196,19 +198,6 @@ export default function WorkbenchPage() {
     if (requestedRunId) void openRun(requestedRunId);
   }, [openRun]);
 
-  const actionable = useMemo(
-    () => runs.filter((run) => actionableStates.has(run.currentState ?? '')),
-    [runs],
-  );
-  const active = useMemo(
-    () => runs.filter((run) => isRunning(run)),
-    [runs],
-  );
-  const history = useMemo(
-    () => runs.filter((run) => !actionableStates.has(run.currentState ?? '') && !isRunning(run)),
-    [runs],
-  );
-
   const createResearch = useCallback(async () => {
     const goal = researchGoal.trim();
     if (!selectedDataset || (goal.length > 0 && goal.length < 8) || goal.length > 2000 || createBusy) return;
@@ -235,7 +224,7 @@ export default function WorkbenchPage() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-30 h-14 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-full max-w-[1500px] items-center justify-between px-4 sm:px-6">
+        <div className="mx-auto flex h-full max-w-[1720px] items-center justify-between px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <img src="/theta-logo.png" alt="THETA" className="h-9 w-auto" />
             <span className="h-5 w-px bg-slate-200" />
@@ -253,7 +242,7 @@ export default function WorkbenchPage() {
         </div>
       </header>
 
-      <main className={`mx-auto w-full max-w-[1500px] px-4 sm:px-6 ${activeRunId ? 'py-3 sm:py-4' : 'py-6 sm:py-8'}`}>
+      <main className="mx-auto w-full max-w-[1720px] px-4 py-4 sm:px-6">
         {syncError ? (
           <ConnectionNotice
             message={syncError}
@@ -263,100 +252,147 @@ export default function WorkbenchPage() {
           />
         ) : null}
         {error ? <ErrorNotice message={error} /> : null}
-        {activeRunId ? (
-          <RunWorkspace
-            runId={activeRunId}
-            run={runs.find((item) => item.runId === activeRunId)}
-            status={activeStatus}
-            loading={detailLoading}
-            onBack={() => {
+        <div className="grid min-w-0 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <ProjectSidebar
+            runs={runs}
+            activeRunId={activeRunId}
+            loading={loading}
+            onNew={() => {
               setActiveRunId(undefined);
               setActiveStatus(undefined);
-              void refresh();
+              setResearchGoal('');
             }}
-            onStatusChange={(status) => {
-              setActiveStatus(status);
-              if (status.runId !== activeRunId) setActiveRunId(status.runId);
-            }}
-            onRefresh={() => openRun(activeRunId)}
+            onOpen={(runId) => void openRun(runId)}
+            onRefresh={() => void refresh()}
           />
-        ) : (
-          <>
-            <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-              <div>
-                <p className="text-xs font-semibold text-blue-600">THETA 2.0</p>
-                <h1 className="mt-1 text-2xl font-semibold">我的研究</h1>
-                <p className="mt-2 text-sm text-slate-500">选择本地数据集，直接说明研究目标，再由 THETA 通过对话完善设置。</p>
-              </div>
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" size="icon" onClick={() => void refresh()} disabled={loading} title="刷新" className="h-9 w-9 rounded-md bg-white">
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                </Button>
-              </div>
-            </section>
 
-            <ResearchStartPanel
-              datasets={datasets}
-              datasetsLoading={datasetsLoading}
-              datasetsError={datasetsError}
-              selectedDataset={selectedDataset}
-              researchGoal={researchGoal}
-              busy={createBusy}
-              uploadBusy={uploadBusy}
-              uploadError={uploadError}
-              onDatasetChange={setSelectedDataset}
-              onGoalChange={setResearchGoal}
-              onRefreshDatasets={refreshDatasets}
-              onUpload={uploadDataset}
-              onCreate={createResearch}
-            />
+          <div className="min-w-0">
+            {activeRunId ? (
+              <RunWorkspace
+                runId={activeRunId}
+                run={runs.find((item) => item.runId === activeRunId)}
+                status={activeStatus}
+                loading={detailLoading}
+                onBack={() => {
+                  setActiveRunId(undefined);
+                  setActiveStatus(undefined);
+                  void refresh();
+                }}
+                onStatusChange={(status) => {
+                  setActiveStatus(status);
+                  if (status.runId !== activeRunId) setActiveRunId(status.runId);
+                }}
+                onRefresh={() => openRun(activeRunId)}
+              />
+            ) : (
+              <ResearchStartPanel
+                datasets={datasets}
+                datasetsLoading={datasetsLoading}
+                datasetsError={datasetsError}
+                selectedDataset={selectedDataset}
+                researchGoal={researchGoal}
+                busy={createBusy}
+                uploadBusy={uploadBusy}
+                uploadError={uploadError}
+                onDatasetChange={setSelectedDataset}
+                onGoalChange={setResearchGoal}
+                onRefreshDatasets={refreshDatasets}
+                onUpload={uploadDataset}
+                onCreate={createResearch}
+              />
+            )}
+          </div>
+        </div>
 
-            <section className="mt-8">
-              <SectionHeading title="现在需要你做" subtitle={actionable.length ? `${actionable.length} 个任务停在人工确认点` : '没有等待确认的任务'} />
-              {loading ? <LoadingBlock /> : actionable.length ? (
-                <div>
-                  <NextTaskCard run={actionable[0]} primary onOpen={() => void openRun(actionable[0].runId)} />
-                  {actionable.length > 1 ? (
-                    <details className="mt-3 overflow-hidden rounded-md border border-slate-200 bg-white">
-                      <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:px-5"><span>其他待确认任务</span><span className="text-xs font-normal text-slate-400">{actionable.length - 1} 个</span></summary>
-                      <div className="border-t border-slate-100">{actionable.slice(1).map((run) => <RunRow key={run.runId} run={run} onOpen={() => void openRun(run.runId)} />)}</div>
-                    </details>
-                  ) : null}
-                </div>
-              ) : (
-                <EmptyPanel title="暂无待确认步骤" description="可以新建研究，或等待正在训练的任务完成。" />
-              )}
-            </section>
-
-            {active.length ? (
-              <section className="mt-8">
-                <SectionHeading title="正在运行" subtitle="这些任务不需要重复点击，刷新即可查看进度" />
-                <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-                  {active.map((run) => <RunRow key={run.runId} run={run} onOpen={() => void openRun(run.runId)} />)}
-                </div>
-              </section>
-            ) : null}
-
-            <section className="mt-8">
-              <details className="overflow-hidden rounded-md border border-slate-200 bg-white">
-                <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4 hover:bg-slate-50 sm:px-5">
-                  <span><strong className="text-sm">历史与异常记录</strong><span className="ml-2 text-xs text-slate-400">{history.length} 个</span></span>
-                  <ChevronRight className="h-4 w-4 text-slate-400" />
-                </summary>
-                <div className="border-t border-slate-100">
-                  {history.length ? history.map((run) => <RunRow key={run.runId} run={run} onOpen={() => void openRun(run.runId)} />) : <EmptyPanel title="暂无历史记录" description="完成或失败的任务会保留在这里。" compact />}
-                </div>
-              </details>
-            </section>
-
-            <details className="mt-5 rounded-md border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
-              <summary className="cursor-pointer font-medium text-slate-600">运行环境</summary>
-              <p className="mt-2">{health?.checks.filter((check) => check.status === 'PASS').length ?? 0} 项通过，{health?.checks.filter((check) => check.status !== 'PASS').length ?? 0} 项提醒或阻塞。</p>
-            </details>
-          </>
-        )}
+        <details className="mt-6 rounded-md border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+          <summary className="cursor-pointer font-medium text-slate-600">运行环境检查</summary>
+          <p className="mt-2">{health?.checks.filter((check) => check.status === 'PASS').length ?? 0} 项通过，{health?.checks.filter((check) => check.status !== 'PASS').length ?? 0} 项提醒或阻塞。这里仅展示环境状态，不参与研究对话。</p>
+        </details>
       </main>
     </div>
+  );
+}
+
+function ProjectSidebar({ runs, activeRunId, loading, onNew, onOpen, onRefresh }: {
+  runs: ThetaRunSummary[];
+  activeRunId?: string;
+  loading: boolean;
+  onNew: () => void;
+  onOpen: (runId: string) => void;
+  onRefresh: () => void;
+}) {
+  const pending = runs.filter((run) => actionableStates.has(run.currentState ?? ''));
+  const running = runs.filter((run) => !actionableStates.has(run.currentState ?? '') && isRunning(run));
+  const recent = runs.filter((run) => !actionableStates.has(run.currentState ?? '') && !isRunning(run));
+
+  return (
+    <aside className="min-w-0 overflow-hidden rounded-md border border-slate-200 bg-white lg:sticky lg:top-[72px] lg:flex lg:h-[calc(100dvh-88px)] lg:flex-col">
+      <div className="border-b border-slate-100 p-3">
+        <div className="flex items-center justify-between gap-2 px-1 pb-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <FolderOpen className="h-4 w-4 shrink-0 text-blue-600" />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-900">研究项目</p>
+              <p className="text-[11px] text-slate-400">每次分析对应一个项目</p>
+            </div>
+          </div>
+          <Button type="button" variant="ghost" size="icon" onClick={onRefresh} disabled={loading} title="刷新项目" className="h-8 w-8 rounded-md">
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+        <Button type="button" onClick={onNew} className="h-9 w-full justify-start gap-2 rounded-md bg-blue-600 hover:bg-blue-700">
+          <Plus className="h-4 w-4" />新建分析项目
+        </Button>
+      </div>
+
+      <div className="max-h-64 flex-1 overflow-y-auto p-2 lg:max-h-none">
+        {loading && runs.length === 0 ? (
+          <div className="flex items-center gap-2 px-3 py-5 text-xs text-slate-400"><RefreshCw className="h-3.5 w-3.5 animate-spin" />正在读取项目...</div>
+        ) : runs.length ? (
+          <div className="space-y-4">
+            <ProjectGroup label="需要处理" runs={pending} activeRunId={activeRunId} onOpen={onOpen} />
+            <ProjectGroup label="正在运行" runs={running} activeRunId={activeRunId} onOpen={onOpen} />
+            <ProjectGroup label="最近项目" runs={recent} activeRunId={activeRunId} onOpen={onOpen} />
+          </div>
+        ) : (
+          <div className="px-3 py-6 text-center text-xs leading-5 text-slate-400">还没有研究项目。<br />从上方新建一项分析。</div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function ProjectGroup({ label, runs, activeRunId, onOpen }: {
+  label: string;
+  runs: ThetaRunSummary[];
+  activeRunId?: string;
+  onOpen: (runId: string) => void;
+}) {
+  if (!runs.length) return null;
+  return (
+    <section>
+      <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase text-slate-400">{label} · {runs.length}</p>
+      <div className="space-y-1">
+        {runs.slice(0, 20).map((run) => {
+          const state = statusKind(run);
+          const selected = run.runId === activeRunId;
+          return (
+            <button
+              key={run.runId}
+              type="button"
+              onClick={() => onOpen(run.runId)}
+              className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${selected ? 'border-blue-200 bg-blue-50' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}
+            >
+              <p className="truncate text-xs font-semibold text-slate-800">{runLabel(run)}</p>
+              <div className="mt-1.5 flex items-center justify-between gap-2">
+                <span className={`truncate text-[10px] ${state.tone.includes('amber') ? 'text-amber-700' : state.tone.includes('emerald') ? 'text-emerald-700' : 'text-slate-400'}`}>{state.label}</span>
+                <span className="shrink-0 text-[10px] text-slate-400">{formatDate(run.lastEventAt ?? run.updatedAt)}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -423,110 +459,82 @@ function ResearchStartPanel({
   const canCreate = datasetReady && goalReady && !busy;
 
   return (
-    <section className="mt-7 overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
-      <div className="flex items-start gap-3 border-b border-slate-100 bg-blue-50/50 px-5 py-4 sm:px-6">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-blue-600 text-white">
-          <MessageSquareText className="h-4 w-4" />
-        </span>
-        <div>
-          <p className="text-sm font-semibold text-slate-900">开始一项新研究</p>
-          <p className="mt-1 text-sm leading-6 text-slate-600">先选择数据集。研究目标可以暂时留空，THETA 会先检查数据，再只询问影响研究方案的必要问题。</p>
+    <section className="flex h-[calc(100dvh-88px)] min-h-[650px] flex-col overflow-hidden rounded-md border border-blue-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 px-5 py-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-blue-600 text-white"><MessageSquareText className="h-5 w-5" /></span>
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-slate-900">新分析项目</p>
+            <p className="mt-0.5 truncate text-xs text-slate-500">从数据集开始，后续确认、训练和结果都留在同一个项目中</p>
+          </div>
         </div>
+        <Badge variant="outline" className="shrink-0 border-blue-200 bg-blue-50 text-blue-700">准备研究</Badge>
       </div>
 
-      <div className="grid grid-cols-1 gap-0 lg:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.2fr)]">
-        <div className="min-w-0 border-b border-slate-100 p-5 lg:border-b-0 lg:border-r sm:p-6">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold text-blue-600">1 / 2 · 选择数据集</p>
-              <p className="mt-1 text-sm font-medium text-slate-800">上传文件或选择已登记数据集</p>
-            </div>
-            <Button type="button" variant="ghost" size="icon" onClick={() => void onRefreshDatasets()} disabled={datasetsLoading} title="重新读取数据集" className="h-8 w-8 rounded-md">
-              <RefreshCw className={`h-4 w-4 ${datasetsLoading ? 'animate-spin' : ''}`} />
-            </Button>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-slate-50/60 px-4 py-6 sm:px-6 sm:py-8">
+        <div className="flex max-w-4xl items-start gap-3">
+          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span>
+          <div className="rounded-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <p className="text-xs font-semibold text-blue-600">THETA 研究助手</p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">先选择或上传要分析的数据集。我只读取受控目录中的文件，不会扫描整块磁盘。</p>
           </div>
-
-          <label className={`mt-4 flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed px-3 text-sm font-medium transition ${uploadBusy ? 'cursor-wait border-blue-200 bg-blue-50 text-blue-500' : 'border-blue-300 bg-blue-50/50 text-blue-700 hover:bg-blue-50'}`}>
-            <input
-              type="file"
-              className="sr-only"
-              disabled={uploadBusy || busy}
-              accept=".csv,.tsv,.json,.jsonl,.txt,.xlsx,.xls,.parquet"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = '';
-                if (file) void onUpload(file);
-              }}
-            />
-            {uploadBusy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            {uploadBusy ? '正在受控上传...' : '上传本地数据集'}
-          </label>
-          {uploadError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">上传失败：{uploadError}</div> : null}
-
-          {datasetsError ? (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">读取数据集失败：{datasetsError}</div>
-          ) : datasetsLoading ? (
-            <div className="mt-4 flex min-h-20 items-center gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 text-sm text-slate-500"><RefreshCw className="h-4 w-4 animate-spin text-blue-600" />正在读取 THETA 允许目录...</div>
-          ) : datasets.length ? (
-            <>
-              <select value={selectedDataset} onChange={(event) => onDatasetChange(event.target.value)} className="mt-4 h-11 w-full min-w-0 max-w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
-                {datasets.map((dataset) => <option key={dataset.datasetRef} value={dataset.datasetRef}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
-              </select>
-              {selected ? (
-                <div className="mt-3 rounded-md bg-slate-50 px-3 py-2.5">
-                  <div className="flex items-center gap-2 text-xs font-medium text-slate-700"><Database className="h-3.5 w-3.5 text-blue-600" />已选择 {selected.name}</div>
-                  <p className="mt-1 text-[11px] leading-4 text-slate-500">已登记为受控引用 · {selected.suffix.replace('.', '').toUpperCase()}</p>
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">没有找到可用数据集。请直接上传 CSV、TSV、JSON、JSONL、TXT、Excel 或 Parquet 文件。</div>
-          )}
-          <p className="mt-3 text-xs leading-5 text-slate-500">上传文件会写入 THETA 受控目录并生成不暴露本地路径的 datasetRef；系统不会扫描整块磁盘。</p>
         </div>
 
-        <div className="min-w-0 p-5 sm:p-6">
-          <div>
-            <p className="text-xs font-semibold text-blue-600">2 / 2 · 研究目标（可选）</p>
-            <p className="mt-1 text-sm font-medium text-slate-800">已有明确方向可以先说明，也可以让 THETA 看完数据后再讨论。</p>
+        <div className="ml-0 max-w-4xl rounded-md border border-slate-200 bg-white p-4 shadow-sm sm:ml-11">
+          <div className="flex items-center justify-between gap-3">
+            <div><p className="text-xs font-semibold text-slate-700">选择数据集</p><p className="mt-1 text-xs text-slate-500">支持 CSV、TSV、JSON、JSONL、TXT、Excel 和 Parquet</p></div>
+            <Button type="button" variant="ghost" size="icon" onClick={() => void onRefreshDatasets()} disabled={datasetsLoading} title="重新读取数据集" className="h-8 w-8 rounded-md"><RefreshCw className={`h-4 w-4 ${datasetsLoading ? 'animate-spin' : ''}`} /></Button>
           </div>
-          <div className="mt-4 rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
-            <Textarea
-              value={researchGoal}
-              maxLength={2000}
-              disabled={busy}
-              onChange={(event) => onGoalChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || !canCreate) return;
-                event.preventDefault();
-                void onCreate();
-              }}
-              placeholder="可留空。例如：识别主要主题，提取关键词和代表文本，并分析主题随时间的变化。"
-              className="min-h-28 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0"
-            />
-            <div className="flex flex-col items-stretch gap-2 border-t border-slate-100 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-              <span className={`text-xs ${goal.length > 0 && !goalReady ? 'text-amber-700' : 'text-slate-400'}`}>{goal.length} / 2000 · 留空或至少 8 个字符</span>
-              <Button type="button" disabled={!canCreate} onClick={() => void onCreate()} className="h-9 w-full gap-2 rounded-md bg-blue-600 px-4 hover:bg-blue-700 sm:w-auto">
-                {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                {busy ? '正在预检数据...' : '开始研究对话'}
-              </Button>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <label className={`flex h-10 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed px-4 text-xs font-semibold transition ${uploadBusy ? 'cursor-wait border-blue-200 bg-blue-50 text-blue-500' : 'border-blue-300 bg-blue-50/50 text-blue-700 hover:bg-blue-50'}`}>
+              <input type="file" className="sr-only" disabled={uploadBusy || busy} accept=".csv,.tsv,.json,.jsonl,.txt,.xlsx,.xls,.parquet" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void onUpload(file); }} />
+              {uploadBusy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}{uploadBusy ? '正在上传...' : '上传本地文件'}
+            </label>
+            {datasetsLoading ? (
+              <div className="flex h-10 flex-1 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs text-slate-500"><RefreshCw className="h-3.5 w-3.5 animate-spin" />正在读取允许目录...</div>
+            ) : datasets.length ? (
+              <select value={selectedDataset} onChange={(event) => onDatasetChange(event.target.value)} className="h-10 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+                {datasets.map((dataset) => <option key={dataset.datasetRef} value={dataset.datasetRef}>{dataset.name} · {formatBytes(dataset.sizeBytes)}</option>)}
+              </select>
+            ) : <div className="flex h-10 flex-1 items-center rounded-md border border-amber-200 bg-amber-50 px-3 text-xs text-amber-800">暂无可用数据集，请从左侧上传。</div>}
+          </div>
+          {datasetsError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">读取失败：{datasetsError}</div> : null}
+          {uploadError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">上传失败：{uploadError}</div> : null}
+        </div>
+
+        {selected ? (
+          <div className="ml-auto max-w-xl rounded-md bg-blue-600 px-4 py-3 text-white shadow-sm">
+            <p className="text-sm font-medium">使用数据集：{selected.name}</p>
+            <p className="mt-1 text-xs text-blue-100">{selected.suffix.replace('.', '').toUpperCase()} · {formatBytes(selected.sizeBytes)} · 已建立受控引用</p>
+          </div>
+        ) : null}
+
+        <div className="flex max-w-4xl items-start gap-3">
+          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><MessageSquareText className="h-4 w-4" /></span>
+          <div className="rounded-md border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <p className="text-xs font-semibold text-blue-600">研究目标</p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">你希望从这批数据中得到什么？可以直接说明方向，也可以留空，让我先理解数据后再与你确认。</p>
+          </div>
+        </div>
+
+        {busy ? (
+          <div className="flex max-w-4xl items-start gap-3">
+            <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><RefreshCw className="h-4 w-4 animate-spin" /></span>
+            <div className="min-w-0 flex-1 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
+              <p className="text-sm font-medium text-blue-900">正在建立项目并读取数据结构...</p>
+              <p className="mt-1 text-xs leading-5 text-blue-700">识别候选列、数据质量和初步领域。原始文本不会在此阶段发送给外部服务。</p>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="h-full w-2/5 animate-pulse rounded-full bg-blue-600" /></div>
             </div>
           </div>
-          {busy ? (
-            <div className="mt-4 overflow-hidden rounded-md border border-blue-200 bg-blue-50/60 px-4 py-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-blue-800">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                THETA 正在本地建立数据概况
-              </div>
-              <p className="mt-1 text-xs leading-5 text-blue-700">读取文件结构、识别候选数据列并生成第一版研究档案。原始文本不会在此阶段发送到外部服务。</p>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100">
-                <div className="h-full w-2/5 animate-pulse rounded-full bg-blue-600" />
-              </div>
-            </div>
-          ) : null}
-          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
-            <RequirementItem met={datasetReady}>已选择数据集</RequirementItem>
-            <RequirementItem met={goalReady}>{goal ? '研究目标信息充分' : '研究目标稍后讨论'}</RequirementItem>
+        ) : null}
+      </div>
+
+      <div className="shrink-0 border-t border-slate-100 bg-white p-4 sm:p-5">
+        <div className="rounded-md border border-slate-200 bg-white shadow-sm focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-100">
+          <Textarea value={researchGoal} maxLength={2000} disabled={busy} onChange={(event) => onGoalChange(event.target.value)} onKeyDown={(event) => { if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || !canCreate) return; event.preventDefault(); void onCreate(); }} placeholder="说明研究目标；也可以留空，让 THETA 先理解数据" className="min-h-24 min-w-0 resize-none border-0 bg-transparent shadow-none [field-sizing:fixed] focus-visible:ring-0" />
+          <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-3 text-xs text-slate-400"><span>{goal.length} / 2000</span><RequirementItem met={datasetReady}>数据集已就绪</RequirementItem>{goal.length > 0 && !goalReady ? <span className="text-amber-700">目标至少 8 个字符</span> : null}</div>
+            <Button type="button" size="icon" disabled={!canCreate} onClick={() => void onCreate()} title={goal ? '发送并创建项目' : '让 THETA 先理解数据'} className="h-10 w-10 shrink-0 rounded-md bg-blue-600 hover:bg-blue-700">{busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}</Button>
           </div>
         </div>
       </div>
@@ -763,20 +771,24 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
       </div>
       <p className="mt-1 text-right text-[11px] text-slate-400">切换只改变操作界面；Run、FSM 进度、对话和训练结果保持同步。</p>
       {notices}
-      <ThetaOneWorkbench
-        run={run}
-        status={status}
-        timeline={timeline}
-        plan={plan}
-        results={results}
-        resultsLoading={resultsLoading}
-        assistant={actionPanel}
-        assistantExpanded={workspaceMode === 'agent'}
-        models={models}
-        busy={busy}
-        notice={actionNotice}
-        onAction={act}
-      />
+      {workspaceMode === 'agent' ? (
+        <div className="mt-4 min-h-[calc(100dvh-150px)] min-w-0">{actionPanel}</div>
+      ) : (
+        <ThetaOneWorkbench
+          run={run}
+          status={status}
+          timeline={timeline}
+          plan={plan}
+          results={results}
+          resultsLoading={resultsLoading}
+          assistant={actionPanel}
+          assistantExpanded={false}
+          models={models}
+          busy={busy}
+          notice={actionNotice}
+          onAction={act}
+        />
+      )}
 
       {status.currentState === 'Completed' ? <RunResults runId={runId} results={results} loading={resultsLoading} /> : null}
 

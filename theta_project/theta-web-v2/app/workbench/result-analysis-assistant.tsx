@@ -280,34 +280,38 @@ export function ResultAnalysisAssistant({
           </Button> : null}
         </div>
         {attachment ? (
-          <details className="mb-2 rounded-md border border-blue-100 bg-blue-50/70" open={messages.length === 0 ? true : undefined}>
-            <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-2 text-[11px] font-semibold text-blue-800"><Paperclip className="h-3 w-3" />分析范围 · {attachment.items.length} 项<span className="ml-auto font-normal text-blue-600">点击查看与管理</span></summary>
-            <div className="border-t border-blue-100 p-2">
+          <details className="group mb-2 rounded-md border border-blue-100 bg-blue-50/70">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-2 text-[11px] font-semibold text-blue-800 hover:bg-blue-50">
+              <Paperclip className="h-3 w-3" />
+              引用结果 · {attachment.items.length} 项
+              <span className="ml-auto font-normal text-blue-600 group-open:hidden">展开浏览</span>
+              <span className="ml-auto hidden font-normal text-blue-600 group-open:inline">收起引用</span>
+            </summary>
+            <div className="max-h-52 overflow-y-auto border-t border-blue-100 p-2">
               {attachment.visualizations.length ? (
                 <div className="mb-2">
                   <p className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold text-slate-500"><ImageIcon className="h-3 w-3" />已载入的图片与表格</p>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {attachment.visualizations.slice(0, 6).map((item) => (
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    {attachment.visualizations.map((item) => (
                       <button
                         key={item.id}
                         type="button"
                         onClick={() => setPreview({ label: `图表：${item.label}`, visualization: item })}
-                        className="group overflow-hidden rounded-sm border border-blue-100 bg-white text-left hover:border-blue-300"
+                        className="group/preview w-28 shrink-0 overflow-hidden rounded-sm border border-blue-100 bg-white text-left hover:border-blue-300"
                         title={`放大查看 ${item.label}`}
                       >
                         <div className="grid aspect-[4/3] place-items-center overflow-hidden bg-slate-50">
                           {item.format === 'image'
-                            ? <img src={item.src} alt={item.label} loading="lazy" className="h-full w-full object-contain transition-transform duration-200 group-hover:scale-[1.03]" />
+                            ? <img src={item.src} alt={item.label} loading="lazy" className="h-full w-full object-contain transition-transform duration-200 group-hover/preview:scale-[1.03]" />
                             : <><ImageIcon className="h-5 w-5 text-blue-500" /><span className="sr-only">交互图表</span></>}
                         </div>
                         <p className="truncate border-t border-slate-100 px-2 py-1.5 text-[10px] text-slate-600">{item.label}</p>
                       </button>
                     ))}
                   </div>
-                  {attachment.visualizations.length > 6 ? <p className="mt-1.5 text-[10px] text-slate-400">另有 {attachment.visualizations.length - 6} 项，可在下方列表中点击查看。</p> : null}
                 </div>
               ) : null}
-              <div className="max-h-44 space-y-1 overflow-y-auto">
+              <div className="space-y-1">
                 {attachment.items.map((item, index) => (
                   <div key={`${index}-${item}`} className="flex items-center gap-1 rounded-sm border border-blue-100 bg-white p-1">
                     <button type="button" onClick={() => previewAttachmentItem(item, index)} className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1 text-left text-[10px] text-slate-600 hover:text-blue-700" title={`查看 ${item}`}><Eye className="h-3 w-3 shrink-0" /><span className="truncate">{item}</span></button>
