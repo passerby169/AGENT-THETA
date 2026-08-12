@@ -568,14 +568,20 @@ function ResearchStartPanel({
         </div>
 
         {busy ? (
-          <div className="flex max-w-4xl items-start gap-3">
-            <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><RefreshCw className="h-4 w-4 animate-spin" /></span>
-            <div className="min-w-0 flex-1 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
-              <p className="text-sm font-medium text-blue-900">正在建立项目并读取数据结构...</p>
-              <p className="mt-1 text-xs leading-5 text-blue-700">识别候选列、数据质量和初步领域。原始文本不会在此阶段发送给外部服务。</p>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="h-full w-2/5 animate-pulse rounded-full bg-blue-600" /></div>
+          <>
+            <div className="ml-auto max-w-xl rounded-md bg-blue-600 px-4 py-3 text-white shadow-sm">
+              <p className="text-sm font-medium">{goal || autonomousDatasetDirection}</p>
+              <p className="mt-1 text-right text-xs text-blue-100">你 · 发送中</p>
             </div>
-          </div>
+            <div className="flex max-w-4xl items-start gap-3">
+              <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-blue-100 bg-white text-blue-600"><RefreshCw className="h-4 w-4 animate-spin" /></span>
+              <div className="min-w-0 flex-1 rounded-md border border-blue-200 bg-blue-50 px-4 py-3">
+                <p className="text-sm font-medium text-blue-900">正在建立项目并读取数据结构...</p>
+                <p className="mt-1 text-xs leading-5 text-blue-700">识别候选列、数据质量和初步领域。原始文本不会在此阶段发送给外部服务。</p>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="h-full w-2/5 animate-pulse rounded-full bg-blue-600" /></div>
+              </div>
+            </div>
+          </>
         ) : null}
       </div>
 
@@ -1183,10 +1189,6 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
   );
 
   if (state === 'AwaitDatasetUnderstandingConfirmation') {
-    const autonomousUnderstanding = status.researchBrief?.researchQuestion === autonomousDatasetDirection;
-    if (!autonomousUnderstanding) {
-      return <DatasetUnderstandingConfirmation status={status} busy={busy} notice={notice} onAction={onAction} />;
-    }
     return (
       <>
         <ResearchConversation
@@ -1199,7 +1201,10 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
           onAction={onAction}
         />
         <Dialog open>
-          <DialogContent className="max-h-[90dvh] max-w-5xl overflow-y-auto p-0">
+          <DialogContent
+            overlayClassName="bg-slate-950/20 backdrop-blur-[1px]"
+            className="max-h-[86dvh] max-w-5xl overflow-y-auto border-white/70 bg-white/90 p-0 shadow-2xl backdrop-blur-xl"
+          >
             <DialogHeader className="sr-only">
               <DialogTitle>确认 THETA 对数据的理解</DialogTitle>
               <DialogDescription>确认或修正系统从数据集中识别出的主题方向和列角色。</DialogDescription>
@@ -1427,13 +1432,7 @@ function ResearchConversation({ status, messages, loading, busy, notice, compact
   const [promptHistory, setPromptHistory] = useState<ThetaConversationMessage[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const researchMessages = useMemo(
-    () => messages.filter((message) =>
-      message.messageKind.startsWith('research.') ||
-      message.messageKind.startsWith('conversation.'),
-    ),
-    [messages],
-  );
+  const researchMessages = useMemo(() => messages, [messages]);
   const currentPrompt = status.decisionGap?.question ?? status.pendingReason ?? '请继续说明你的研究目标和数据背景。';
   const displayMessages = useMemo<DisplayConversationMessage[]>(() => {
     const supplementalPrompts = promptHistory.filter((prompt) => !researchMessages.some(

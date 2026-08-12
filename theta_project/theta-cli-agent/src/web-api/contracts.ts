@@ -55,15 +55,7 @@ const thetaResultAnalysisSelectionSchema = z.object({
   visualizationIds: z.array(z.string().trim().min(1).max(160)).max(12).default([]),
   includeGoalAssessment: z.boolean().default(false),
   includeWarnings: z.boolean().default(false),
-}).strict().refine(
-  (selection) =>
-    selection.topicIds.length > 0 ||
-    selection.metricKeys.length > 0 ||
-    selection.visualizationIds.length > 0 ||
-    selection.includeGoalAssessment ||
-    selection.includeWarnings,
-  { message: '至少选择一项分析结果。' },
-);
+}).strict();
 
 export const thetaResultAnalysisRequestSchema = z.object({
   question: z.string().trim().min(2).max(2000),

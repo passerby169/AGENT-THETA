@@ -130,12 +130,13 @@ const routeRequest = async (
         registry.close();
       }
       const dataset = await resolveDatasetFile(datasetRecord.managedPath);
+      const researchGoal = input.researchGoal?.trim() || autonomousDatasetDirection;
       const result = await workflow.run({
         input: {
           filePath: dataset.filePath,
           datasetRef: datasetRecord.datasetRef,
           workflowVersion: '2.0.0',
-          researchGoal: input.researchGoal ?? autonomousDatasetDirection,
+          researchGoal,
           plannerMode: input.useMiniMax ? 'minimax' : 'deterministic',
           allowRemoteSamples: input.allowRemoteSamples,
         },
@@ -147,6 +148,7 @@ const routeRequest = async (
         result.runId,
         initialContext.datasetFacts,
         initialContext.datasetUnderstanding,
+        researchGoal,
       );
       writeJson(response, 201, {
         ok: true,
@@ -192,10 +194,13 @@ const routeRequest = async (
     return;
   }
 
+  const compatibilityRunDeleteMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/delete$/);
   const runMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)$/);
-  if (runMatch) {
-    if (method !== 'DELETE') return methodNotAllowed(response);
-    const runId = decodeURIComponent(runMatch[1]);
+  if (compatibilityRunDeleteMatch || runMatch) {
+    if (compatibilityRunDeleteMatch ? method !== 'POST' : method !== 'DELETE') {
+      return methodNotAllowed(response);
+    }
+    const runId = decodeURIComponent((compatibilityRunDeleteMatch ?? runMatch)![1]);
     let resultRoot = resultRootCache.get(runId);
     if (!resultRoot) {
       try {
@@ -464,7 +469,7 @@ const writeResultAsset = async (
 
 const writeCors = (response: ServerResponse): void => {
   response.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:4320');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   response.setHeader('Cache-Control', 'no-store');
 };
@@ -888,12 +893,22 @@ const persistInitialDatasetConversation = (
   runId: string,
   facts: DatasetFacts | undefined,
   understanding: DatasetUnderstandingDraft | undefined,
+  researchGoal: string,
 ): void => {
-  if (!facts || !understanding) return;
   const store = new SQLiteConversationStore(runtimeDb);
   try {
     const sessionId = `theta-web-${runId}`;
     store.getOrCreateSession(sessionId, { activeRunId: runId });
+    store.appendMessage({
+      messageId: `message.user.${randomUUID()}`,
+      sessionId,
+      runId,
+      role: 'user',
+      messageKind: 'research.initial-direction',
+      content: researchGoal,
+      createdAt: new Date().toISOString(),
+    });
+    if (!facts || !understanding) return;
     store.appendMessage({
       messageId: `message.assistant.${randomUUID()}`,
       sessionId,

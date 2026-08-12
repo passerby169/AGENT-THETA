@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createThetaWebApiServer, isUserFacingRun } from './web-api/server.js';
 import { SQLiteConversationStore } from './storage/sqlite-conversation-store.js';
 import {
+  buildRestrictedProjectSummary,
   buildResultAnalysisContext,
   resultAnalysisTimeoutMs,
 } from './results/result-analysis-service.js';
@@ -73,6 +75,10 @@ try {
       timeColumns: [],
       idColumns: [],
       metadataColumns: [],
+      groupColumns: [],
+      covariateColumns: [],
+      evaluationColumns: [],
+      ignoredColumns: [],
     },
   );
   assert.deepEqual(
@@ -85,11 +91,45 @@ try {
   });
   assert.deepEqual(analysisRequest.selection.topicIds, ['topic-1']);
   assert.equal(analysisRequest.history.length, 0);
-  assert.throws(() => thetaResultAnalysisRequestSchema.parse({
+  const unscopedAnalysisRequest = thetaResultAnalysisRequestSchema.parse({
     question: '请分析结果',
     selection: {},
-  }));
-  const selectedContext = buildResultAnalysisContext({
+  });
+  assert.deepEqual(unscopedAnalysisRequest.selection, {
+    topicIds: [],
+    metricKeys: [],
+    visualizationIds: [],
+    includeGoalAssessment: false,
+    includeWarnings: false,
+  });
+  const restrictedProjectSummary = buildRestrictedProjectSummary({
+    brief: {
+      researchDomain: '教育与学习',
+      researchQuestion: '识别主要主题并观察时间变化',
+      analysisUnit: '每行一条文本记录',
+      textFieldIntent: 'text 是正文列',
+      candidateTimeColumns: ['timestamp'],
+      candidateGroupColumns: ['source'],
+      trendAnalysis: true,
+      successCriteria: ['主题可解释'],
+    },
+    messages: [
+      { role: 'system', messageKind: 'system.prompt', content: '不得进入摘要' },
+      { role: 'user', messageKind: 'research.answer', content: '希望比较不同年份。' },
+      { role: 'assistant', messageKind: 'research.question', content: '已记录时间比较需求。' },
+      { role: 'tool', messageKind: 'tool.result', content: '原始工具输出不得进入摘要' },
+    ],
+  });
+  assert.match(restrictedProjectSummary, /受限项目摘要/u);
+  assert.match(restrictedProjectSummary, /教育与学习/u);
+  assert.match(restrictedProjectSummary, /字段理解/u);
+  assert.match(restrictedProjectSummary, /text 是正文列/u);
+  assert.match(restrictedProjectSummary, /timestamp/u);
+  assert.match(restrictedProjectSummary, /source/u);
+  assert.match(restrictedProjectSummary, /希望比较不同年份/u);
+  assert.doesNotMatch(restrictedProjectSummary, /不得进入摘要/u);
+  assert.doesNotMatch(restrictedProjectSummary, /原始工具输出/u);
+  const resultOverview = {
     kind: 'run.results',
     runId: 'run-analysis-smoke',
     status: 'completed',
@@ -108,10 +148,19 @@ try {
     parameterDecisions: {},
     warnings: [],
     message: 'completed',
-  } satisfies RunResultOverview, analysisRequest.selection);
+  } satisfies RunResultOverview;
+  const selectedContext = buildResultAnalysisContext(
+    resultOverview,
+    analysisRequest.selection,
+  );
   assert.match(selectedContext.text, /治理/u);
   assert.doesNotMatch(selectedContext.text, /市场/u);
   assert.equal(selectedContext.selected.topics, 1);
+  const genericContext = buildResultAnalysisContext(
+    resultOverview,
+    unscopedAnalysisRequest.selection,
+  );
+  assert.match(genericContext.text, /未附加具体结果项/u);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert(address && typeof address === 'object');
@@ -170,6 +219,49 @@ try {
   assert.equal(runs.ok, true);
   assert.deepEqual(runs.data.runs, []);
 
+  const runtimeDatabase = new DatabaseSync(path.join(root, 'runtime.sqlite'));
+  runtimeDatabase.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_events (
+      run_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      timestamp TEXT NOT NULL
+    )
+  `);
+  runtimeDatabase.prepare(`
+    INSERT INTO runtime_events (run_id, type, event_json, timestamp)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    conversationRunId,
+    'run.started',
+    JSON.stringify({
+      eventId: 'event.run.started.smoke',
+      runId: conversationRunId,
+      type: 'run.started',
+      timestamp: '2026-08-06T00:00:00.000Z',
+      data: { datasetName: '用户数据集' },
+    }),
+    '2026-08-06T00:00:00.000Z',
+  );
+  runtimeDatabase.close();
+
+  const deleteResponse = await requestJson(
+    `${baseUrl}/api/v2/runs/${conversationRunId}/delete`,
+    'POST',
+    {},
+  );
+  assert.equal(deleteResponse.statusCode, 200);
+  const deletedDatabase = new DatabaseSync(path.join(root, 'runtime.sqlite'));
+  const remainingEvents = deletedDatabase.prepare(
+    'SELECT COUNT(*) AS count FROM runtime_events WHERE run_id = ?',
+  ).get(conversationRunId) as { count: number };
+  const remainingMessages = deletedDatabase.prepare(
+    'SELECT COUNT(*) AS count FROM theta_conversation_messages WHERE run_id = ?',
+  ).get(conversationRunId) as { count: number };
+  assert.equal(Number(remainingEvents.count), 0);
+  assert.equal(Number(remainingMessages.count), 0);
+  deletedDatabase.close();
+
   const datasetsResponse = await requestJson(`${baseUrl}/api/v2/datasets`);
   assert.equal(datasetsResponse.statusCode, 200);
 
@@ -214,10 +306,17 @@ try {
 
   console.log(JSON.stringify({ status: 'ok', governedActions: true, version: 'v2' }));
 } finally {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+  if (server.listening) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+  await rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
   });
-  await rm(root, { recursive: true, force: true });
   if (originalAllowedRoots === undefined) delete process.env.THETA_ALLOWED_DATA_ROOTS;
   else process.env.THETA_ALLOWED_DATA_ROOTS = originalAllowedRoots;
 }

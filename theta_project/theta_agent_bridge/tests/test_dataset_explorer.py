@@ -59,24 +59,21 @@ class DatasetExplorerTest(unittest.TestCase):
             'selectedColumns': ['text', 'account_name', 'ip'],
         })
 
-        self.assertEqual(result['samplePolicy']['requestedRows'], 20)
-        self.assertLessEqual(len(result['sample']), 20)
-        self.assertLessEqual(len(result['exceptionalSample']), 3)
-        self.assertTrue(result['columnSamples'])
-        self.assertTrue(all('_theta_sample_id' in row for row in result['head']))
-        self.assertTrue(all('_theta_sample_id' in row for row in result['sample']))
-        self.assertTrue(result['redaction']['applied'])
+        self.assertEqual(result['samplePolicy']['requestedRows'], 10)
+        self.assertLessEqual(len(result['sampleRows']), 10)
+        self.assertTrue(all('_theta_sample_id' in row for row in result['sampleRows']))
+        self.assertTrue(result['redactionSummary']['applied'])
         serialized = json.dumps(
-            result['head'] + result['sample'] + result['exceptionalSample'] + result['columnSamples'],
+            result['sampleRows'] + result['columnProfiles'],
             ensure_ascii=False,
         )
         self.assertNotIn('@example.com', serialized)
         self.assertNotIn('sk-secretvalue', serialized)
         self.assertNotIn('192.168.1.10', serialized)
         self.assertNotIn('person-0', serialized)
-        self.assertLessEqual(len(serialized.encode('utf-8')), 50 * 1024)
+        self.assertLessEqual(len(serialized.encode('utf-8')), 30 * 1024)
 
-    def test_explore_returns_exceptional_and_role_column_samples(self) -> None:
+    def test_explore_returns_only_the_current_runtime_contract(self) -> None:
         path = self.root / 'sample-views.csv'
         path.write_text(
             'id,text,timestamp,category\n'
@@ -92,10 +89,45 @@ class DatasetExplorerTest(unittest.TestCase):
             'datasetHash': 'd' * 64,
         })
 
-        self.assertEqual(len(result['exceptionalSample']), 3)
-        sampled_columns = {key for row in result['columnSamples'] for key in row}
-        self.assertIn('text', sampled_columns)
-        self.assertIn('timestamp', sampled_columns)
+        expected_keys = {
+            'datasetRef',
+            'datasetHash',
+            'fileName',
+            'format',
+            'sizeBytes',
+            'encoding',
+            'delimiter',
+            'sheets',
+            'selectedSheet',
+            'rowCount',
+            'columns',
+            'columnProfiles',
+            'sampleRows',
+            'sampleSeed',
+            'samplePolicy',
+            'sampleTruncated',
+            'outputTruncated',
+            'redactionSummary',
+            'candidateRoles',
+            'languageDistribution',
+            'duplicateRatio',
+            'timeCoverage',
+            'inferredDomain',
+            'qualityWarnings',
+        }
+        self.assertEqual(set(result), expected_keys)
+        self.assertLessEqual(len(result['sampleRows']), 10)
+        self.assertTrue(result['columnProfiles'])
+        for legacy_key in (
+            'profiles',
+            'head',
+            'sample',
+            'exceptionalSample',
+            'columnSamples',
+            'redaction',
+            'columnRoles',
+        ):
+            self.assertNotIn(legacy_key, result)
 
     def test_unknown_selected_column_is_rejected(self) -> None:
         path = self.root / 'dataset.csv'
@@ -125,7 +157,7 @@ class DatasetExplorerTest(unittest.TestCase):
         })
         roles = {
             role: [candidate['name'] for candidate in candidates]
-            for role, candidates in result['columnRoles'].items()
+            for role, candidates in result['candidateRoles'].items()
         }
 
         self.assertIn('id', roles['id'])

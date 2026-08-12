@@ -398,15 +398,6 @@ const post = async <T,>(path: string, body: unknown): Promise<T> => {
   return payload.data;
 };
 
-const remove = async <T,>(path: string): Promise<T> => {
-  const response = await fetch(`/api/agent/${path}`, { method: 'DELETE' });
-  const payload = (await response.json()) as ApiEnvelope<T>;
-  if (!response.ok || !payload.ok || payload.data === undefined) {
-    throw new Error(payload.error?.message ?? 'THETA Agent 删除操作失败。');
-  }
-  return payload.data;
-};
-
 const upload = async <T,>(path: string, file: File): Promise<T> => {
   const body = new FormData();
   body.set('file', file);
@@ -457,8 +448,9 @@ export const ThetaAgentV2API = {
   createRun: (input: { datasetRef: string; researchGoal?: string; useMiniMax: boolean }): Promise<ThetaRunStatus> =>
     post<ThetaRunStatus>('runs', input),
   deleteRun: (runId: string): Promise<{ runId: string; deletedRecords: number; resultArtifactsDeleted: boolean }> =>
-    remove<{ runId: string; deletedRecords: number; resultArtifactsDeleted: boolean }>(
-      `runs/${encodeURIComponent(runId)}`,
+    post<{ runId: string; deletedRecords: number; resultArtifactsDeleted: boolean }>(
+      `runs/${encodeURIComponent(runId)}/delete`,
+      {},
     ),
   act: (runId: string, action: ThetaRunAction): Promise<{ result: ThetaActionResult; status: ThetaRunStatus }> =>
     post<{ result: ThetaActionResult; status: ThetaRunStatus }>(`runs/${encodeURIComponent(runId)}/actions`, action),
