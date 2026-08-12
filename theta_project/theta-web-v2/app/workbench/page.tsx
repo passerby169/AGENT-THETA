@@ -61,6 +61,7 @@ const actionableStates = new Set([
   'ColumnConfirmation',
   'AwaitDatasetUnderstandingConfirmation',
   'ResearchIntentInterview',
+  'AwaitResearchIntentConfirmation',
   'AwaitPlanCreationApproval',
   'AwaitTrainingStartApproval',
 ]);
@@ -810,6 +811,7 @@ function RunWorkspace({ runId, run, status, loading, onBack, onRefresh, onStatus
         'ColumnConfirmation',
         'AwaitDatasetUnderstandingConfirmation',
         'ResearchIntentInterview',
+        'AwaitResearchIntentConfirmation',
       ].includes(status.currentState ?? '')
         ? <ActionNotice message={actionNotice} />
         : null}
@@ -1235,6 +1237,18 @@ function ActionPanel({ status, plan, models, conversation, conversationLoading, 
     />
   );
 
+  if (state === 'AwaitResearchIntentConfirmation') return (
+    <ResearchIntentConfirmation
+      status={status}
+      messages={conversation}
+      loading={conversationLoading}
+      busy={busy}
+      notice={notice}
+      compact={compact}
+      onAction={onAction}
+    />
+  );
+
   if (state === 'ColumnConfirmation') return (
     <ActionShell title="确认数据列" description="正文列必须确认；时间、ID 和元数据列不使用时可以明确写“无”。">
       <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-950">
@@ -1415,6 +1429,49 @@ function DatasetUnderstandingConfirmation({ status, busy, notice, onAction, embe
 
 function LabeledInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return <label><span className="mb-1.5 block text-xs font-medium text-slate-600">{label}</span><Input value={value} onChange={(event) => onChange(event.target.value)} /></label>;
+}
+
+function ResearchIntentConfirmation({ status, messages, loading, busy, notice, compact, onAction }: {
+  status: ThetaRunStatus;
+  messages: ThetaConversationMessage[];
+  loading: boolean;
+  busy: boolean;
+  notice?: string;
+  compact: boolean;
+  onAction: (action: ThetaRunAction) => Promise<RunActionOutcome>;
+}) {
+  const summary = status.researchIntentSummary;
+  const lines = summary ? [
+    ['研究问题', summary.researchQuestion],
+    ['比较用途', summary.comparison.enabled
+      ? `${summary.comparison.dimensions.join('、')}（${summary.comparison.purpose === 'model' ? '进入模型估计' : '仅用于结果展示'}）`
+      : '不比较'],
+    ['时间用途', summary.temporal.enabled
+      ? `${summary.temporal.columns.join('、') || '时间列'}（${summary.temporal.purpose === 'topic_evolution' ? '模型学习主题演化' : '训练后绘制趋势'}）`
+      : '不做时间分析'],
+    ['主题粒度', summary.topicGranularity === 'coarse' ? '少量宽泛主题' : summary.topicGranularity === 'fine' ? '更多细粒度主题' : '中等粒度'],
+    ['成功标准', summary.successCriteria.join('；') || '采用系统建议'],
+    ['交付内容', summary.deliverables.join('、') || '主题表、关键词和代表文本'],
+    ['约束', summary.constraints.join('；') || '无额外约束'],
+  ] : [];
+  return (
+    <div className="space-y-4">
+      <ActionShell title="确认研究意图" description="请先核对这份规范化摘要。确认后才会生成训练方案；需要修改时可直接在下方用自然语言说明。">
+        <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-200">
+          {lines.map(([label, value]) => (
+            <div key={label} className="grid gap-1 bg-white px-4 py-3 sm:grid-cols-[110px_minmax(0,1fr)]">
+              <p className="text-xs font-semibold text-slate-500">{label}</p>
+              <p className="text-sm leading-6 text-slate-800">{value}</p>
+            </div>
+          ))}
+        </div>
+        <Button type="button" disabled={busy || !summary} onClick={() => void onAction({ action: 'confirmIntent' })} className="mt-4 w-full bg-blue-600 hover:bg-blue-700">
+          {busy ? '正在生成方案...' : '确认无误，生成训练方案'}
+        </Button>
+      </ActionShell>
+      <ResearchConversation status={status} messages={messages} loading={loading} busy={busy} notice={notice} compact={compact} answerAction="decisionAnswer" onAction={onAction} />
+    </div>
+  );
 }
 
 function ResearchConversation({ status, messages, loading, busy, notice, compact = false, answerAction = 'message', onAction }: {
@@ -1867,6 +1924,7 @@ const workflowStateLabels: Record<string, string> = {
   AnalyzeDataset: '理解数据内容',
   AwaitDatasetUnderstandingConfirmation: '确认数据理解',
   ResearchIntentInterview: '明确研究意图',
+  AwaitResearchIntentConfirmation: '确认研究意图',
   ColumnConfirmation: '确认数据列',
   RecommendModel: '生成模型建议',
   ValidatePlan: '校验训练方案',

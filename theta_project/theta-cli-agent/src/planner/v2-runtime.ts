@@ -46,19 +46,28 @@ export const buildPlannerInputV2 = (
     ? context.constraints.offlineOnly
     : !context.intent.constraints.some((item) => /允许联网|network allowed/iu.test(item));
   const forbidden = new Set(stringList(context.constraints?.forbiddenModelIds));
+  const effectiveCovariates = context.intent.comparisonPurpose === 'model'
+    ? unique([
+        ...(context.confirmation.covariateColumns ?? []),
+        ...context.intent.comparisonDimensions,
+      ])
+    : context.confirmation.covariateColumns ?? [];
   const eligibleCards = registry.cards
     .filter((card) => eligible.has(card.modelId) && !forbidden.has(card.modelId))
     .filter((card) => !hasRuntimeCatalog || catalogModels.get(card.modelId)?.runnable === true)
-    .filter((card) => !context.intent.temporalAnalysis || card.capabilities.temporalTopics)
-    .filter((card) => !(context.confirmation.covariateColumns?.length ?? 0) || card.capabilities.metadataEffects)
+    .filter((card) => context.intent.temporalPurpose !== 'topic_evolution' || card.capabilities.temporalTopics)
+    .filter((card) => effectiveCovariates.length === 0 || card.capabilities.metadataEffects)
     .filter((card) => !card.catalog.requires.includes('time') || context.confirmation.timeColumns.length > 0)
-    .filter((card) => !card.catalog.requires.includes('covariates') || (context.confirmation.covariateColumns?.length ?? 0) > 0)
+    .filter((card) => !card.catalog.requires.includes('covariates') || effectiveCovariates.length > 0)
     .filter((card) => !offlineOnly || card.capabilities.offlineExecution !== 'unsupported')
     .filter((card) => device !== 'cpu' || card.capabilities.cpuExecution !== 'unsupported');
   return plannerInputV2Schema.parse({
     schemaVersion: '2.0.0',
     facts: context.facts,
-    confirmation: context.confirmation,
+    confirmation: {
+      ...context.confirmation,
+      covariateColumns: effectiveCovariates,
+    },
     intent: context.intent,
     hardware: {
       device,

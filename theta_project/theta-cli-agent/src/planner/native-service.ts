@@ -171,6 +171,8 @@ const plannerMessages = (
   content: [
     'You are the native THETA Planner V2. Create the complete executable research plan; do not choose from a pre-generated plan.',
     'Select only runnable candidates and obey parameterConstraints, confirmed columns, hardware, and user overrides.',
+    'Treat comparisonPurpose=display as post-training grouping, never as a training covariate. Only comparisonPurpose=model may require metadata effects.',
+    'Treat temporalPurpose=display_trend as post-training aggregation and charts; it does not require a temporal topic model. Only temporalPurpose=topic_evolution requires native temporal_topics.',
     'Return one JSON object matching: modelId, baselineModelId, rationale, parameters, experiment, preprocessing, evaluation, visualizations, warnings, assumptions.',
     'preprocessing, evaluation, visualizations, warnings, and assumptions MUST each be arrays of strings, never arrays of objects.',
     'experiment MUST be {"mode":"quick|comparative|stability","primarySeeds":[integer],"baselineSeeds":[integer],"rationale":"string"}. baselineModelId is a string or null.',

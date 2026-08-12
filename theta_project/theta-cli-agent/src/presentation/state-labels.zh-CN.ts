@@ -37,6 +37,11 @@ export const stateLabelsZhCN: Readonly<Record<string, StateLabel>> = {
     explanation: '正在围绕已确认的数据内容补齐会影响模型和评价方案的研究决策。',
     step: 3,
   },
+  AwaitResearchIntentConfirmation: {
+    title: '确认研究意图',
+    explanation: '请核对研究问题、比较用途、时间用途、交付内容和约束；确认后才会生成方案。',
+    step: 3,
+  },
   ColumnConfirmation: {
     title: '确认数据列',
     explanation: '请确认正文、时间、ID 和元数据列，系统不会替你做业务语义决定。',

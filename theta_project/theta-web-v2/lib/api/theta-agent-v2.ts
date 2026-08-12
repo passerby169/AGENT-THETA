@@ -51,6 +51,7 @@ export interface ThetaRunStatus {
   datasetUnderstanding?: ThetaDatasetUnderstanding;
   datasetConfirmation?: ThetaDatasetConfirmation;
   researchIntent?: ThetaResearchIntent;
+  researchIntentSummary?: ThetaResearchIntentSummary;
   interviewMemory?: {
     resolvedGapIds: string[];
     defaultedGapIds: string[];
@@ -121,11 +122,31 @@ export interface ThetaDatasetConfirmation {
 export interface ThetaResearchIntent {
   researchQuestion: string;
   comparisonDimensions: string[];
+  comparisonPurpose: 'unknown' | 'display' | 'model';
   temporalAnalysis: boolean;
+  temporalPurpose: 'unknown' | 'display_trend' | 'topic_evolution';
   topicGranularity: 'coarse' | 'medium' | 'fine';
   successCriteria: string[];
   constraints: string[];
   unknowns: string[];
+}
+
+export interface ThetaResearchIntentSummary {
+  researchQuestion: string;
+  comparison: {
+    enabled: boolean;
+    dimensions: string[];
+    purpose: 'unknown' | 'display' | 'model';
+  };
+  temporal: {
+    enabled: boolean;
+    columns: string[];
+    purpose: 'unknown' | 'display_trend' | 'topic_evolution';
+  };
+  topicGranularity: 'coarse' | 'medium' | 'fine';
+  successCriteria: string[];
+  deliverables: string[];
+  constraints: string[];
 }
 
 export interface ThetaDecisionGap {
@@ -369,6 +390,7 @@ export type ThetaRunAction =
       metadataColumns: string[];
     }
   | { action: 'decisionAnswer'; text: string }
+  | { action: 'confirmIntent' }
   | { action: 'finishInterview' }
   | { action: 'adjustPlan'; text: string }
   | { action: 'approvePlan'; acceptDegradation: boolean }

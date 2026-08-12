@@ -33,8 +33,8 @@ export const validatePlannerDecisionV2 = (
   if (!candidate) errors.push(`模型不在当前候选目录中：${decision.modelId}`);
   else {
     if (!candidate.runnable) errors.push(`模型当前不可运行：${decision.modelId}`);
-    if (input.intent.temporalAnalysis && !candidate.capabilities.includes('temporal_topics')) {
-      errors.push('研究要求时间趋势，但所选模型不支持 temporal_topics。');
+    if (input.intent.temporalPurpose === 'topic_evolution' && !candidate.capabilities.includes('temporal_topics')) {
+      errors.push('研究要求模型直接学习主题演化，但所选模型不支持 temporal_topics。');
     }
     if (
       (input.confirmation.covariateColumns?.length ?? 0) > 0 &&

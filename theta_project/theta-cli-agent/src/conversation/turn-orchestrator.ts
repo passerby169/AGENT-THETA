@@ -60,6 +60,24 @@ const workflowCriticalLanguageTask = (
   task: NaturalLanguageRequest['task'],
 ): boolean => workflowCriticalLanguageTasks.has(task);
 
+const formatResearchIntentSummary = (
+  summary: NonNullable<ThetaWorkflowConversationContext['researchIntentSummary']>,
+): string => [
+  '请确认下面的研究意图：',
+  `研究问题：${summary.researchQuestion}`,
+  `比较：${summary.comparison.enabled
+    ? `${summary.comparison.dimensions.join('、')}（${summary.comparison.purpose === 'model' ? '进入模型估计' : '仅结果展示'}）`
+    : '不做分组比较'}`,
+  `时间：${summary.temporal.enabled
+    ? `${summary.temporal.columns.join('、') || '时间列'}（${summary.temporal.purpose === 'topic_evolution' ? '模型学习主题演化' : '训练后绘制趋势'}）`
+    : '不做时间分析'}`,
+  `主题粒度：${summary.topicGranularity === 'coarse' ? '少量宽泛主题' : summary.topicGranularity === 'fine' ? '更多细粒度主题' : '中等粒度'}`,
+  `成功标准：${summary.successCriteria.join('；') || '采用系统建议'}`,
+  `交付内容：${summary.deliverables.join('、') || '主题表、关键词和代表文本'}`,
+  `约束：${summary.constraints.join('；') || '无额外约束'}`,
+  '确认无误请输入 /approve；需要修改时，直接说明“把……改为……”。',
+].join('\n');
+
 export interface TurnContext {
   sessionId: string;
   activeRunId?: string;
@@ -200,6 +218,12 @@ export class ThetaTurnOrchestrator {
         ) {
           return this.columns(command.text, { ...context, activeRunId });
         }
+        if (
+          current.status.pendingActionRef === THETA_APPROVAL_KEYS.researchIntent ||
+          current.status.pendingActionRef === THETA_APPROVAL_KEYS.researchIntentReview
+        ) {
+          return this.answerV2Intent(command.text, { ...context, activeRunId });
+        }
       }
       return this.freeText(command.text, { ...context, activeRunId });
     }
@@ -223,6 +247,12 @@ export class ThetaTurnOrchestrator {
       runId,
       context.runtimeDb,
     );
+    if (
+      current.status.pendingActionRef === THETA_APPROVAL_KEYS.researchIntent ||
+      current.status.pendingActionRef === THETA_APPROVAL_KEYS.researchIntentReview
+    ) {
+      return this.answerV2Intent(text, context, current);
+    }
     if (
       current.status.pendingActionRef !==
       THETA_APPROVAL_KEYS.researchClarification
@@ -377,6 +407,67 @@ export class ThetaTurnOrchestrator {
           briefHash: merged.briefHash,
           workflow: resumed,
           languageTelemetry: language.telemetry,
+          response,
+        },
+        activeRunId: runId,
+      };
+    } catch (error) {
+      this.store.updateTurn(turn.turnId, 'failed', errorRecord(error));
+      throw error;
+    }
+  }
+
+  private async answerV2Intent(
+    text: string,
+    context: TurnContext,
+    existing?: ThetaWorkflowConversationContext,
+  ): Promise<TurnResult> {
+    const runId = requiredRun(context.activeRunId);
+    const current = existing ?? await this.workflow.conversationContext(
+      runId,
+      context.runtimeDb,
+    );
+    if (
+      current.status.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntent &&
+      current.status.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntentReview
+    ) {
+      throw new Error('当前没有等待回答或修改的研究意图。');
+    }
+    const correction = current.status.pendingActionRef === THETA_APPROVAL_KEYS.researchIntentReview;
+    const message = this.userMessage(
+      context,
+      runId,
+      correction ? 'research.intent-correction' : 'research.decision-answer',
+      text,
+    );
+    const turn = this.startTurn(context, runId, message);
+    try {
+      const resumed = await this.workflow.resume({
+        runId,
+        runtimeDb: context.runtimeDb,
+        decisionAnswer: text,
+        approvedBy: 'local_user',
+      });
+      this.store.updateTurn(turn.turnId, 'fsm_resumed');
+      const next = await this.workflow.conversationContext(runId, context.runtimeDb);
+      const response = next.decisionGap?.question ?? (
+        next.researchIntentSummary
+          ? formatResearchIntentSummary(next.researchIntentSummary)
+          : next.status.pendingReason ?? '研究意图已更新。'
+      );
+      this.assistantMessage(
+        context,
+        runId,
+        next.researchIntentSummary ? 'research.intent-summary' : 'research.decision-gap',
+        response,
+      );
+      this.store.updateTurn(turn.turnId, 'responded');
+      return {
+        value: {
+          kind: correction ? 'research.intent-revised' : 'research.intent-updated',
+          workflow: resumed,
+          researchIntent: next.researchIntent,
+          researchIntentSummary: next.researchIntentSummary,
           response,
         },
         activeRunId: runId,

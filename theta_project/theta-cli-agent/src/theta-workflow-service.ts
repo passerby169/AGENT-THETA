@@ -45,6 +45,11 @@ import {
 } from "./agent/decision-gap.js";
 import { ResearchIntentInterpreter } from './agent/research-intent-interpreter.js';
 import {
+  buildResearchIntentSummary,
+  researchIntentSummarySchema,
+  type ResearchIntentSummary,
+} from './agent/research-intent-summary.js';
+import {
   datasetConfirmationDraftSchema,
   datasetConfirmationSchema,
   datasetFactsSchema,
@@ -234,6 +239,7 @@ export interface ThetaWorkflowStatus {
   trainingReceipt?: RuntimeJsonValue;
   workflowVersion?: WorkflowVersion;
   metrics?: WorkflowMetricsV2;
+  researchIntentSummary?: ResearchIntentSummary;
 }
 
 export interface ThetaWorkflowEvidence {
@@ -256,6 +262,7 @@ export interface ThetaWorkflowConversationContext {
   researchIntent?: ResearchIntent;
   interviewMemory?: InterviewMemory;
   decisionGap?: DecisionGap;
+  researchIntentSummary?: ResearchIntentSummary;
 }
 
 export interface ThetaWorkflowPlan {
@@ -286,6 +293,7 @@ export interface ThetaWorkflowPlan {
   datasetUnderstanding?: RuntimeJsonValue;
   datasetConfirmation?: RuntimeJsonValue;
   researchIntent?: RuntimeJsonValue;
+  researchIntentSummary?: RuntimeJsonValue;
   plannerInputV2?: RuntimeJsonValue;
   plannerDecisionV2?: RuntimeJsonValue;
   plannerValidationV2?: RuntimeJsonValue;
@@ -582,6 +590,9 @@ export class ThetaWorkflowService {
         projection.pendingWait?.type === "timer"
           ? latestTimerReceipt(events) ?? variables.trainingReceipt
           : variables.trainingReceipt;
+      const intentSummary = researchIntentSummarySchema.safeParse(
+        variables.researchIntentSummary,
+      );
       return {
         ...status,
         workflowVersion,
@@ -590,6 +601,9 @@ export class ThetaWorkflowService {
           events,
           variables,
         }),
+        ...(intentSummary.success
+          ? { researchIntentSummary: intentSummary.data }
+          : {}),
         ...(liveTrainingReceipt === undefined
           ? {}
           : {
@@ -704,6 +718,13 @@ export class ThetaWorkflowService {
         ...(isRecord(variables.researchIntent)
           ? { researchIntent: researchIntentSchema.parse(variables.researchIntent) }
           : {}),
+        ...(isRecord(variables.researchIntentSummary)
+          ? {
+              researchIntentSummary: researchIntentSummarySchema.parse(
+                variables.researchIntentSummary,
+              ),
+            }
+          : {}),
         ...(isRecord(variables.interviewMemory)
           ? {
               interviewMemory: interviewMemorySchema.parse(
@@ -778,6 +799,7 @@ export class ThetaWorkflowService {
         ...runtimeVariable(variables, 'datasetUnderstanding'),
         ...runtimeVariable(variables, 'datasetConfirmation'),
         ...runtimeVariable(variables, 'researchIntent'),
+        ...runtimeVariable(variables, 'researchIntentSummary'),
         ...runtimeVariable(variables, 'plannerInputV2'),
         ...runtimeVariable(variables, 'plannerDecisionV2'),
         ...runtimeVariable(variables, 'plannerValidationV2'),
@@ -987,7 +1009,10 @@ export class ThetaWorkflowService {
       };
     }
     if (request.decisionAnswer !== undefined) {
-      if (pending.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntent) {
+      if (
+        pending.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntent &&
+        pending.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntentReview
+      ) {
         throw new Error(
           `Research intent answer cannot resolve ${pending.pendingActionRef}.`,
         );
@@ -1402,7 +1427,16 @@ const executeThetaState = async (
         const gaps = deriveDecisionGaps(understanding, confirmation, intent);
         const nextGap = selectNextDecisionGap(gaps, memory);
         if (!nextGap) {
-          return transition(THETA_WORKFLOW_STATES.recommendModel);
+          return transition(
+            THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+            {
+              researchIntentSummary: buildResearchIntentSummary(
+                intent,
+                confirmation,
+                now(),
+              ),
+            },
+          );
         }
         const lastResume = execution.projection.lastResume;
         const resume = isRecord(lastResume?.payload)
@@ -1448,6 +1482,95 @@ const executeThetaState = async (
             delegated,
           },
           processedDecisionAnswerCommandId: lastResume.commandId,
+        });
+      }
+      case THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation: {
+        const understanding = datasetUnderstandingDraftSchema.parse(
+          variables.datasetUnderstanding,
+        );
+        const confirmation = datasetConfirmationSchema.parse(
+          variables.datasetConfirmation,
+        );
+        const intent = researchIntentSchema.parse(variables.researchIntent);
+        const summary = buildResearchIntentSummary(intent, confirmation, now());
+        const lastResume = execution.projection.lastResume;
+        const resume = isRecord(lastResume?.payload)
+          ? lastResume.payload
+          : undefined;
+        if (
+          resume?.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntentReview ||
+          !lastResume?.commandId ||
+          stringValue(variables.processedResearchIntentReviewCommandId) ===
+            lastResume.commandId
+        ) {
+          return researchIntentReviewWait(summary);
+        }
+        if (resume.decision === 'rejected') {
+          return transition(THETA_WORKFLOW_STATES.researchIntentInterview, {
+            researchIntent: researchIntentSchema.parse({
+              ...intent,
+              unknowns: unique([...intent.unknowns, 'research_goal']),
+            }),
+            interviewMemory: emptyInterviewMemory(),
+            processedResearchIntentReviewCommandId: lastResume.commandId,
+          });
+        }
+        if (
+          stringValue(variables.decisionAnswerActionRef) ===
+            THETA_APPROVAL_KEYS.researchIntentReview
+        ) {
+          const revisedIntent = await new ResearchIntentInterpreter().revise({
+            current: intent,
+            confirmation,
+            answer: requiredString(
+              variables.decisionAnswer,
+              'research intent correction',
+            ),
+          });
+          const previousMemory = interviewMemorySchema.parse(
+            variables.interviewMemory ?? emptyInterviewMemory(),
+          );
+          const reopened = new Set(revisedIntent.unknowns);
+          const memory = interviewMemorySchema.parse({
+            ...previousMemory,
+            askedQuestionHashes: [],
+            resolvedGapIds: previousMemory.resolvedGapIds.filter(
+              (id) => !reopened.has(id),
+            ),
+            defaultedGapIds: previousMemory.defaultedGapIds.filter(
+              (id) => !reopened.has(id),
+            ),
+          });
+          const revisedGaps = deriveDecisionGaps(
+            understanding,
+            confirmation,
+            revisedIntent,
+          );
+          const nextState = selectNextDecisionGap(revisedGaps, memory)
+            ? THETA_WORKFLOW_STATES.researchIntentInterview
+            : THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation;
+          return transition(nextState, {
+            researchIntent: revisedIntent,
+            interviewMemory: memory,
+            researchIntentSummary: buildResearchIntentSummary(
+              revisedIntent,
+              confirmation,
+              now(),
+            ),
+            researchIntentConfirmed: null,
+            decisionAnswer: null,
+            decisionAnswerActionRef: null,
+            processedResearchIntentReviewCommandId: lastResume.commandId,
+          });
+        }
+        return transition(THETA_WORKFLOW_STATES.recommendModel, {
+          researchIntentSummary: summary,
+          researchIntentConfirmed: {
+            intentHash: summary.intentHash,
+            confirmedBy: lastResume.principalId ?? USER_ID,
+            confirmedAt: lastResume.resumedAt ?? now(),
+          },
+          processedResearchIntentReviewCommandId: lastResume.commandId,
         });
       }
       case THETA_WORKFLOW_STATES.awaitColumnConfirmation: {
@@ -1525,6 +1648,16 @@ const executeThetaState = async (
           const facts = datasetFactsSchema.parse(variables.datasetFacts);
           const confirmation = datasetConfirmationSchema.parse(variables.datasetConfirmation);
           const intent = researchIntentSchema.parse(variables.researchIntent);
+          const summary = buildResearchIntentSummary(intent, confirmation, now());
+          const intentConfirmation = isRecord(variables.researchIntentConfirmed)
+            ? variables.researchIntentConfirmed
+            : undefined;
+          if (stringValue(intentConfirmation?.intentHash) !== summary.intentHash) {
+            return transition(
+              THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+              { researchIntentSummary: summary },
+            );
+          }
           const queries = planEvidenceQueriesV2({ facts, confirmation, intent });
           const [catalog, ...evidenceResults] = await Promise.all([
             invoke(THETA_TOOL_IDS.modelCatalog, { includeExperimental: true }),
@@ -2701,6 +2834,10 @@ const hydrateVariables = async (
       const decisionAnswer = stringProperty(event.payload, "decisionAnswer");
       if (decisionAnswer) {
         variables.decisionAnswer = decisionAnswer;
+        variables.decisionAnswerActionRef = stringProperty(
+          event.payload,
+          "pendingActionRef",
+        );
       }
       const planAdjustment = recordProperty(event.payload, "planAdjustment");
       if (planAdjustment) {
@@ -2733,6 +2870,7 @@ const runtimeVariable = (
     | 'datasetUnderstanding'
     | 'datasetConfirmation'
     | 'researchIntent'
+    | 'researchIntentSummary'
     | 'plannerInputV2'
     | 'plannerDecisionV2'
     | 'plannerValidationV2'
@@ -3017,6 +3155,20 @@ const v2DataProfile = (
   sensitiveDataRisk: facts.sensitiveDataRisk,
   textColumns: confirmation.textColumns,
   timeColumns: confirmation.timeColumns,
+});
+
+const researchIntentReviewWait = (
+  summary: ResearchIntentSummary,
+): BoundedStateExecutionDecision => ({
+  result: {
+    kind: 'waiting',
+    wait: {
+      type: 'human',
+      pendingActionRef: THETA_APPROVAL_KEYS.researchIntentReview,
+      reason: '请确认研究意图摘要。确认后才会生成方案；如需修改，请直接用自然语言说明。',
+      metadata: summary as unknown as Record<string, RuntimeJsonValue>,
+    },
+  },
 });
 
 const plannerDecisionToTrainingPlan = (

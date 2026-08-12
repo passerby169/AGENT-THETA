@@ -20,7 +20,11 @@ import { ResultService } from '../results/result-service.js';
 import { deleteLocalRun, listLocalRuns } from '../storage/run-catalog.js';
 import { SQLiteConversationStore } from '../storage/sqlite-conversation-store.js';
 import { SQLiteDatasetRegistry, type DatasetRecord } from '../storage/dataset-registry.js';
-import { ThetaWorkflowService } from '../theta-workflow-service.js';
+import { THETA_APPROVAL_KEYS } from '../theta-domain.js';
+import {
+  ThetaWorkflowService,
+  type ThetaWorkflowConversationContext,
+} from '../theta-workflow-service.js';
 import { resolveDatasetFile } from '../tools/dataset-path-policy.js';
 import { runThetaModelCatalog } from '../tools/hypha-runner.js';
 import { runThetaTrainingStatus } from '../tools/hypha-runner.js';
@@ -272,6 +276,9 @@ const routeRequest = async (
         ...(context.remoteSampleReceipt ? { remoteSampleReceipt: context.remoteSampleReceipt } : {}),
         ...(context.datasetConfirmation ? { datasetConfirmation: context.datasetConfirmation } : {}),
         ...(context.researchIntent ? { researchIntent: context.researchIntent } : {}),
+        ...(context.researchIntentSummary
+          ? { researchIntentSummary: context.researchIntentSummary }
+          : {}),
         ...(context.interviewMemory ? { interviewMemory: context.interviewMemory } : {}),
         ...(context.decisionGap ? { decisionGap: context.decisionGap } : {}),
       },
@@ -669,6 +676,16 @@ const executeRunAction = async (
           content: context.decisionGap.question,
           createdAt: new Date().toISOString(),
         });
+      } else if (context.researchIntentSummary) {
+        store.appendMessage({
+          messageId: `message.assistant.${randomUUID()}`,
+          sessionId,
+          runId: result.runId,
+          role: 'assistant',
+          messageKind: 'research.intent-summary',
+          content: formatWebIntentSummary(context.researchIntentSummary),
+          createdAt: new Date().toISOString(),
+        });
       } else {
         store.appendMessage({
           messageId: `message.assistant.${randomUUID()}`,
@@ -693,6 +710,27 @@ const executeRunAction = async (
     } finally {
       store.close();
     }
+    return result;
+  }
+  if (action.action === 'confirmIntent') {
+    appendRunMessage(runtimeDb, runId, 'user', 'research.intent-confirmation', '确认研究意图摘要。');
+    const status = await workflow.status(runId, runtimeDb);
+    if (status.pendingActionRef !== THETA_APPROVAL_KEYS.researchIntentReview) {
+      throw new Error('当前不是研究意图确认阶段。');
+    }
+    const result = await workflow.resume({
+      runId,
+      runtimeDb,
+      approve: true,
+      approvedBy: 'local_user',
+    });
+    appendRunMessage(
+      runtimeDb,
+      runId,
+      'assistant',
+      'research.intent-confirmed',
+      '研究意图已确认，正在基于数据事实、模型能力和 RAG 证据生成方案。',
+    );
     return result;
   }
   const store = new SQLiteConversationStore(runtimeDb);
@@ -1035,6 +1073,24 @@ const boundedLimit = (value: string | null): number => {
   const parsed = value ? Number.parseInt(value, 10) : 30;
   return Number.isInteger(parsed) ? Math.max(1, Math.min(parsed, 100)) : 30;
 };
+
+const formatWebIntentSummary = (
+  summary: NonNullable<ThetaWorkflowConversationContext['researchIntentSummary']>,
+): string => [
+  '请确认研究意图摘要：',
+  `研究问题：${summary.researchQuestion}`,
+  `比较用途：${summary.comparison.enabled
+    ? `${summary.comparison.dimensions.join('、')}（${summary.comparison.purpose === 'model' ? '进入模型估计' : '仅用于结果展示'}）`
+    : '不比较'}`,
+  `时间用途：${summary.temporal.enabled
+    ? `${summary.temporal.columns.join('、') || '时间列'}（${summary.temporal.purpose === 'topic_evolution' ? '模型学习主题演化' : '训练后绘制趋势'}）`
+    : '不做时间分析'}`,
+  `主题粒度：${summary.topicGranularity === 'coarse' ? '少量宽泛主题' : summary.topicGranularity === 'fine' ? '更多细粒度主题' : '中等粒度'}`,
+  `成功标准：${summary.successCriteria.join('；') || '采用系统建议'}`,
+  `交付内容：${summary.deliverables.join('、') || '主题表、关键词和代表文本'}`,
+  `约束：${summary.constraints.join('；') || '无额外约束'}`,
+  '确认后再生成方案；需要修改时可直接用自然语言说明。',
+].join('\n');
 
 const parsePort = (value: string | undefined): number => {
   const parsed = value ? Number.parseInt(value, 10) : 4318;

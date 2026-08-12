@@ -188,6 +188,35 @@ const workflow = (
       lines: [text(record.pendingReason)!],
     });
   }
+  if (state === 'AwaitResearchIntentConfirmation') {
+    const intentSummary = asRecord(record.researchIntentSummary);
+    const comparison = asRecord(intentSummary?.comparison);
+    const temporal = asRecord(intentSummary?.temporal);
+    if (intentSummary) {
+      sections.push({
+        title: '研究意图摘要',
+        lines: [
+          pair('研究问题', intentSummary.researchQuestion),
+          pair(
+            '比较用途',
+            comparison?.enabled === true
+              ? `${strings(comparison.dimensions).join('、')}（${comparison.purpose === 'model' ? '进入模型估计' : '仅结果展示'}）`
+              : '不比较',
+          ),
+          pair(
+            '时间用途',
+            temporal?.enabled === true
+              ? `${strings(temporal.columns).join('、') || '时间列'}（${temporal.purpose === 'topic_evolution' ? '模型学习主题演化' : '训练后绘制趋势'}）`
+              : '不做时间分析',
+          ),
+          pair('主题粒度', intentSummary.topicGranularity),
+          pair('成功标准', strings(intentSummary.successCriteria).join('；')),
+          pair('交付内容', strings(intentSummary.deliverables).join('、')),
+          pair('约束', strings(intentSummary.constraints).join('；')),
+        ].filter((line): line is string => Boolean(line)),
+      });
+    }
+  }
   return {
     kind: 'workflow.status',
     title: label.title,

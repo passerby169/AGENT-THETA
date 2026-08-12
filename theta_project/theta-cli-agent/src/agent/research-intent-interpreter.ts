@@ -9,16 +9,27 @@ import {
 } from '../dataset-understanding/contracts.js';
 import {
   applyDecisionGapAnswer,
+  explicitComparisonPurpose,
+  explicitTemporalPurpose,
   interviewMemorySchema,
+  reconcilePurposeUnknowns,
   type DecisionGap,
   type DecisionGapTurn,
   type InterviewMemory,
 } from './decision-gap.js';
+import {
+  mergeResearchIntentPatches,
+  normalizeResearchIntent,
+  normalizeResearchIntentPatch,
+  type ResearchIntentPatch,
+} from './research-intent-normalizer.js';
 
 const patchSchema = z.object({
   researchQuestion: z.string().min(1).max(2000).optional(),
   comparisonDimensions: z.array(z.string().min(1)).max(12).optional(),
+  comparisonPurpose: z.enum(['unknown', 'display', 'model']).optional(),
   temporalAnalysis: z.boolean().optional(),
+  temporalPurpose: z.enum(['unknown', 'display_trend', 'topic_evolution']).optional(),
   topicGranularity: z.enum(['coarse', 'medium', 'fine']).optional(),
   successCriteria: z.array(z.string().min(1)).max(12).optional(),
   constraints: z.array(z.string().min(1)).max(12).optional(),
@@ -73,16 +84,24 @@ export class ResearchIntentInterpreter {
         metadata: { purpose: 'interpret_research_intent' },
       });
       const parsed = resultSchema.parse(response.output);
-      const safePatch = {
-        ...sanitizeLanguagePatch(parsed.patch, input.confirmation),
-        ...explicitPatch,
-      };
+      const safePatch = mergeResearchIntentPatches(
+        sanitizePurposePatch(
+          sanitizeLanguagePatch(parsed.patch, input.confirmation),
+          input.answer,
+        ),
+        explicitPatch,
+        input.current,
+      );
       const validGapIds = new Set(input.gaps.map((gap) => gap.id));
       const answered = parsed.answeredDecisionIds.filter((id) => validGapIds.has(id));
       for (const id of resolvedGapIdsForPatch(safePatch, input.gaps)) {
         if (!answered.includes(id)) answered.push(id);
       }
-      if (!answered.includes(input.currentGap.id) && !parsed.needsClarification) {
+      if (
+        !answered.includes(input.currentGap.id) &&
+        !parsed.needsClarification &&
+        !['comparison_purpose', 'temporal_purpose'].includes(input.currentGap.category)
+      ) {
         answered.push(input.currentGap.id);
       }
       const resolvedGapIds = unique([...input.memory.resolvedGapIds, ...answered]);
@@ -90,14 +109,20 @@ export class ResearchIntentInterpreter {
         ...input.memory.defaultedGapIds,
         ...parsed.acceptedDefaultIds.filter((id) => validGapIds.has(id)),
       ]);
-      const unknowns = input.current.unknowns.filter((id) => !resolvedGapIds.includes(id));
-      const intent = researchIntentSchema.parse({
+      const draftIntent = researchIntentSchema.parse({
         ...input.current,
         ...safePatch,
         resourceBudget: {
           ...input.current.resourceBudget,
           ...(safePatch.resourceBudget ?? {}),
         },
+      });
+      const unknowns = reconcilePurposeUnknowns(
+        draftIntent,
+        input.current.unknowns.filter((id) => !resolvedGapIds.includes(id)),
+      );
+      const intent = researchIntentSchema.parse({
+        ...draftIntent,
         unknowns,
       });
       const memory = interviewMemorySchema.parse({
@@ -130,6 +155,52 @@ export class ResearchIntentInterpreter {
       return fallback;
     }
   }
+
+  async revise(input: {
+    current: ResearchIntent;
+    confirmation: DatasetConfirmation;
+    answer: string;
+  }): Promise<ResearchIntent> {
+    const explicitPatch = extractExplicitPatch(input.answer, input.confirmation);
+    const provider = createMiniMaxProviderFromEnv({ timeoutMs: 90_000 });
+    let languagePatch: ResearchIntentPatch = {};
+    if (provider) {
+      try {
+        const response = await provider.infer({
+          runId: `theta-research-intent-revision-${input.confirmation.datasetHash.slice(0, 16)}`,
+          stepId: 'revise-research-intent',
+          modelAlias: provider.model,
+          input: { messages: revisionMessages(input) },
+          options: {
+            temperature: 0,
+            maxTokens: 900,
+            extra: { toolChoice: 'none', jsonObject: true },
+          },
+          trace: false,
+          metadata: { purpose: 'revise_research_intent' },
+        });
+        languagePatch = sanitizePurposePatch(
+          sanitizeLanguagePatch(patchSchema.parse(response.output), input.confirmation),
+          input.answer,
+        );
+      } catch {
+        languagePatch = {};
+      }
+    }
+    const patch = mergeResearchIntentPatches(languagePatch, explicitPatch, input.current);
+    const draft = researchIntentSchema.parse({
+      ...input.current,
+      ...patch,
+      resourceBudget: {
+        ...input.current.resourceBudget,
+        ...(patch.resourceBudget ?? {}),
+      },
+    });
+    return researchIntentSchema.parse({
+      ...draft,
+      unknowns: reconcilePurposeUnknowns(draft),
+    });
+  }
 }
 
 const messages = (input: {
@@ -145,6 +216,8 @@ const messages = (input: {
     'Extract every explicit intent, not only the currently asked decision.',
     'Return JSON only with patch, answeredDecisionIds, acceptedDefaultIds, evidenceSpans, contradictions, and needsClarification.',
     'Do not infer dataset columns outside the confirmed roles. Empty comparisonDimensions means no comparison.',
+    'comparisonPurpose is display only when groups are post-training output, or model only when the user explicitly wants training covariates.',
+    'temporalPurpose is display_trend for post-training charts, or topic_evolution only when the model must learn topic evolution.',
     'successCriteria, constraints, deliverables, focusAreas, and comparisonDimensions are arrays of short strings. resourceBudget is an object.',
   ].join(' '),
 }, {
@@ -155,6 +228,27 @@ const messages = (input: {
     currentDecision: input.currentGap,
     openDecisions: input.gaps,
     answer: input.answer,
+  }),
+}];
+
+const revisionMessages = (input: {
+  current: ResearchIntent;
+  confirmation: DatasetConfirmation;
+  answer: string;
+}): PromptMessage[] => [{
+  role: 'system',
+  content: [
+    'Convert the user correction into a partial THETA ResearchIntent JSON object.',
+    'Return only fields that the user explicitly changes and return JSON only.',
+    'Never mix researchQuestion, deliverables, successCriteria, constraints, or resourceBudget.',
+    'Use only confirmed dataset columns. Do not guess comparisonPurpose or temporalPurpose.',
+  ].join(' '),
+}, {
+  role: 'user',
+  content: JSON.stringify({
+    currentIntent: input.current,
+    confirmedData: input.confirmation,
+    correction: input.answer,
   }),
 }];
 
@@ -176,23 +270,33 @@ const extractExplicitPatch = (
   const mentionedColumns = columns.filter((column) =>
     new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(column)}([^A-Za-z0-9_]|$)`, 'iu').test(answer),
   );
+  const researchQuestion = clauseAfter(
+    answer,
+    /(?:研究问题|研究目标)(?:改为|调整为|是|为|包括)?\s*/u,
+    /(?:成功标准|最终需要|交付|输出|约束|限制|只使用|使用本地)/u,
+  );
+  if (researchQuestion) patch.researchQuestion = researchQuestion;
   if (/不比较|无需比较|不做.{0,4}(?:比较|对比)/u.test(answer)) {
     patch.comparisonDimensions = [];
   } else if (mentionedColumns.length > 0 && /比较|对比|分组|维度|按照|按/u.test(answer)) {
     patch.comparisonDimensions = mentionedColumns;
   }
+  const comparisonPurpose = explicitComparisonPurpose(answer);
+  if (comparisonPurpose) patch.comparisonPurpose = comparisonPurpose;
   if (/不(?:需要|做|分析|考虑).{0,6}(?:时间|趋势)|无需.{0,6}(?:时间|趋势)/u.test(answer)) {
     patch.temporalAnalysis = false;
   } else if (/时间|日期|年度|月份|季度|趋势|时序/u.test(answer)) {
     patch.temporalAnalysis = true;
   }
+  const temporalPurpose = explicitTemporalPurpose(answer);
+  if (temporalPurpose) patch.temporalPurpose = temporalPurpose;
   if (/细粒度|更多主题|15个以上/u.test(answer)) patch.topicGranularity = 'fine';
   else if (/宽泛|少量主题|5\s*[-到至]\s*8/u.test(answer)) patch.topicGranularity = 'coarse';
   else if (/中等|8\s*[-到至]\s*1[02]|10\s*[-到至]\s*15/u.test(answer)) patch.topicGranularity = 'medium';
 
-  const success = clauseAfter(answer, /成功标准(?:是|为|包括)?\s*/u, /(?:只使用|限制|约束|最终需要|交付|输出)/u);
+  const success = clauseAfter(answer, /成功标准(?:改为|调整为|是|为|包括)?\s*/u, /(?:只使用|限制|约束|最终需要|交付|输出)/u);
   if (success) patch.successCriteria = splitSemanticItems(success);
-  const deliverables = clauseAfter(answer, /(?:最终需要|交付(?:内容)?(?:是|为|包括)?|输出(?:是|为|包括)?)\s*/u);
+  const deliverables = clauseAfter(answer, /(?:最终需要|交付(?:内容)?(?:改为|调整为|是|为|包括)?|输出(?:内容)?(?:改为|调整为|是|为|包括)?)\s*/u);
   if (deliverables) patch.deliverables = splitSemanticItems(deliverables);
   const constraints: string[] = [];
   for (const pattern of [
@@ -216,7 +320,7 @@ const extractExplicitPatch = (
         : {}),
     };
   }
-  return patchSchema.parse(patch);
+  return patchSchema.parse(normalizeResearchIntentPatch(patch));
 };
 
 const sanitizeLanguagePatch = (
@@ -235,6 +339,24 @@ const sanitizeLanguagePatch = (
   };
 };
 
+const sanitizePurposePatch = (
+  patch: z.infer<typeof patchSchema>,
+  answer: string,
+): z.infer<typeof patchSchema> => {
+  const comparisonPurpose = explicitComparisonPurpose(answer);
+  const temporalPurpose = explicitTemporalPurpose(answer);
+  const {
+    comparisonPurpose: _ignoredComparisonPurpose,
+    temporalPurpose: _ignoredTemporalPurpose,
+    ...safe
+  } = patch;
+  return patchSchema.parse({
+    ...safe,
+    ...(comparisonPurpose ? { comparisonPurpose } : {}),
+    ...(temporalPurpose ? { temporalPurpose } : {}),
+  });
+};
+
 const applyPatchToTurn = (
   turn: DecisionGapTurn,
   patch: z.infer<typeof patchSchema>,
@@ -243,16 +365,22 @@ const applyPatchToTurn = (
   if (Object.keys(patch).length === 0) return turn;
   const newlyResolved = resolvedGapIdsForPatch(patch, gaps);
   const resolvedGapIds = unique([...turn.memory.resolvedGapIds, ...newlyResolved]);
+  const draft = normalizeResearchIntent(researchIntentSchema.parse({
+    ...turn.intent,
+    ...patch,
+    resourceBudget: {
+      ...turn.intent.resourceBudget,
+      ...(patch.resourceBudget ?? {}),
+    },
+  }));
   return {
     ...turn,
     intent: researchIntentSchema.parse({
-      ...turn.intent,
-      ...patch,
-      resourceBudget: {
-        ...turn.intent.resourceBudget,
-        ...(patch.resourceBudget ?? {}),
-      },
-      unknowns: turn.intent.unknowns.filter((id) => !resolvedGapIds.includes(id)),
+      ...draft,
+      unknowns: reconcilePurposeUnknowns(
+        draft,
+        turn.intent.unknowns.filter((id) => !resolvedGapIds.includes(id)),
+      ),
     }),
     memory: interviewMemorySchema.parse({ ...turn.memory, resolvedGapIds }),
     extractedFields: unique([...turn.extractedFields, ...Object.keys(patch)]),
@@ -265,7 +393,9 @@ const resolvedGapIdsForPatch = (
 ): string[] => gaps.filter((gap) => {
   if (gap.category === 'research_goal') return patch.researchQuestion !== undefined;
   if (gap.category === 'comparison') return patch.comparisonDimensions !== undefined;
+  if (gap.category === 'comparison_purpose') return patch.comparisonPurpose !== undefined && patch.comparisonPurpose !== 'unknown';
   if (gap.category === 'temporal') return patch.temporalAnalysis !== undefined;
+  if (gap.category === 'temporal_purpose') return patch.temporalPurpose !== undefined && patch.temporalPurpose !== 'unknown';
   if (gap.category === 'granularity') return patch.topicGranularity !== undefined;
   if (gap.category === 'success') return patch.successCriteria !== undefined;
   return patch.constraints !== undefined || patch.resourceBudget !== undefined;

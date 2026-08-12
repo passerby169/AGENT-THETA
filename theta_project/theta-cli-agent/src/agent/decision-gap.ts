@@ -9,7 +9,10 @@ import {
 
 export const decisionGapSchema = z.object({
   id: z.string().min(1),
-  category: z.enum(['research_goal', 'comparison', 'temporal', 'granularity', 'success', 'constraint']),
+  category: z.enum([
+    'research_goal', 'comparison', 'comparison_purpose', 'temporal',
+    'temporal_purpose', 'granularity', 'success', 'constraint',
+  ]),
   question: z.string().min(1),
   whyItMatters: z.string().min(1),
   planImpact: z.string().min(1),
@@ -56,6 +59,34 @@ export const applyDecisionGapDefaults = (
     appliedDefaults.push(...turn.appliedDefaults);
     extractedFields.push(...turn.extractedFields);
   }
+  if (intent.comparisonDimensions.length > 0 && intent.comparisonPurpose === 'unknown') {
+    intent = researchIntentSchema.parse({
+      ...intent,
+      comparisonPurpose: 'display',
+      unknowns: intent.unknowns.filter((id) => id !== 'comparison_purpose'),
+    });
+    nextMemory = interviewMemorySchema.parse({
+      ...nextMemory,
+      resolvedGapIds: unique([...nextMemory.resolvedGapIds, 'comparison_purpose']),
+      defaultedGapIds: unique([...nextMemory.defaultedGapIds, 'comparison_purpose']),
+    });
+    appliedDefaults.push('比较列只用于结果展示，不进入模型训练。');
+    extractedFields.push('comparisonPurpose');
+  }
+  if (intent.temporalAnalysis && intent.temporalPurpose === 'unknown') {
+    intent = researchIntentSchema.parse({
+      ...intent,
+      temporalPurpose: 'display_trend',
+      unknowns: intent.unknowns.filter((id) => id !== 'temporal_purpose'),
+    });
+    nextMemory = interviewMemorySchema.parse({
+      ...nextMemory,
+      resolvedGapIds: unique([...nextMemory.resolvedGapIds, 'temporal_purpose']),
+      defaultedGapIds: unique([...nextMemory.defaultedGapIds, 'temporal_purpose']),
+    });
+    appliedDefaults.push('时间列只用于训练后趋势展示，不要求模型学习主题演化。');
+    extractedFields.push('temporalPurpose');
+  }
   return {
     intent,
     memory: nextMemory,
@@ -76,7 +107,9 @@ export const createInitialResearchIntent = (): ResearchIntent =>
     schemaVersion: '2.0.0',
     researchQuestion: '探索数据中的主要结构与可解释模式',
     comparisonDimensions: [],
+    comparisonPurpose: 'unknown',
     temporalAnalysis: false,
+    temporalPurpose: 'unknown',
     topicGranularity: 'medium',
     successCriteria: [],
     constraints: [],
@@ -107,6 +140,13 @@ export const deriveDecisionGaps = (
       '影响模型能力约束和分组输出。', false,
       '本轮不做分组比较。', confirmation.metadataColumns));
   }
+  if (intent.comparisonDimensions.length > 0 && intent.comparisonPurpose === 'unknown') {
+    gaps.push(gap('comparison_purpose', 'comparison_purpose',
+      `你希望 ${intent.comparisonDimensions.join('、')} 只用于结果中的分组对比，还是作为训练协变量让模型估计它们与主题的关系？`,
+      '展示分组和训练协变量是两种不同用途，不能仅凭出现了比较列自动决定。',
+      '影响是否要求模型支持 metadata effects，以及列是否进入训练。', true,
+      '只用于结果中的分组展示，不进入模型训练。', intent.comparisonDimensions));
+  }
   if (hasUnknown('temporal')) {
     const candidates = confirmation.timeColumns.join('、');
     gaps.push(gap('temporal', 'temporal',
@@ -116,6 +156,13 @@ export const deriveDecisionGaps = (
       '时间趋势要求可用时间列和支持时间建模的方案。',
       '影响 DTM 等模型候选与时间切片。', false,
       candidates ? '启用时间趋势分析。' : '不启用原生时间趋势分析。', confirmation.timeColumns));
+  }
+  if (intent.temporalAnalysis && intent.temporalPurpose === 'unknown') {
+    gaps.push(gap('temporal_purpose', 'temporal_purpose',
+      `时间列 ${confirmation.timeColumns.join('、') || '尚未确认'} 是只用于训练后绘制趋势，还是要求模型直接学习主题随时间的演化？`,
+      '后处理趋势图不要求动态主题模型，原生主题演化才要求 DTM 等时间模型。',
+      '影响候选模型过滤、时间切片和评价方式。', true,
+      '只在训练后按时间聚合并绘制趋势，不要求模型学习主题演化。', confirmation.timeColumns));
   }
   if (hasUnknown('success')) {
     gaps.push(gap('success', 'success',
@@ -145,7 +192,10 @@ export const applyDecisionGapAnswer = (
   ]);
   const defaulted = new Set(memory.defaultedGapIds);
   if (useDefault) defaulted.add(gap.id);
-  const unknowns = current.unknowns.filter((item) => !resolved.has(item));
+  const unknowns = reconcilePurposeUnknowns(
+    researchIntentSchema.parse({ ...current, ...patch }),
+    current.unknowns.filter((item) => !resolved.has(item)),
+  );
   const intent = researchIntentSchema.parse({ ...current, ...patch, unknowns });
   const updatedMemory = interviewMemorySchema.parse({
     ...memory,
@@ -176,8 +226,12 @@ const answerPatch = (gap: DecisionGap, answer: string): Partial<ResearchIntent> 
       return { researchQuestion: answer };
     case 'comparison':
       return { comparisonDimensions: isNoComparison(answer) ? [] : splitValues(answer) };
+    case 'comparison_purpose':
+      return { comparisonPurpose: explicitComparisonPurpose(answer) ?? 'display' };
     case 'temporal':
       return { temporalAnalysis: isAffirmative(answer) };
+    case 'temporal_purpose':
+      return { temporalPurpose: explicitTemporalPurpose(answer) ?? 'display_trend' };
     case 'granularity':
       return { topicGranularity: /细|具体|fine/iu.test(answer) ? 'fine' : /粗|概括|coarse/iu.test(answer) ? 'coarse' : 'medium' };
     case 'success':
@@ -204,9 +258,19 @@ const extractAnswerPatch = (
       : extractComparisonDimensions(answer);
     resolvedGapIds.add('comparison');
   }
+  const comparisonPurpose = explicitComparisonPurpose(answer);
+  if (comparisonPurpose) {
+    patch.comparisonPurpose = comparisonPurpose;
+    resolvedGapIds.add('comparison_purpose');
+  }
   if (current.unknowns.includes('success') && hasSuccessDecision(answer)) {
     patch.successCriteria = splitValues(answer);
     resolvedGapIds.add('success');
+  }
+  const temporalPurpose = explicitTemporalPurpose(answer);
+  if (temporalPurpose) {
+    patch.temporalPurpose = temporalPurpose;
+    resolvedGapIds.add('temporal_purpose');
   }
   if (/\bCPU\b|\bGPU\b|显存|内存|离线|实验/iu.test(answer)) {
     patch.constraints = unique([...current.constraints, ...splitValues(answer)]);
@@ -218,7 +282,9 @@ const defaultPatch = (gap: DecisionGap): Partial<ResearchIntent> => {
   switch (gap.category) {
     case 'research_goal': return { researchQuestion: gap.defaultResolution };
     case 'comparison': return { comparisonDimensions: [] };
+    case 'comparison_purpose': return { comparisonPurpose: 'display' };
     case 'temporal': return { temporalAnalysis: /启用/iu.test(gap.defaultResolution) };
+    case 'temporal_purpose': return { temporalPurpose: 'display_trend' };
     case 'granularity': return { topicGranularity: 'medium' };
     case 'success': return { successCriteria: [gap.defaultResolution] };
     case 'constraint': return { constraints: [gap.defaultResolution] };
@@ -257,3 +323,31 @@ const hasSuccessDecision = (value: string): boolean =>
   /成功|结果|输出|交付|图表|关键词|代表文本|可解释|准确|稳定|趋势/iu.test(value);
 const questionHash = (value: string): string => createHash('sha256').update(value.trim()).digest('hex');
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
+
+export const explicitComparisonPurpose = (
+  value: string,
+): ResearchIntent['comparisonPurpose'] | undefined => {
+  if (/只(?:用于|做).{0,10}(?:展示|分组|对比|图表)|结果.{0,8}(?:展示|分组|对比)|后处理|不进入模型|不用于训练/iu.test(value)) return 'display';
+  if (/训练协变量|进入模型|作为.{0,8}(?:协变量|训练输入)|(?:比较|分组|这些列|该列|它们).{0,10}用于训练|模型(?:直接)?估计|估计.{0,8}(?:影响|关系)|控制变量|metadata effects?/iu.test(value)) return 'model';
+  return undefined;
+};
+
+export const explicitTemporalPurpose = (
+  value: string,
+): ResearchIntent['temporalPurpose'] | undefined => {
+  if (/只(?:用于|做).{0,10}(?:趋势|展示|图表|聚合)|训练后.{0,8}(?:趋势|聚合|展示)|后处理.{0,8}(?:趋势|时间)|不要求模型.{0,8}(?:时间|演化)/iu.test(value)) return 'display_trend';
+  if (/主题演化|动态主题|模型(?:直接)?学习.{0,8}(?:时间|演化|变化)|时间进入模型|原生时间模型|\bDTM\b/iu.test(value)) return 'topic_evolution';
+  return undefined;
+};
+
+export const reconcilePurposeUnknowns = (
+  intent: ResearchIntent,
+  unknowns: string[] = intent.unknowns,
+): string[] => {
+  const next = new Set(unknowns);
+  if (intent.comparisonDimensions.length > 0 && intent.comparisonPurpose === 'unknown') next.add('comparison_purpose');
+  else next.delete('comparison_purpose');
+  if (intent.temporalAnalysis && intent.temporalPurpose === 'unknown') next.add('temporal_purpose');
+  else next.delete('temporal_purpose');
+  return [...next];
+};

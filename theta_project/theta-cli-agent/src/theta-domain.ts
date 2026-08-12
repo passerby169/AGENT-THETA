@@ -28,6 +28,7 @@ export const THETA_WORKFLOW_STATES = {
   awaitDatasetUnderstandingConfirmation:
     "AwaitDatasetUnderstandingConfirmation",
   researchIntentInterview: "ResearchIntentInterview",
+  awaitResearchIntentConfirmation: "AwaitResearchIntentConfirmation",
   awaitColumnConfirmation: "ColumnConfirmation",
   recommendModel: "RecommendModel",
   validatePlan: "ValidatePlan",
@@ -50,6 +51,7 @@ export const THETA_APPROVAL_KEYS = {
   researchClarification: "theta.research.clarify",
   datasetUnderstanding: "theta.dataset-understanding.confirm",
   researchIntent: "theta.research-intent.confirm",
+  researchIntentReview: "theta.research-intent.review",
   columnConfirmation: "theta.columns.confirm",
   planReview: "theta.plan.review",
   trainingReview: "theta.training.review",
@@ -191,6 +193,10 @@ const workflowStates: WorkflowStateSpec[] = [
       humanApprovalPolicyRef: toolRef(languageInferencePolicy.id),
       policyRefs: [languageInferencePolicy.id],
     },
+  ),
+  state(
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+    "Require explicit confirmation of the normalized research intent before planning.",
   ),
   state(
     THETA_WORKFLOW_STATES.awaitColumnConfirmation,
@@ -379,6 +385,18 @@ const forwardTransitions = [
   ],
   [
     THETA_WORKFLOW_STATES.researchIntentInterview,
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+    THETA_WORKFLOW_STATES.researchIntentInterview,
+  ],
+  [
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
     THETA_WORKFLOW_STATES.recommendModel,
   ],
   [
@@ -398,6 +416,10 @@ const forwardTransitions = [
     THETA_WORKFLOW_STATES.recommendModel,
   ],
   [THETA_WORKFLOW_STATES.recommendModel, THETA_WORKFLOW_STATES.validatePlan],
+  [
+    THETA_WORKFLOW_STATES.recommendModel,
+    THETA_WORKFLOW_STATES.awaitResearchIntentConfirmation,
+  ],
   [
     THETA_WORKFLOW_STATES.validatePlan,
     THETA_WORKFLOW_STATES.awaitPlanCreationApproval,

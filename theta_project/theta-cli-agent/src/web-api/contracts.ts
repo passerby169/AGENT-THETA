@@ -26,6 +26,7 @@ export const thetaWebRunActionSchema = z.discriminatedUnion('action', [
     action: z.literal('decisionAnswer'),
     text: z.string().trim().min(1).max(4000),
   }).strict(),
+  z.object({ action: z.literal('confirmIntent') }).strict(),
   z.object({
     action: z.literal('correctDataset'),
     text: z.string().trim().min(1).max(4000),

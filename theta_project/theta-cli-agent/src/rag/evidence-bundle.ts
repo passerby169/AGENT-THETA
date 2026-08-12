@@ -131,8 +131,15 @@ export const planEvidenceQueriesV2 = (input: {
     `rows ${input.facts.rowCount}`,
     `text columns ${input.confirmation.textColumns.join(' ')}`,
     input.intent.temporalAnalysis
-      ? `temporal analysis ${input.confirmation.timeColumns.join(' ')}`
+      ? input.intent.temporalPurpose === 'topic_evolution'
+        ? `native temporal topic evolution ${input.confirmation.timeColumns.join(' ')}`
+        : `posthoc temporal trend aggregation ${input.confirmation.timeColumns.join(' ')}`
       : 'static topic analysis',
+    input.intent.comparisonDimensions.length
+      ? input.intent.comparisonPurpose === 'model'
+        ? `comparison as training covariates ${input.intent.comparisonDimensions.join(' ')}`
+        : `posthoc display comparison ${input.intent.comparisonDimensions.join(' ')}`
+      : '',
     input.confirmation.groupColumns?.length
       ? `group comparison ${input.confirmation.groupColumns.join(' ')}`
       : '',

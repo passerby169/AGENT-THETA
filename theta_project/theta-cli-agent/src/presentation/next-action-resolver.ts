@@ -78,6 +78,12 @@ export const resolveNextActions = (
         action('done', '采用建议并继续', '对仍未明确的非阻断项采用系统建议。', '/done'),
         action('status', '查看研究意图', '查看已提取的目标、比较维度和约束。', '/status'),
       ];
+    case 'AwaitResearchIntentConfirmation':
+      return [
+        action('approve', '确认研究意图', '确认摘要无误并开始生成方案。', '/approve', true),
+        action('answer', '自然语言修改', '直接说明需要修改的字段，例如“时间只用于画趋势”。'),
+        action('status', '重新查看摘要', '查看规范化后的完整研究意图。', '/status'),
+      ];
     case 'AwaitPlanCreationApproval':
       return [
         action('plan', '查看完整方案', '查看模型、参数、数据列、资源和风险。', '/plan', true),
