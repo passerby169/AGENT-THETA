@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "error": {
+    "code": "STALE_RUN_REVISION",
+    "category": "conflict",
+    "message": "页面状态已过期，请刷新后重试。",
+    "retryable": true,
+    "recovery": {
+      "action": "refresh",
+      "label": "刷新状态",
+      "description": "读取最新 RunView 后重新提交命令。"
+    },
+    "correlationId": "correlation_stale_01"
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_stale_01",
+    "serverTime": "2026-08-13T10:05:00.000Z",
+    "currentRunRevision": 8
+  }
+}

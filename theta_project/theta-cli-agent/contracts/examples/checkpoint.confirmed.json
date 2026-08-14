@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "data": {
+    "receiptId": "receipt_checkpoint_dataset_01_1",
+    "checkpointId": "checkpoint_dataset_01",
+    "checkpointRevision": 1,
+    "contentHash": "sha256:dataset-checkpoint-v1",
+    "kind": "dataset",
+    "confirmedBy": "local_user",
+    "confirmedAt": "2026-08-13T10:04:00.000Z",
+    "command": {
+      "commandId": "command_03",
+      "clientCommandId": "command.client.03",
+      "status": "accepted",
+      "acceptedAt": "2026-08-13T10:04:00.000Z",
+      "statusUrl": "/api/v3/runs/run_dataset_checkpoint_01/commands/command_03"
+    }
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_confirmation_03",
+    "serverTime": "2026-08-13T10:04:00.010Z",
+    "runRevision": 6
+  }
+}

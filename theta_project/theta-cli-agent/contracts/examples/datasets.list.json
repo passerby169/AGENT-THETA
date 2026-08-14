@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "data": {
+    "items": [
+      {
+        "datasetRef": "dataset_course_reviews",
+        "fileName": "course-reviews.csv",
+        "sizeBytes": 684320,
+        "suffix": ".csv",
+        "createdAt": "2026-08-13T10:00:00.000Z",
+        "source": "local",
+        "availability": "ready",
+        "rowCount": 1280,
+        "columnCount": 8,
+        "languageSummary": "以中文为主"
+      },
+      {
+        "datasetRef": "dataset_news_remote",
+        "fileName": "news-corpus.parquet",
+        "sizeBytes": 48234112,
+        "suffix": ".parquet",
+        "createdAt": "2026-08-12T08:30:00.000Z",
+        "source": "remote",
+        "availability": "remote_sample_authorization_required",
+        "rowCount": 24600,
+        "columnCount": 12,
+        "languageSummary": "中文与英文混合"
+      }
+    ]
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_dataset_list_1",
+    "serverTime": "2026-08-13T10:00:00.000Z"
+  }
+}

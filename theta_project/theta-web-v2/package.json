@@ -7,7 +7,8 @@
     "dev": "next dev -H 127.0.0.1 -p 4320",
     "lint": "eslint .",
     "start": "next start -H 127.0.0.1 -p 4320",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:v3-contracts": "tsc -p tsconfig.v3-contracts.json && node .next/v3-contract-tests/mocks/v3/v3-contract-test.js"
   },
   "dependencies": {
     "@emotion/is-prop-valid": "latest",

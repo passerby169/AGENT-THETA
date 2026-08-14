@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "data": {
+    "receiptId": "training_receipt_1",
+    "dryRunHash": "sha256:dry-run-plan-v3",
+    "canonicalPlanHash": "sha256:plan-candidate-v3",
+    "approvedBy": "user_1",
+    "approvedAt": "2026-08-14T10:00:00.000Z",
+    "command": {
+      "commandId": "command_training_1",
+      "clientCommandId": "client_training_1",
+      "status": "accepted",
+      "acceptedAt": "2026-08-14T10:00:00.000Z",
+      "statusUrl": "/api/v3/runs/run_1/commands/command_training_1"
+    }
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_training_1",
+    "serverTime": "2026-08-14T10:00:00.000Z",
+    "runRevision": 14
+  }
+}

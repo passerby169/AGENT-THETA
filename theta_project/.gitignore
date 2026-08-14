@@ -15,9 +15,13 @@ lib/
 theta-web-v2/lib/*
 !theta-web-v2/lib/utils.ts
 !theta-web-v2/lib/api/
+!theta-web-v2/lib/agent/
+!theta-web-v2/lib/agent/**
 theta-web-v2/lib/api/*
 !theta-web-v2/lib/api/etm-agent.ts
 !theta-web-v2/lib/api/theta-agent-v2.ts
+!theta-web-v2/lib/api/v3/
+!theta-web-v2/lib/api/v3/**
 lib64/
 parts/
 sdist/

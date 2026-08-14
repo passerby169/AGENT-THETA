@@ -1,0 +1,36 @@
+[
+  {
+    "eventId": "event_101",
+    "sequence": 101,
+    "type": "agent.activity.started",
+    "runId": "run_dataset_checkpoint_01",
+    "runRevision": 2,
+    "occurredAt": "2026-08-13T10:01:00.000Z",
+    "payload": {
+      "view": {
+        "activity": {
+          "kind": "tool_calling",
+          "label": "正在检查数据列",
+          "tool": {
+            "displayName": "Dataset Inspector",
+            "safePurpose": "识别文本列与数据质量问题"
+          }
+        }
+      }
+    }
+  },
+  {
+    "eventId": "event_102",
+    "sequence": 102,
+    "type": "checkpoint.proposed",
+    "runId": "run_dataset_checkpoint_01",
+    "runRevision": 4,
+    "occurredAt": "2026-08-13T10:02:30.000Z",
+    "payload": {
+      "checkpointId": "checkpoint_dataset_01",
+      "kind": "dataset",
+      "revision": 1,
+      "contentHash": "sha256:dataset-checkpoint-v1"
+    }
+  }
+]
