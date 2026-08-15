@@ -23,7 +23,6 @@ export interface ProposeResearchCheckpointRequest {
   workspace: ResearchWorkspace;
   requestedBy: 'minimax' | 'fsm';
   rationale: string;
-  status?: 'proposed' | 'skipped';
 }
 
 export interface ProposePlanCheckpointRequest {
@@ -67,7 +66,7 @@ export class ThetaCheckpointEventRepository {
       content: {
         narrative: request.workspace.narrative,
         statements: request.workspace.statements.map(({ semanticLabel, statement, confidence }) => ({ semanticLabel, statement, confidence })),
-        columnRoles: request.workspace.columnRoles.map(({ column, proposedRole, confidence }) => ({ column, proposedRole, confidence })),
+        columnRoles: request.workspace.columnRoles.map(({ column, proposedRole, confidence, epistemicStatus }) => ({ column, proposedRole, confidence, epistemicStatus: epistemicStatus ?? 'legacy' })),
         risks: request.workspace.risks,
       },
       summaryForUser: request.workspace.narrative,
@@ -84,7 +83,7 @@ export class ThetaCheckpointEventRepository {
       contentHash: hashCanonicalJson(content),
       status: 'proposed',
       requestedBy: request.requestedBy,
-      mandatory: false,
+      mandatory: true,
       createdAt: timestamp,
       updatedAt: timestamp,
       resolutionReason: request.rationale,
@@ -109,7 +108,7 @@ export class ThetaCheckpointEventRepository {
         preferences: request.workspace.preferences,
         boundaries: request.workspace.boundaries,
       },
-      summaryForUser: researchSynthesis(request.workspace),
+      summaryForUser: request.workspace.narrative.trim() || 'Agent 已形成当前研究意图理解，请确认是否准确。',
       assumptions: request.workspace.assumptions
         .filter((assumption) => assumption.status === 'proposed')
         .map((assumption) => assumption.statement),
@@ -126,9 +125,9 @@ export class ThetaCheckpointEventRepository {
       revision,
       ...content,
       contentHash: hashCanonicalJson(content),
-      status: request.status ?? 'proposed',
+      status: 'proposed',
       requestedBy: request.requestedBy,
-      mandatory: false,
+      mandatory: true,
       createdAt: timestamp,
       updatedAt: timestamp,
       resolutionReason: request.rationale,
@@ -158,7 +157,7 @@ export class ThetaCheckpointEventRepository {
         validationReceipt: request.validationReceipt,
         presentation: request.presentation,
       },
-      summaryForUser: [request.presentation.title, request.presentation.summary, ...request.presentation.sections.map((section) => `${section.title}：${section.content}`)].join('\n'),
+      summaryForUser: request.presentation.summary,
       assumptions: request.candidate.assumptions,
       warnings: request.presentation.warnings,
       sourceRefs: [

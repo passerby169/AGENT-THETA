@@ -5,7 +5,8 @@ import { ZodError } from 'zod';
 import { ThetaAgentApplicationService } from '../application/theta-agent-application-service.js';
 import { DoctorService } from '../doctor-service.js';
 import { loadThetaProjectEnvironment } from '../environment.js';
-import { thetaWebCreateRunSchema, thetaWebMessageSchema, type ThetaWebApiEnvelope } from './contracts.js';
+import { presentConfirmationCard } from '../checkpoints/confirmation-card-presenter.js';
+import { thetaWebCheckpointDecisionSchema, thetaWebCreateRunSchema, thetaWebMessageSchema, type ThetaWebApiEnvelope } from './contracts.js';
 import { DatasetUploadError, listDatasets, uploadDataset } from './dataset-upload.js';
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -103,7 +104,8 @@ const route = async (
     let created;
     try {
       created = await application.createRun({
-        ...(input.datasetRef ? { datasetRef: input.datasetRef } : { filePath: input.filePath as string }),
+        ...(input.datasetRef ? { datasetRef: input.datasetRef } : {}),
+        ...(input.filePath ? { filePath: input.filePath } : {}),
         runtimeDb: options.runtimeDb,
         initialMessage: input.researchGoal,
         allowRemoteSamples: input.allowRemoteSamples,
@@ -130,34 +132,46 @@ const route = async (
     writeJson(response, 200, { ok: true, data: activityMatch[2] === 'progress' ? snapshot.progress : snapshot });
     return;
   }
-  const actionMatch = /^\/api\/v3\/runs\/([^/]+)\/(messages|checkpoint|conversation|discover|research|plan-design|prepare-training|advance-training|cancel-training)$/u.exec(url.pathname);
+  const actionMatch = /^\/api\/v3\/runs\/([^/]+)\/(messages|checkpoint|checkpoint-decision|conversation|intake|upload-request|discover|research|plan-design|prepare-training|advance-training|cancel-training)$/u.exec(url.pathname);
   if (actionMatch) {
     const runId = decodeURIComponent(actionMatch[1]);
     const action = actionMatch[2];
+    if (action === 'intake' && method === 'POST') {
+      writeJson(response, 200, { ok: true, data: await application.runIntake(runId, options.runtimeDb, options.uploadDir) });
+      return;
+    }
+    if (action === 'upload-request' && method === 'GET') {
+      writeJson(response, 200, { ok: true, data: application.currentDatasetUploadRequest(runId, options.runtimeDb, options.uploadDir) });
+      return;
+    }
     if (action === 'messages' && method === 'POST') {
       const input = thetaWebMessageSchema.parse(await body(request));
       const snapshot = await application.status(runId, options.runtimeDb);
-      const data = snapshot.currentState === 'ResearchDialogue'
-        ? await application.submitResearchMessage({
+      if (['DatasetCheckpoint', 'ResearchCheckpoint', 'PlanConfirmation'].includes(snapshot.currentState ?? '')) {
+        throw new Error('This confirmation requires POST /checkpoint-decision with action=approve or action=revise.');
+      }
+      const data = snapshot.currentState === 'Intake'
+        ? await application.submitIntakeMessage({
+            runId,
+            runtimeDb: options.runtimeDb,
+            uploadRoot: options.uploadDir,
+            content: input.content,
+            messageId: input.messageId,
+          })
+        : snapshot.currentState === 'DatasetDiscovery'
+        ? await application.submitDatasetDiscoveryMessage({
             runId,
             runtimeDb: options.runtimeDb,
             content: input.content,
             messageId: input.messageId,
           })
-        : snapshot.currentState === 'ResearchCheckpoint'
-          ? await application.submitResearchCheckpointMessage({
-              runId,
-              runtimeDb: options.runtimeDb,
-              content: input.content,
-              messageId: input.messageId,
-            })
-        : snapshot.currentState === 'PlanConfirmation'
-          ? await application.submitPlanConfirmationMessage({
-              runId,
-              runtimeDb: options.runtimeDb,
-              content: input.content,
-              messageId: input.messageId,
-            })
+        : snapshot.currentState === 'ResearchDialogue'
+          ? await application.submitResearchMessage({
+            runId,
+            runtimeDb: options.runtimeDb,
+            content: input.content,
+            messageId: input.messageId,
+          })
         : snapshot.currentState === 'TrainingConfirmation'
           ? await application.submitTrainingConfirmationMessage({
               runId,
@@ -174,8 +188,31 @@ const route = async (
       writeJson(response, 200, { ok: true, data });
       return;
     }
+    if (action === 'checkpoint-decision' && method === 'POST') {
+      const input = thetaWebCheckpointDecisionSchema.parse(await body(request));
+      writeJson(response, 200, {
+        ok: true,
+        data: await application.decideCheckpoint({
+          runId,
+          runtimeDb: options.runtimeDb,
+          ...input,
+        }),
+      });
+      return;
+    }
     if (action === 'checkpoint' && method === 'GET') {
-      writeJson(response, 200, { ok: true, data: await application.currentCheckpoint(runId, options.runtimeDb) });
+      const checkpoint = await application.currentCheckpoint(runId, options.runtimeDb);
+      const snapshot = await application.status(runId, options.runtimeDb);
+      const active = checkpoint !== null && checkpoint.status === 'proposed' && ({
+        dataset: 'DatasetCheckpoint',
+        research: 'ResearchCheckpoint',
+        plan: 'PlanConfirmation',
+        training: 'TrainingConfirmation',
+      } as const)[checkpoint.kind] === snapshot.currentState;
+      writeJson(response, 200, {
+        ok: true,
+        data: !active || checkpoint === null ? null : { ...checkpoint, view: presentConfirmationCard(checkpoint) },
+      });
       return;
     }
     if (action === 'conversation' && method === 'GET') {

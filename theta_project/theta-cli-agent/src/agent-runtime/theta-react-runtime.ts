@@ -18,6 +18,7 @@ import { ThetaActivityEventRepository } from '../activities/activity-event-store
 import { toolActivityCopy } from '../activities/activity-copy.js';
 
 const FINISH_PHASE_FUNCTION = 'theta_finish_phase';
+const REQUEST_INTAKE_QUESTION_FUNCTION = 'theta_request_intake_question';
 const REQUEST_RESEARCH_QUESTION_FUNCTION = 'theta_request_research_question';
 
 export class ThetaReActAgentRuntime implements ReActAgentRuntime {
@@ -48,7 +49,10 @@ export class ThetaReActAgentRuntime implements ReActAgentRuntime {
           name: openAiToolFunctionName(tool.id),
           description: tool.description,
           inputSchema: tool.inputSchema as Record<string, unknown>,
-        })), ...(context.metadata?.phase === 'ResearchDialogue' ? [researchQuestionDescriptor()] : []), finishPhaseDescriptor()],
+        })),
+        ...(context.metadata?.phase === 'Intake' ? [intakeQuestionDescriptor()] : []),
+        ...(context.metadata?.phase === 'ResearchDialogue' ? [researchQuestionDescriptor()] : []),
+        finishPhaseDescriptor(typeof context.metadata?.phase === 'string' ? context.metadata.phase : undefined)],
       options: {
         ...request.options,
         responseFormat: 'json_object',
@@ -110,6 +114,15 @@ export class ThetaReActAgentRuntime implements ReActAgentRuntime {
       return validateThetaAgentAction({
         type: 'human_review',
         input: { purpose: 'research_question', ...(selected.input as Record<string, unknown>) },
+        reason: typeof (selected.input as Record<string, unknown>)?.whyItMatters === 'string'
+          ? String((selected.input as Record<string, unknown>).whyItMatters)
+          : undefined,
+      });
+    }
+    if (selected.type === 'tool' && selected.target === REQUEST_INTAKE_QUESTION_FUNCTION) {
+      return validateThetaAgentAction({
+        type: 'human_review',
+        input: { purpose: 'intake_question', ...(selected.input as Record<string, unknown>) },
         reason: typeof (selected.input as Record<string, unknown>)?.whyItMatters === 'string'
           ? String((selected.input as Record<string, unknown>).whyItMatters)
           : undefined,
@@ -207,7 +220,7 @@ export class ThetaReActAgentRuntime implements ReActAgentRuntime {
         phase: 'PlanDesign',
         code: receiptsInvalid ? 'PLAN_RECEIPTS_NOT_READY' : 'PLAN_COMPLETION_BINDING_MISMATCH',
         message: receiptsInvalid
-          ? 'PlanDesign cannot finish until the active candidate has an exact EvidenceSelectionReceipt and a valid PlanValidationReceipt for the same candidate hash.'
+          ? 'PlanDesign cannot finish until the active candidate has an optional-citation audit receipt (an empty set is legal) and a valid PlanValidationReceipt for the same candidate hash.'
           : `Your completion payload used the wrong plan artifact binding. Resubmit theta_finish_phase yourself with artifactRef=${requiredArtifactRef}, artifactHash=${workspace.workspaceHash}, checkpointDecision=request. Do not use candidatePlanHash (${candidate.candidatePlanHash}) as artifactHash.`,
         invalidOutput: {
           received: value as unknown as Record<string, unknown>,
@@ -291,11 +304,13 @@ const safeToolInputSummary = (toolId: string, input: unknown): string => {
   if (Array.isArray(value.modelIds)) return `模型：${value.modelIds.map(String).join('、')}`;
   if (typeof value.candidateRef === 'string') return `候选：${value.candidateRef}`;
   if (typeof value.column === 'string') return `列：${value.column}`;
+  if (toolId === THETA_TOOL_IDS.datasetRequestUpload) return `原因：${String(value.reason ?? '需要研究数据')}`;
+  if (toolId === THETA_TOOL_IDS.datasetIngestAttachment && typeof value.attachmentRef === 'string') return `附件：${value.attachmentRef}`;
   if (toolId === THETA_TOOL_IDS.datasetSample) return '最多 10 条已授权脱敏样本';
   return '输入已按隐私策略隐藏';
 };
 
-const finishPhaseDescriptor = (): InferenceToolDescriptor => ({
+const finishPhaseDescriptor = (phase?: string): InferenceToolDescriptor => ({
   id: FINISH_PHASE_FUNCTION,
   name: FINISH_PHASE_FUNCTION,
   description: 'Propose completion of the current intelligent phase. This is not a business-state transition; the FSM independently validates the artifact hash and guard.',
@@ -306,12 +321,17 @@ const finishPhaseDescriptor = (): InferenceToolDescriptor => ({
         required: ['kind', 'phase', 'artifactRef', 'artifactHash', 'rationale', 'confidence', 'checkpointDecision'],
         properties: {
           kind: { const: 'phase_completion_proposed' },
-          phase: { enum: ['DatasetDiscovery', 'ResearchDialogue', 'PlanDesign'] },
+          phase: { enum: ['Intake', 'DatasetDiscovery', 'ResearchDialogue', 'PlanDesign'] },
           artifactRef: { type: 'string', minLength: 1 },
           artifactHash: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
           rationale: { type: 'string', minLength: 1, maxLength: 2000 },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
-          checkpointDecision: { enum: ['request', 'skip'] },
+          checkpointDecision: {
+            enum: phase === 'Intake' ? ['skip'] : ['request'],
+            description: phase === 'Intake'
+              ? 'Intake hands off after governed ingestion.'
+              : 'Dataset, research and plan final confirmation boundaries are mandatory and owned by the FSM.',
+          },
         },
         additionalProperties: false,
       },
@@ -362,6 +382,22 @@ const researchQuestionDescriptor = (): InferenceToolDescriptor => ({
     type: 'object',
     required: ['question', 'whyItMatters'],
     properties: {
+      question: { type: 'string', minLength: 1, maxLength: 2000 },
+      whyItMatters: { type: 'string', minLength: 1, maxLength: 2000 },
+    },
+    additionalProperties: false,
+  },
+});
+
+const intakeQuestionDescriptor = (): InferenceToolDescriptor => ({
+  id: REQUEST_INTAKE_QUESTION_FUNCTION,
+  name: REQUEST_INTAKE_QUESTION_FUNCTION,
+  description: 'Continue the natural Intake conversation with the user. Use this to introduce THETA, explain how collaboration works, answer uncertainty, or ask one open next-step question without forcing a dataset upload.',
+  inputSchema: {
+    type: 'object',
+    required: ['message', 'question', 'whyItMatters'],
+    properties: {
+      message: { type: 'string', minLength: 1, maxLength: 4000 },
       question: { type: 'string', minLength: 1, maxLength: 2000 },
       whyItMatters: { type: 'string', minLength: 1, maxLength: 2000 },
     },

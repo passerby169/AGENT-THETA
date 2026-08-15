@@ -6,8 +6,10 @@ import { researchDialoguePromptV1 } from './prompts/research-dialogue-v1.js';
 import { planDesignPromptV1 } from './prompts/plan-design-v1.js';
 import { planConfirmationPromptV1 } from './prompts/plan-confirmation-v1.js';
 import { THETA_AGENT_ID } from '../memory/theta-memory-scope.js';
+import { intakePromptV1 } from './prompts/intake-v1.js';
 
 const phaseInstructions: Record<ThetaIntelligentPhase, string> = {
+  Intake: intakePromptV1,
   DatasetDiscovery: datasetDiscoveryPromptV4,
   ResearchDialogue: researchDialoguePromptV1,
   PlanDesign: planDesignPromptV1,

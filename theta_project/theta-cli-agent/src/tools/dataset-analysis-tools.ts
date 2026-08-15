@@ -4,12 +4,14 @@ import type { ToolCallContext, ToolHandler, ToolSpec } from '@hypha/tools';
 import { SQLiteDatasetObservationStore } from '../storage/dataset-observation-store.js';
 import { SQLiteDatasetRegistry } from '../storage/dataset-registry.js';
 import { SQLiteRemoteSampleAuthorizationStore } from '../storage/remote-sample-authorization-store.js';
+import { SQLiteDatasetExplorationCache, THETA_DATASET_READER_VERSION } from '../storage/dataset-exploration-cache.js';
 import { defaultThetaV6RuntimeDb } from '../persistence/runtime-composition.js';
 import { createThetaRuntimeComposition } from '../persistence/runtime-composition.js';
 import { ThetaWorkspaceEventRepository } from '../workspaces/event-store.js';
 import { callThetaBridge } from './bridge.js';
 import type { ExploreColumnProfile, ThetaDatasetExploreOutput } from './dataset-exploration-contracts.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
+import { isPrimaryTextRole } from '../workspaces/dataset-column-roles.js';
 
 interface DatasetToolInput {
   datasetRef: string;
@@ -29,9 +31,8 @@ interface DatasetUnderstandingInput {
 
 const baseInputSchema: JsonSchema = {
   type: 'object',
-  required: ['datasetRef'],
   properties: {
-    datasetRef: { type: 'string', minLength: 1 },
+    datasetRef: { type: 'string', minLength: 1, description: 'Optional compatibility hint. Runtime binds the governed current dataset.' },
     sheetName: { type: 'string', minLength: 1, maxLength: 256 },
   },
   additionalProperties: false,
@@ -39,7 +40,7 @@ const baseInputSchema: JsonSchema = {
 
 const columnsInputSchema: JsonSchema = {
   type: 'object',
-  required: ['datasetRef', 'columns'],
+  required: ['columns'],
   properties: {
     datasetRef: { type: 'string', minLength: 1 },
     sheetName: { type: 'string', minLength: 1, maxLength: 256 },
@@ -50,7 +51,7 @@ const columnsInputSchema: JsonSchema = {
 
 const columnInputSchema: JsonSchema = {
   type: 'object',
-  required: ['datasetRef', 'column'],
+  required: ['column'],
   properties: {
     datasetRef: { type: 'string', minLength: 1 },
     sheetName: { type: 'string', minLength: 1, maxLength: 256 },
@@ -74,7 +75,7 @@ const aggregateOutputSchema: JsonSchema = {
 
 const spec = (id: string, description: string, inputSchema: JsonSchema = baseInputSchema): ToolSpec => ({
   id,
-  version: '3.0.0',
+  version: '3.1.0',
   displayName: id,
   description,
   tags: ['theta', 'dataset', 'v6'],
@@ -82,7 +83,7 @@ const spec = (id: string, description: string, inputSchema: JsonSchema = baseInp
   outputSchema: aggregateOutputSchema,
   sideEffectLevel: 'read',
   permissionScope: [THETA_PERMISSION_SCOPES.datasetRead],
-  timeoutPolicy: { timeoutMs: 45_000, onTimeout: 'fail' },
+  timeoutPolicy: { timeoutMs: 120_000, onTimeout: 'fail' },
   retryPolicy: { maxAttempts: 1 },
   auditPolicy: { enabled: true, includeInput: false, includeOutput: false },
   source: 'local',
@@ -90,16 +91,16 @@ const spec = (id: string, description: string, inputSchema: JsonSchema = baseInp
 
 export const thetaDatasetOverviewToolSpec = spec(
   THETA_TOOL_IDS.datasetOverview,
-  'Read dataset shape, columns, format, sheets, aggregate role candidates, quality warnings and domain hints without returning row samples.',
+  'Read the current governed dataset shape, columns, format, sheets, aggregate role candidates, quality warnings and domain hints without returning row samples. Runtime binds the dataset; do not invent datasetRef.',
 );
 export const thetaDatasetColumnProfileToolSpec = spec(
   THETA_TOOL_IDS.datasetColumnProfile,
-  'Profile selected columns by type, missingness, uniqueness and lengths without returning cell values.',
+  'Profile selected columns by type, missingness, uniqueness and lengths. Prefer stable columnRef values returned by overview.',
   columnsInputSchema,
 );
 export const thetaDatasetTextProfileToolSpec = spec(
   THETA_TOOL_IDS.datasetTextProfile,
-  'Analyze one candidate text column using aggregate length, language and duplicate statistics.',
+  'Analyze one candidate text column using aggregate length, language and duplicate statistics. Prefer the stable columnRef returned by overview.',
   columnInputSchema,
 );
 export const thetaDatasetTimeProfileToolSpec = spec(
@@ -134,9 +135,8 @@ export const thetaDatasetSampleToolSpec: ToolSpec = {
     'Return at most ten deterministic random rows after local redaction. This tool fails unless the owner granted a current remote-sample authorization receipt.',
     {
       type: 'object',
-      required: ['datasetRef'],
       properties: {
-        datasetRef: { type: 'string', minLength: 1 },
+        datasetRef: { type: 'string', minLength: 1, description: 'Optional compatibility hint. Runtime binds the governed current dataset.' },
         sheetName: { type: 'string', minLength: 1, maxLength: 256 },
         columns: { type: 'array', maxItems: 50, uniqueItems: true, items: { type: 'string', minLength: 1 } },
         sampleSize: { type: 'integer', minimum: 1, maximum: 10 },
@@ -167,7 +167,7 @@ export const thetaDatasetSubmitUnderstandingToolSpec: ToolSpec = {
     'Validate a proposed open dataset understanding against current columns and governed observation receipts. This proposes an artifact; it does not advance the FSM.',
     {
       type: 'object',
-      required: ['datasetRef', 'narrative', 'statements', 'columnRoles'],
+      required: ['narrative', 'statements', 'columnRoles'],
       properties: {
         datasetRef: { type: 'string', minLength: 1 },
         narrative: { type: 'string', minLength: 1, maxLength: 12000 },
@@ -199,9 +199,9 @@ const analysisHandler = (
   toolId: string,
   project: (data: ThetaDatasetExploreOutput, input: DatasetToolInput) => Record<string, unknown>,
 ): ToolHandler<unknown, Record<string, unknown>> => async (raw, context) => {
-  const input = objectInput(raw);
-  const { data, runtimeDb } = await explore(input, context);
-  return observedOutput(toolId, data, project(data, input), context, runtimeDb);
+  const input = bindDatasetInput(raw, context);
+  const { data, runtimeDb, resolvedInput } = await explore(input, context);
+  return observedOutput(toolId, data, project(data, resolvedInput), context, runtimeDb);
 };
 
 export const thetaDatasetOverviewHandler = analysisHandler(THETA_TOOL_IDS.datasetOverview, (data) => ({
@@ -214,44 +214,59 @@ export const thetaDatasetOverviewHandler = analysisHandler(THETA_TOOL_IDS.datase
   selectedSheet: data.selectedSheet,
   rowCount: data.rowCount,
   columns: data.columns,
+  columnDefinitions: data.columnDefinitions,
   candidateRoles: data.candidateRoles,
   inferredDomain: data.inferredDomain,
+  profileBasis: profileBasis(data),
   qualityWarnings: data.qualityWarnings,
 }));
 
 export const thetaDatasetColumnProfileHandler = analysisHandler(THETA_TOOL_IDS.datasetColumnProfile, (data, input) => ({
-  profiles: selectProfiles(data, input.columns).map(withoutValues),
+  profiles: selectProfiles(data, input.columns).map((profile) => profileForTool(data, profile)),
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetTextProfileHandler = analysisHandler(THETA_TOOL_IDS.datasetTextProfile, (data, input) => ({
-  profile: withoutValues(requireProfile(data, input.column)),
-  languageDistribution: data.languageDistribution,
-  duplicateRatio: data.duplicateRatio,
+  profile: profileForTool(data, requireProfile(data, input.column)),
+  ...(isBoundedProfile(data)
+    ? {
+        estimatedLanguageDistribution: data.languageDistribution,
+        estimatedDuplicateRatio: data.duplicateRatio,
+      }
+    : {
+        languageDistribution: data.languageDistribution,
+        duplicateRatio: data.duplicateRatio,
+      }),
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetTimeProfileHandler = analysisHandler(THETA_TOOL_IDS.datasetTimeProfile, (data, input) => ({
-  profile: withoutValues(requireProfile(data, input.column)),
-  timeCoverage: data.timeCoverage,
+  profile: profileForTool(data, requireProfile(data, input.column)),
+  ...(isBoundedProfile(data)
+    ? { observedSampleTimeCoverage: data.timeCoverage }
+    : { timeCoverage: data.timeCoverage }),
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetCategoricalProfileHandler = analysisHandler(THETA_TOOL_IDS.datasetCategoricalProfile, (data, input) => ({
-  profiles: selectProfiles(data, input.columns).map((profile) => ({
-    name: profile.name,
-    missingRatio: profile.missingRatio,
-    uniqueCount: profile.uniqueCount,
-    uniqueRatio: profile.uniqueRatio,
-    inferredType: profile.inferredType,
-  })),
+  profiles: selectProfiles(data, input.columns).map((profile) => profileForTool(data, profile)),
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetMissingnessHandler = analysisHandler(THETA_TOOL_IDS.datasetMissingness, (data, input) => ({
-  columns: selectProfiles(data, input.columns).map((profile) => ({ name: profile.name, missingRatio: profile.missingRatio })),
+  columns: selectProfiles(data, input.columns).map((profile) => isBoundedProfile(data)
+    ? { name: profile.name, columnRef: profile.columnRef, estimatedMissingRatio: profile.missingRatio }
+    : { name: profile.name, columnRef: profile.columnRef, missingRatio: profile.missingRatio }),
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetDuplicatesHandler = analysisHandler(THETA_TOOL_IDS.datasetDuplicates, (data, input) => ({
   column: requireProfile(data, input.column).name,
-  duplicateRatio: data.duplicateRatio,
+  ...(isBoundedProfile(data)
+    ? { estimatedDuplicateRatio: data.duplicateRatio }
+    : { duplicateRatio: data.duplicateRatio }),
   profiledRows: data.samplePolicy?.profileRows ?? null,
+  basis: profileBasis(data),
 }));
 
 export const thetaDatasetRelationshipsHandler = analysisHandler(THETA_TOOL_IDS.datasetRelationships, (data, input) => ({
@@ -260,7 +275,7 @@ export const thetaDatasetRelationshipsHandler = analysisHandler(THETA_TOOL_IDS.d
 }));
 
 export const thetaDatasetSampleHandler: ToolHandler<unknown, Record<string, unknown>> = async (raw, context) => {
-  const input = objectInput(raw);
+  const input = bindDatasetInput(raw, context);
   const runtimeDb = runtimeDbFrom(context);
   const owner = ownerFrom(context);
   const registry = new SQLiteDatasetRegistry(runtimeDb);
@@ -272,12 +287,16 @@ export const thetaDatasetSampleHandler: ToolHandler<unknown, Record<string, unkn
       datasetHash: dataset.sha256,
       ...owner,
     });
-    const { data } = await explore({ ...input, sampleSize: Math.min(receipt.maxRows, input.sampleSize ?? 10) }, context);
+    const { data, resolvedInput } = await explore({ ...input, sampleSize: Math.min(receipt.maxRows, input.sampleSize ?? 10) }, context);
+    const selected = resolvedInput.columns;
+    const sampleRows = selected?.length
+      ? data.sampleRows.map((row) => Object.fromEntries([...selected, '_theta_sample_id'].filter((key) => key in row).map((key) => [key, row[key]])))
+      : data.sampleRows;
     const material = {
       datasetRef: data.datasetRef,
       datasetHash: data.datasetHash,
       authorizationReceiptId: receipt.receiptId,
-      sampleRows: data.sampleRows.slice(0, receipt.maxRows),
+      sampleRows: sampleRows.slice(0, receipt.maxRows),
       sampleSeed: data.sampleSeed,
       redactionSummary: data.redactionSummary,
     };
@@ -289,7 +308,7 @@ export const thetaDatasetSampleHandler: ToolHandler<unknown, Record<string, unkn
 };
 
 export const thetaDatasetSubmitUnderstandingHandler: ToolHandler<unknown, Record<string, unknown>> = async (raw, context) => {
-  const input = raw as DatasetUnderstandingInput;
+  const input = bindDatasetUnderstandingInput(raw, context);
   if (!input || typeof input !== 'object' || !String(input.narrative ?? '').trim()) {
     throw new Error('Dataset understanding requires a non-empty narrative.');
   }
@@ -301,12 +320,16 @@ export const thetaDatasetSubmitUnderstandingHandler: ToolHandler<unknown, Record
   try {
     const dataset = registry.require(input.datasetRef, owner);
     const { data } = await explore({ datasetRef: input.datasetRef }, context);
-    const columns = new Set(data.columns);
-    for (const role of input.columnRoles ?? []) { if (!columns.has(role.column)) throw new Error(`Dataset understanding references an unknown column: ${role.column}`); assertConfidence(role.confidence); }
+    const resolvedRoles = (input.columnRoles ?? []).map((role) => ({ ...role, column: resolveColumnIdentifier(data, role.column) }));
+    for (const role of resolvedRoles) assertConfidence(role.confidence);
+    const primaryTextRoles = resolvedRoles.filter(isPrimaryTextRole);
+    if (primaryTextRoles.length !== 1) {
+      throw new Error(`Dataset understanding must propose exactly one existing primary_text column before it can finish; found ${primaryTextRoles.length}.`);
+    }
     for (const statement of input.statements ?? []) assertConfidence(statement.confidence);
     const refs = [
       ...(input.statements ?? []).flatMap((item) => item.observationRefs ?? []),
-      ...(input.columnRoles ?? []).flatMap((item) => item.observationRefs ?? []),
+      ...resolvedRoles.flatMap((item) => item.observationRefs ?? []),
     ];
     if (refs.length === 0) throw new Error('Dataset understanding must cite at least one governed observation.');
     const receipts = observations.requireAll(context.runId, dataset.sha256, refs);
@@ -329,10 +352,16 @@ export const thetaDatasetSubmitUnderstandingHandler: ToolHandler<unknown, Record
         schemaVersion: '3.1.0',
         runId: context.runId,
         datasetHash: `sha256:${dataset.sha256}`,
-        narrative: input.narrative.trim(),
+        narrative: appendProfileBasisNote(input.narrative.trim(), data),
         statements: (input.statements ?? []).map((statement, index) => ({ id: `dataset-statement:${index + 1}:${hashCanonicalJson(statement).slice(-12)}`, semanticLabel: statement.semanticLabel, statement: statement.statement, epistemicStatus: statement.epistemicStatus, confidence: statement.confidence, sourceRefs: statement.observationRefs })),
-        columnRoles: (input.columnRoles ?? []).map((role) => ({ column: role.column, proposedRole: role.proposedRole, confidence: role.confidence, sourceRefs: role.observationRefs })),
-        risks: input.risks ?? [],
+        columnRoles: resolvedRoles.map((role) => ({
+          column: role.column,
+          proposedRole: role.proposedRole,
+          confidence: role.confidence,
+          epistemicStatus: 'proposed' as const,
+          sourceRefs: role.observationRefs,
+        })),
+        risks: appendProfileBasisRisk(input.risks ?? [], data),
         sourceRefs,
       },
       reason: 'Dataset Agent submitted a concise evidence-grounded understanding.',
@@ -357,21 +386,35 @@ const explore = async (input: DatasetToolInput, context: ToolCallContext) => {
   const runtimeDb = runtimeDbFrom(context);
   const owner = ownerFrom(context);
   const registry = new SQLiteDatasetRegistry(runtimeDb);
+  const cache = new SQLiteDatasetExplorationCache(runtimeDb);
   try {
     const record = registry.require(input.datasetRef, owner);
-    const response = await callThetaBridge('dataset.explore', {
-      filePath: record.managedPath,
-      datasetRef: record.datasetRef,
-      datasetHash: record.sha256,
-      fileName: record.displayName,
-      sizeBytes: record.sizeBytes,
-      sheetName: input.sheetName,
-      sampleSize: input.sampleSize,
-      selectedColumns: input.columns ?? (input.column ? [input.column] : undefined),
-    }, { runId: context.runId, stepId: context.stepId });
-    if (response.status !== 'ok') throw new Error(response.error?.message ?? 'Dataset analysis failed.');
-    return { data: response.data as ThetaDatasetExploreOutput, runtimeDb };
+    let data = cache.get(record.sha256, input.sheetName);
+    if (!data) {
+      const response = await callThetaBridge('dataset.explore', {
+        filePath: record.managedPath,
+        datasetRef: record.datasetRef,
+        datasetHash: record.sha256,
+        fileName: record.displayName,
+        sizeBytes: record.sizeBytes,
+        sheetName: input.sheetName,
+        sampleSize: 10,
+      }, { runId: context.runId, stepId: context.stepId });
+      if (response.status !== 'ok') throw new Error(response.error?.message ?? 'Dataset analysis failed.');
+      data = response.data as ThetaDatasetExploreOutput;
+      if (data.readerVersion !== THETA_DATASET_READER_VERSION) {
+        throw new Error(`Dataset reader version mismatch: expected ${THETA_DATASET_READER_VERSION}, received ${data.readerVersion ?? '(missing)'}.`);
+      }
+      cache.put(record.sha256, input.sheetName, data);
+    }
+    const resolvedInput: DatasetToolInput = {
+      ...input,
+      ...(input.column === undefined ? {} : { column: resolveColumnIdentifier(data, input.column) }),
+      ...(input.columns === undefined ? {} : { columns: input.columns.map((column) => resolveColumnIdentifier(data as ThetaDatasetExploreOutput, column)) }),
+    };
+    return { data: { ...data, datasetRef: record.datasetRef, fileName: record.displayName }, runtimeDb, resolvedInput };
   } finally {
+    cache.close();
     registry.close();
   }
 };
@@ -415,12 +458,71 @@ const ownerFrom = (context: ToolCallContext) => ({
   workspaceId: context.workspaceId ?? context.principal?.workspaceId ?? 'local_workspace',
 });
 
-const objectInput = (raw: unknown): DatasetToolInput => {
+const objectInput = (raw: unknown): Record<string, unknown> => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Dataset tool input must be an object.');
-  return raw as DatasetToolInput;
+  return raw as Record<string, unknown>;
+};
+
+const boundDatasetRef = (raw: Record<string, unknown>, context: ToolCallContext): string => {
+  const governed = context.metadata?.datasetRef;
+  if (typeof governed === 'string' && governed.trim()) return governed;
+  if (typeof raw.datasetRef === 'string' && raw.datasetRef.trim()) return raw.datasetRef;
+  throw new Error('当前工具上下文没有绑定数据集，请返回数据接入阶段重新选择文件。');
+};
+
+const bindDatasetInput = (raw: unknown, context: ToolCallContext): DatasetToolInput => {
+  const input = objectInput(raw);
+  return { ...input, datasetRef: boundDatasetRef(input, context) } as DatasetToolInput;
+};
+
+const bindDatasetUnderstandingInput = (
+  raw: unknown,
+  context: ToolCallContext,
+): DatasetUnderstandingInput => {
+  const input = objectInput(raw);
+  return { ...input, datasetRef: boundDatasetRef(input, context) } as unknown as DatasetUnderstandingInput;
 };
 
 const withoutValues = ({ sampleValues: _sampleValues, ...profile }: ExploreColumnProfile) => profile;
+
+const isBoundedProfile = (data: ThetaDatasetExploreOutput): boolean =>
+  data.samplePolicy?.profileTruncated === true;
+
+const profileForTool = (
+  data: ThetaDatasetExploreOutput,
+  profile: ExploreColumnProfile,
+): Record<string, unknown> => {
+  const safe = withoutValues(profile) as ExploreColumnProfile & { nonEmptyCount?: number };
+  if (!isBoundedProfile(data)) return safe as unknown as Record<string, unknown>;
+  return {
+    name: safe.name,
+    ...(safe.columnRef === undefined ? {} : { columnRef: safe.columnRef }),
+    inferredType: safe.inferredType,
+    sampleNonEmptyCount: safe.nonEmptyCount,
+    estimatedMissingRatio: safe.missingRatio,
+    sampleUniqueCount: safe.uniqueCount,
+    ...(safe.uniqueRatio === undefined ? {} : { estimatedUniqueRatio: safe.uniqueRatio }),
+    estimatedAverageLength: safe.averageLength,
+    sampleMaximumLength: safe.maximumLength,
+    ...(safe.parseSuccessRatio === undefined ? {} : { estimatedParseSuccessRatio: safe.parseSuccessRatio }),
+  };
+};
+
+const profileBasisNote = (data: ThetaDatasetExploreOutput): string | undefined => {
+  if (!isBoundedProfile(data)) return undefined;
+  return `统计口径：完整行数为 ${data.rowCount}；其余列画像基于 ${data.samplePolicy?.profileRows ?? 0} 行确定性蓄水池样本，唯一值、比例、长度、语言、重复和时间覆盖均为样本观察或估计，不代表全量精确统计。`;
+};
+
+const appendProfileBasisNote = (narrative: string, data: ThetaDatasetExploreOutput): string => {
+  const note = profileBasisNote(data);
+  if (!note || narrative.includes('确定性蓄水池样本')) return narrative;
+  return `${narrative}\n\n${note}`;
+};
+
+const appendProfileBasisRisk = (risks: string[], data: ThetaDatasetExploreOutput): string[] => {
+  const note = profileBasisNote(data);
+  return note === undefined ? risks : [...new Set([...risks, note])];
+};
 
 const requiredColumns = (selected: string[] | undefined, all: readonly string[]): string[] => {
   if (!selected?.length) throw new Error('At least one column is required.');
@@ -428,6 +530,51 @@ const requiredColumns = (selected: string[] | undefined, all: readonly string[])
   if (unknown.length) throw new Error(`Unknown dataset columns: ${unknown.join(', ')}`);
   return [...new Set(selected)];
 };
+
+const resolveColumnIdentifier = (data: ThetaDatasetExploreOutput, value: string): string => {
+  const definitions = data.columnDefinitions ?? data.columns.map((column, position) => ({
+    columnRef: `column_${String(position + 1).padStart(4, '0')}`,
+    position,
+    originalName: column,
+    normalizedName: normalizeColumnIdentifier(column),
+    displayName: column,
+  }));
+  const normalized = normalizeColumnIdentifier(value);
+  const matches = definitions.filter((definition) =>
+    value === definition.columnRef ||
+    value === definition.originalName ||
+    value === definition.displayName ||
+    normalized === definition.normalizedName ||
+    normalized === normalizeColumnIdentifier(definition.displayName));
+  if (matches.length === 1) return matches[0].displayName;
+  const available = definitions.map((item) => `${item.columnRef}=${item.displayName}`).join('、');
+  if (matches.length === 0) throw new Error(`未找到列“${value}”。当前可用列：${available}`);
+  throw new Error(`列“${value}”规范化后不唯一，请使用 columnRef。当前可用列：${available}`);
+};
+
+const normalizeColumnIdentifier = (value: string): string => {
+  const cleaned = value.normalize('NFC').replace(/^\uFEFF/u, '').replace(/[\u200B-\u200D\u0000-\u001F\u007F-\u009F]/gu, '').trim();
+  if ([...cleaned].some((character) => character.charCodeAt(0) > 0xff)) return cleaned;
+  try {
+    const bytes = Uint8Array.from([...cleaned].map((character) => character.charCodeAt(0)));
+    const repaired = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return cjkCount(repaired) > cjkCount(cleaned) ? repaired : cleaned;
+  } catch {
+    return cleaned;
+  }
+};
+
+const cjkCount = (value: string): number => [...value].filter((character) => /[\u3400-\u9FFF]/u.test(character)).length;
+
+const profileBasis = (data: ThetaDatasetExploreOutput) => ({
+  method: data.samplePolicy?.method ?? 'unknown',
+  profiledRows: data.samplePolicy?.profileRows ?? data.rowCount,
+  totalRows: data.rowCount,
+  bounded: data.samplePolicy?.profileTruncated === true,
+  interpretation: data.samplePolicy?.profileTruncated === true
+    ? '除 totalRows/rowCount 外，唯一值、比例、长度、语言和时间覆盖等画像统计均基于确定性样本，只能作为估计。'
+    : '画像统计覆盖全部记录。',
+});
 
 const selectProfiles = (data: ThetaDatasetExploreOutput, selected?: string[]): ExploreColumnProfile[] => {
   const columns = requiredColumns(selected, data.columns);

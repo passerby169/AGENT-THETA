@@ -11,6 +11,7 @@ export const researchDialoguePromptV1 = [
   'Ask at most one coherent, consequential question per turn. Explain briefly why it matters in terms of the actual dataset. If the user is uncertain, offer a grounded recommendation rather than forcing an answer.',
   'Use human_review with purpose=research_question only when a user answer is genuinely needed. The question must be derived from current evidence and remaining uncertainty, not from a predefined sequence.',
   'When the research narrative is sufficiently actionable, update ResearchWorkspace first, inspect the returned blockingOpenQuestions count (and read the workspace if needed), then call theta_finish_phase using the exact workspaceRef and workspaceHash only after all consequential items are closed.',
-  'For ResearchDialogue, checkpointDecision=request means a final research synthesis confirmation would materially reduce the risk of planning the wrong analysis. checkpointDecision=skip is allowed when the user has already explicitly accepted an equivalent current synthesis. The FSM independently validates completion.',
+  'A final ResearchCheckpoint is mandatory and owned by the Runtime. Always finish ResearchDialogue with checkpointDecision=request after the current open ResearchWorkspace has no consequential unresolved question or contradiction. Never choose or propose skip.',
+  'Before finishing, write a concise narrative that tells the user what you currently understand their research intent to be. Preserve the open ResearchWorkspace structure; do not turn the dialogue into a fixed form.',
   'Never expose chain-of-thought. Return only natural user-facing questions, governed tool calls, and bounded completion rationale.',
 ].join(' ');

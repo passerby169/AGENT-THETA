@@ -128,6 +128,12 @@ import {
   thetaTrainingStatusHandler,
   thetaTrainingStatusToolSpec,
 } from './training-execution-tools.js';
+import {
+  thetaDatasetIngestAttachmentHandler,
+  thetaDatasetIngestAttachmentToolSpec,
+  thetaDatasetRequestUploadHandler,
+  thetaDatasetRequestUploadToolSpec,
+} from './dataset-intake-tools.js';
 
 export const registerThetaModelCatalogTool = (
   registry: ToolRegistry,
@@ -140,6 +146,8 @@ export const registerThetaModelCatalogTool = (
 
 export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
   thetaAgentProtocolFeedbackToolSpec,
+  thetaDatasetRequestUploadToolSpec,
+  thetaDatasetIngestAttachmentToolSpec,
   thetaDatasetOverviewToolSpec,
   thetaDatasetSampleToolSpec,
   thetaDatasetColumnProfileToolSpec,
@@ -195,6 +203,8 @@ export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   const registry = new ToolRegistry();
   registry.register(thetaAgentProtocolFeedbackToolSpec, thetaAgentProtocolFeedbackHandler, { replace: true });
+  registry.register(thetaDatasetRequestUploadToolSpec, thetaDatasetRequestUploadHandler, { replace: true });
+  registry.register(thetaDatasetIngestAttachmentToolSpec, thetaDatasetIngestAttachmentHandler, { replace: true });
   registry.register(thetaDatasetOverviewToolSpec, thetaDatasetOverviewHandler, { replace: true });
   registry.register(thetaDatasetSampleToolSpec, thetaDatasetSampleHandler, { replace: true });
   registry.register(thetaDatasetColumnProfileToolSpec, thetaDatasetColumnProfileHandler, { replace: true });

@@ -23,6 +23,23 @@ export interface ConversationalCheckpoint {
   resolutionReason?: string;
 }
 
+export interface ConfirmationCardView {
+  kind: ConversationalCheckpointKind;
+  checkpointId: string;
+  contentHash: string;
+  targetHash: string;
+  revision: number;
+  status: ThetaCheckpointStatus;
+  title: string;
+  summary: string;
+  sections: Array<{ id: string; title: string; content: string | string[] }>;
+  warnings: string[];
+  actions: Array<
+    | { id: 'approve'; label: '是，进入下一阶段' }
+    | { id: 'revise'; label: '否，说明原因' }
+  >;
+}
+
 export type CheckpointFeedbackDecision =
   | { kind: 'ask_about_checkpoint'; question: string; responseToUser: string }
   | { kind: 'revise_checkpoint'; requestedChanges: string; responseToUser: string }
@@ -54,6 +71,19 @@ export interface SubmitCheckpointMessageRequest {
   runId: string;
   content: string;
   messageId?: string;
+  runtimeDb?: string;
+  userId?: string;
+  workspaceId?: string;
+}
+
+export type CheckpointDecisionAction = 'approve' | 'revise';
+
+export interface SubmitCheckpointDecisionRequest {
+  runId: string;
+  action: CheckpointDecisionAction;
+  checkpointId: string;
+  expectedContentHash: string;
+  feedback?: string;
   runtimeDb?: string;
   userId?: string;
   workspaceId?: string;

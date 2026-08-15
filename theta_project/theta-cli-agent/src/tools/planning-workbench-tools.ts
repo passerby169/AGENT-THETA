@@ -66,13 +66,13 @@ export const thetaModelShortlistToolSpec = spec(
 export const thetaPlannerEvaluateCandidateToolSpec = spec(
   THETA_TOOL_IDS.plannerEvaluateCandidate,
   'Bind evidence and evaluate candidate',
-  'Atomically bind only legal local evidence IDs declared by the active candidate, then run structural, parameter, runtime and research-intent alignment validation. Returns exact completion gates.',
+  'Evaluate one candidate against structural, parameter, runtime and research-intent constraints. RAG references are optional; when cited, their IDs must exactly match the candidate and are atomically verified.',
   {
     type: 'object',
-    required: ['candidateRef', 'evidenceIds'],
+    required: ['candidateRef'],
     properties: {
       candidateRef: { type: 'string', minLength: 1 },
-      evidenceIds: { type: 'array', minItems: 1, maxItems: 30, uniqueItems: true, items: { type: 'string' } },
+      evidenceIds: { type: 'array', maxItems: 30, uniqueItems: true, items: { type: 'string' }, default: [] },
     },
     additionalProperties: false,
   },
@@ -146,7 +146,7 @@ export const thetaPlannerInspectCaseHandler: ToolHandler<unknown, Record<string,
       completion: planCompletionProgress({ candidate, evidenceReceipt, validationReceipt }),
       instruction: candidate
         ? 'Repair only unresolved gates on the active candidate; do not create a duplicate candidate.'
-        : 'Choose a small model shortlist, retrieve consequential evidence, then create one intent-bound candidate.',
+        : 'Choose a small model shortlist, optionally retrieve RAG references only when they materially help, then create one intent-bound candidate.',
     };
   });
 
@@ -186,7 +186,16 @@ export const thetaModelShortlistHandler: ToolHandler<unknown, Record<string, unk
 export const thetaPlannerEvaluateCandidateHandler: ToolHandler<unknown, Record<string, unknown>> = async (input, context) => {
   const value = record(input);
   const candidateRef = String(value.candidateRef);
-  const evidenceIds = value.evidenceIds as string[];
+  const runtime = await createThetaRuntimeComposition(runtimeDbFrom(context));
+  let candidateEvidenceIds: string[];
+  try {
+    const candidate = await new ThetaPlannerEventRepository(runtime.eventBridge).candidate(context.runId, candidateRef);
+    if (!candidate) throw new Error(`Candidate was not found before evaluation: ${candidateRef}.`);
+    candidateEvidenceIds = candidate.evidenceRefs;
+  } finally {
+    await runtime.close();
+  }
+  const evidenceIds = Array.isArray(value.evidenceIds) ? value.evidenceIds as string[] : candidateEvidenceIds;
   await thetaPlannerSelectEvidenceHandler({ candidateRef, evidenceIds }, context);
   const validation = await thetaPlannerValidatePreviewHandler({ candidateRef }, context) as Record<string, unknown>;
   return withRuntime(context, async (runtime) => {
@@ -243,3 +252,8 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const optionalText = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+const runtimeDbFrom = (context: ToolCallContext): string =>
+  typeof context.metadata?.thetaRuntimeDb === 'string'
+    ? context.metadata.thetaRuntimeDb
+    : defaultThetaV6RuntimeDb();

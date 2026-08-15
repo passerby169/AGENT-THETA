@@ -20,26 +20,41 @@ const output: CliOutput = {
 const help = `THETA V6 CLI Agent
 
 Usage:
+  theta
+  theta interactive
   theta doctor [--json]
+  theta start
   theta start --file <dataset> [--goal <text>] [--allow-remote-samples]
+  theta workflow intake --run-id <id> [--runtime-db <path>]
   theta workflow discover --run-id <id> [--runtime-db <path>]
   theta workflow prepare --run-id <id> [--runtime-db <path>]
+  theta advance --run-id <id> [--runtime-db <path>]
+  theta cancel --run-id <id> [--reason <text>] [--runtime-db <path>]
   theta workflow checkpoint --run-id <id>
-  theta workflow message --run-id <id> --text <natural language>
+  theta workflow decide --run-id <id> (--approve | --revise --text <reason>)
+  theta workflow message --run-id <id> --text <research answer>
   theta workflow activity --run-id <id> [--runtime-db <path>]
   theta status --run-id <id> [--runtime-db <path>]
   theta audit export --run-id <id> [--runtime-db <path>]
   theta workflow compile
 
-Only the Hypha-native V6 workflow is available. The fixed ResearchIntent,
-keyword Grilling and Planner V2 command paths were removed.`;
+Run theta (or theta start without a dataset) in an interactive terminal to meet
+the Agent first; it will explain the workflow and request data only when useful. Non-interactive commands remain
+available for scripts and debugging.`;
 
 export const runCli = async (args: string[], target: CliOutput = output): Promise<number> => {
   try {
     const normalized = args[0] === '--' ? args.slice(1) : args;
-    if (normalized.length === 0 || normalized.includes('--help') || normalized.includes('-h')) {
+    if (normalized.includes('--help') || normalized.includes('-h')) {
       target.write(help);
       return 0;
+    }
+    if (normalized.length === 0) {
+      if (!process.stdin.isTTY) {
+        target.write(help);
+        return 0;
+      }
+      return runThetaAgentCliCommand(['interactive'], target);
     }
     if (isThetaAgentCommand(normalized)) return runThetaAgentCliCommand(normalized, target);
     if (normalized[0] === 'workflow') return runThetaWorkflowCliCommand(normalized.slice(1), target);

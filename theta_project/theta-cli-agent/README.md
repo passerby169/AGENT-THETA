@@ -29,17 +29,17 @@ this runtime.
   MiniMax maintains an open ResearchWorkspace, asks at most one consequential
   dataset-grounded question per turn, and may absorb several meanings from one
   answer without a fixed intent form.
-- Optional ResearchCheckpoint synthesis with natural-language question,
-  revision, rejection, skip and current-Hash confirmation receipts. Only an
-  unqualified confirmation can release the FSM into `PlanDesign`.
+- Mandatory ResearchCheckpoint synthesis with deterministic approve or
+  natural-language revision feedback. Only direct owner approval can release
+  the FSM into `PlanDesign`.
 - Hypha native-default Memory composition: MongoDB stores durable versioned
   Dataset/Research understanding, Redis stores scoped working conversation
   memory, and Hypha builds the governed cross-phase context envelope. Raw
   dataset samples are not written to long-term memory.
 - A memory-aware `PlanDesign` ReAct phase in the same THETA Agent. MiniMax can
   load one compact case workspace, optionally inspect a small model shortlist,
-  retrieve local RAG evidence, explicitly create/read/revise a candidate, and
-  bind evidence plus run the Validator through a governed evaluation Tool.
+  optionally retrieve local RAG references, explicitly create/read/revise a
+  candidate, and run the Validator through a governed evaluation Tool.
   Each visible Tool keeps one clear lifecycle responsibility; MiniMax chooses
   the legal trajectory rather than being forced into a fixed call count.
 - Dynamic Research-to-Plan bindings generated from the current
@@ -48,13 +48,15 @@ this runtime.
   inherited DatasetWorkspace fact, a Python-pipeline-managed output, or a
   deliberately excluded non-blocking item. The Validator checks exact governed
   model/seed/hyperparameter paths rather than a fixed ResearchIntent form.
-- Event-sourced Candidate Plans, exact EvidenceSelection receipts, Validation
-  receipts, and a guarded hash chain. Evidence IDs must be returned by local
-  RAG and bound through `theta.planner.select_evidence`; a valid candidate can
-  only enter mandatory `PlanConfirmation`.
+- Event-sourced Candidate Plans, optional-citation audit receipts, Validation
+  receipts, and a guarded hash chain. A candidate may cite no RAG object. Any
+  ID it does cite must be returned by governed local RAG and exactly bound;
+  RAG coverage is never a model-eligibility or completion gate.
 - A deliberately small candidate presentation for CLI/Web consumers. MiniMax
   chooses one model, one random seed and that model's executable
-  hyperparameters, with legal evidence and Validator receipts. Dataset columns
+  hyperparameters, with one plan-specific natural-language explanation and a
+  Validator receipt. References appear only when the candidate actually uses
+  legal RAG objects. Dataset columns
   are inherited from the confirmed DatasetWorkspace; preprocessing, metrics,
   quality checks and visualizations are generated automatically by Python and
   are not Planner choices.
@@ -106,6 +108,57 @@ The native Memory runtime expects a MongoDB Replica Set and Redis. Defaults are
 
 ## DatasetDiscovery workflow
 
+### Guided interactive experience
+
+Run `theta` in Anaconda Prompt to enter the continuous THETA Agent session:
+
+```cmd
+conda activate theta
+cd /d D:\THETA\theta_project\theta-cli-agent
+theta
+```
+
+If the package is not globally linked, use:
+
+```cmd
+pnpm run cli
+```
+
+The session presents a welcome screen and first asks for the research
+direction and optional authorization for at most ten locally redacted samples.
+It then creates a dataset-free Run in `Intake`. MiniMax decides when data is
+needed and calls `theta.dataset.request_upload`; only then does the CLI show a
+drag-or-paste upload card. The CLI Host converts the selected file into a
+Run-scoped opaque `attachmentRef`, without exposing the local path to MiniMax.
+MiniMax must call `theta.dataset.ingest_attachment` to validate, hash,
+deduplicate, manage and register it as a `datasetRef`. From that point the
+session follows the Hypha FSM automatically and displays Agent thinking and
+Tool calls as they happen; users do not need to copy `runId` values into phase
+commands.
+
+Questions raised by MiniMax during data exploration or research grilling use
+ordinary natural-language input. Exactly three completed artifacts use the
+two-choice final card: Dataset understanding, Research intent, and Training
+plan. Choosing `1` confirms the exact current artifact without a model call;
+choosing `2` asks for a natural-language reason and sends that feedback back
+to the same intelligent phase. Training start remains a separate explicit
+side-effect authorization.
+
+`theta start` without `--file` opens the same guided session. Supplying
+`--file` keeps the non-interactive workflow below for scripts and debugging.
+
+The governed Intake boundary is:
+
+```text
+local path (CLI Host only)
+  -> attachmentRef (Run-scoped, visible to MiniMax)
+  -> theta.dataset.ingest_attachment
+  -> datasetRef (managed and immutable by hash)
+  -> DatasetDiscovery
+```
+
+### Manual and automation commands
+
 Create a Run first. Remote samples are optional; authorization allows the
 Agent to read at most ten locally redacted rows, but does not force it to use
 the sample tool.
@@ -119,8 +172,9 @@ discovery:
 
 ```cmd
 pnpm run cli -- workflow discover --run-id "theta-run-..." --json
-pnpm run cli -- workflow checkpoint --run-id "theta-run-..." --json
-pnpm run cli -- workflow message --run-id "theta-run-..." --text "source 只用于展示分组，修改后再次让我确认" --json
+pnpm run cli -- workflow checkpoint --run-id "theta-run-..."
+pnpm run cli -- workflow decide --run-id "theta-run-..." --approve --json
+pnpm run cli -- workflow decide --run-id "theta-run-..." --revise --text "source 只用于展示分组，修改后再次让我确认" --json
 pnpm run cli -- workflow conversation --run-id "theta-run-..." --json
 pnpm run cli -- workflow research --run-id "theta-run-..." --json
 pnpm run cli -- workflow plan --run-id "theta-run-..." --json
@@ -133,6 +187,20 @@ MiniMax may choose any legal read-tool trajectory. Successful completion
 requires it to submit a DatasetWorkspace supported by real observation
 receipts and propose the exact returned workspace hash. The FSM independently
 decides whether the transition is legal.
+
+Dataset, research, and plan confirmations use deterministic decisions. An
+interactive terminal presents two choices: approve and enter the next phase,
+or revise and explain why. Approval never invokes MiniMax. Revision persists
+the feedback and returns it to the owning intelligent phase. HTTP clients use
+`POST /api/v3/runs/:runId/checkpoint-decision` with the current
+`checkpointId`, `expectedContentHash`, and either `action=approve` or
+`action=revise` plus `feedback`.
+
+Intermediate questions inside DatasetDiscovery and ResearchDialogue remain
+ordinary conversation. Reply with `workflow message --text "..."`; the answer
+is persisted to Hypha Memory and the same Agent resumes the current phase.
+Only completed Dataset, Research, and Plan artifacts render the two-choice
+confirmation card.
 
 ## Server dataset upload
 
@@ -170,7 +238,7 @@ Relevant server configuration:
 
 - `THETA_DATASET_UPLOAD_DIR`: managed upload directory. Defaults to
   `.theta_agent/uploads` below the Agent root.
-- `THETA_MAX_DATASET_BYTES`: per-file upload limit. Defaults to 100 MB.
+- `THETA_MAX_DATASET_BYTES`: per-file upload limit in bytes. Defaults to 1 GiB; lower it on constrained servers if needed.
 - `THETA_WEB_ALLOW_LOCAL_FILE_PATH=true`: explicitly enables the local-only
   `filePath` Run input. It is disabled by default for the HTTP API; server
   clients should upload and use `datasetRef`.
@@ -178,6 +246,11 @@ Relevant server configuration:
 Supported suffixes are `.csv`, `.tsv`, `.json`, `.jsonl`, `.txt`, `.xlsx`,
 `.xls`, and `.parquet`. The upload must contain exactly one multipart field
 named `file`.
+
+Large `.xlsx` workbooks use `openpyxl` read-only streaming. THETA keeps the
+first ten rows and a bounded deterministic reservoir for profiling instead of
+materializing the complete worksheet in pandas. `openpyxl` is required for
+XLSX; `xlrd` and `pyarrow` are optional engines for legacy XLS and Parquet.
 
 ## Verification
 

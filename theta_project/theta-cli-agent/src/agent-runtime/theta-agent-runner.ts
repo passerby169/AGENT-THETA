@@ -28,6 +28,11 @@ import type { BuiltThetaPhaseContext } from './context-builder.js';
 import type { ThetaPhaseBudget } from './contracts.js';
 import { ThetaActivityEventRepository } from '../activities/activity-event-store.js';
 import { toolActivityCopy } from '../activities/activity-copy.js';
+import {
+  SQLiteToolFailureCircuitBreaker,
+  THETA_TOOL_FAILURE_LIMIT,
+  ThetaToolCircuitOpenError,
+} from './tool-failure-circuit-breaker.js';
 
 export interface ThetaAgentRunnerOptions {
   composition: ThetaRuntimeComposition;
@@ -226,7 +231,7 @@ export class ThetaAgentRunner {
       resolveToolExecutionScope: () => executionScope,
       onStep: async (step) => {
         await this.runManager.recordReactStep(runExecutionContext(context), step);
-        if (step.phase === 'act') await this.recordCompletedToolActivity(context, step.input);
+        if (step.phase === 'act') await this.recordCompletedToolActivity(context, step.input, step.output);
       },
       onCheckpoint: async (checkpoint) => {
         await this.runManager.recordReactContinuationCheckpoint(runExecutionContext(context), checkpoint);
@@ -242,25 +247,56 @@ export class ThetaAgentRunner {
     });
   }
 
-  private async recordCompletedToolActivity(context: ReActRunContext, input: unknown): Promise<void> {
+  private async recordCompletedToolActivity(context: ReActRunContext, input: unknown, output: unknown): Promise<void> {
     const action = record(input);
     if (action.type !== 'tool' || typeof action.target !== 'string') return;
     const toolId = action.target;
     const copy = toolActivityCopy(toolId, this.options.composition.toolRegistry.getSpec(toolId)?.displayName);
+    const observation = record(output);
+    const value = record(observation.value);
+    const failed = observation.source === 'tool' && value.status === 'failed';
+    const errorMessage = failed
+      ? String(record(value.error).message ?? '工具调用失败')
+      : undefined;
+    const runtimeDb = typeof context.metadata?.thetaRuntimeDb === 'string'
+      ? context.metadata.thetaRuntimeDb
+      : this.options.composition.filename;
+    const phase = typeof context.metadata?.phase === 'string' ? context.metadata.phase : 'unknown';
+    const datasetHash = typeof context.metadata?.datasetHash === 'string' ? context.metadata.datasetHash : 'no-dataset';
+    const breaker = new SQLiteToolFailureCircuitBreaker(runtimeDb);
+    let failureState;
+    try {
+      if (failed) {
+        failureState = breaker.recordFailure({
+          runId: context.runId,
+          phase,
+          datasetHash,
+          toolId,
+          lastErrorMessage: errorMessage as string,
+        });
+      } else if (observation.source === 'tool') {
+        breaker.recordSuccess({ runId: context.runId, phase, datasetHash, toolId });
+      }
+    } finally {
+      breaker.close();
+    }
     await new ThetaActivityEventRepository(this.options.composition.eventBridge).record({
       runId: context.runId,
       sessionId: context.memoryScope?.sessionId ?? `session:${context.runId}`,
       userId: context.memoryScope?.userId ?? 'local_user',
       activityId: `tool:${context.runId}:${context.stepId}:${typeof action.toolCallId === 'string' ? action.toolCallId : toolId}`,
-      phase: typeof context.metadata?.phase === 'string' ? context.metadata.phase : 'unknown',
-      kind: 'tool_completed',
+      phase,
+      kind: failed ? 'tool_failed' : 'tool_completed',
       toolId,
       displayName: copy.displayName,
-      userMessage: copy.completed,
-      status: 'completed',
+      userMessage: failed ? copy.failed : copy.completed,
+      status: failed ? 'failed' : 'completed',
       completedAt: this.now(),
-      safeOutputSummary: '工具结果已写入受治理的运行记录',
+      safeOutputSummary: failed
+        ? `${errorMessage}${failureState?.consecutiveFailures === THETA_TOOL_FAILURE_LIMIT ? '；已连续失败5次，再次失败将停止当前进程' : ''}`
+        : '工具调用成功，结果已写入受治理的运行记录',
     });
+    if (failureState?.open) throw new ThetaToolCircuitOpenError(failureState);
   }
 
   private buildRuntimeState(request: ThetaAgentQuantumRequest): ReActQuantumRuntimeState {

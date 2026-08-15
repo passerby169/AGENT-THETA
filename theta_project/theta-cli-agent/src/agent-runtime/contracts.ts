@@ -3,6 +3,7 @@ import type { ReActAction } from '@hypha/kernel';
 export const THETA_AGENT_CONTRACT_VERSION = '3.0.0' as const;
 
 export const THETA_INTELLIGENT_PHASES = [
+  'Intake',
   'DatasetDiscovery',
   'ResearchDialogue',
   'PlanDesign',
@@ -12,6 +13,13 @@ export const THETA_INTELLIGENT_PHASES = [
 export type ThetaIntelligentPhase = (typeof THETA_INTELLIGENT_PHASES)[number];
 
 export type ThetaCheckpointKind = 'dataset' | 'research' | 'plan';
+
+export interface ThetaIntakeQuestionRequest {
+  purpose: 'intake_question';
+  message: string;
+  question: string;
+  whyItMatters: string;
+}
 
 export interface ThetaResearchQuestionRequest {
   purpose: 'research_question';
@@ -25,7 +33,7 @@ export interface ThetaCheckpointRequest {
   targetHash: string;
 }
 
-export type ThetaHumanRequest = ThetaResearchQuestionRequest | ThetaCheckpointRequest;
+export type ThetaHumanRequest = ThetaIntakeQuestionRequest | ThetaResearchQuestionRequest | ThetaCheckpointRequest;
 
 export interface ThetaPhaseCompletionProposal {
   kind: 'phase_completion_proposed';
@@ -87,6 +95,9 @@ export interface ThetaPhaseContextIdentity {
 
 export const isThetaHumanRequest = (value: unknown): value is ThetaHumanRequest => {
   if (!isRecord(value) || typeof value.purpose !== 'string') return false;
+  if (value.purpose === 'intake_question') {
+    return nonEmpty(value.message) && nonEmpty(value.question) && nonEmpty(value.whyItMatters);
+  }
   if (value.purpose === 'research_question') {
     return nonEmpty(value.question) && nonEmpty(value.whyItMatters);
   }

@@ -1,11 +1,17 @@
 import { readFile } from "node:fs/promises";
+import { createInterface } from 'node:readline/promises';
 import path from "node:path";
 import { ThetaAgentApplicationService } from './application/theta-agent-application-service.js';
+import { presentConfirmationCard } from './checkpoints/confirmation-card-presenter.js';
 import {
   renderUserError,
   renderActivityLine,
-  renderPlanPresentation,
+  renderActivitySnapshot,
+  renderPhaseEnd,
+  renderPhaseStart,
+  renderConfirmationCard,
   renderValue,
+  renderWorkflowOutcome,
 } from "./presentation/terminal-renderer.js";
 
 interface WorkflowCliOutput {
@@ -25,6 +31,9 @@ export const thetaWorkflowHelp = `THETA workflow commands:
   workflow run --file <dataset> [--run-id <id>] [--runtime-db <path>]
       Start the V6 LLM-led workflow and enter DatasetDiscovery.
 
+  workflow intake --run-id <id> [--runtime-db <path>]
+      Let MiniMax request or ingest a Run-scoped dataset attachment.
+
   workflow discover --run-id <id> [--runtime-db <path>]
       Let MiniMax autonomously select governed tools and complete DatasetDiscovery.
 
@@ -38,11 +47,23 @@ export const thetaWorkflowHelp = `THETA workflow commands:
       Compile the approved Canonical Plan and run preflight checks, then stop
       at the independent TrainingConfirmation checkpoint without training.
 
+  workflow advance --run-id <id> [--runtime-db <path>]
+      Execute exactly one governed training lifecycle step and show every Tool call.
+
+  workflow cancel --run-id <id> [--runtime-db <path>] [--reason <text>]
+      Request cooperative cancellation of the current training run.
+
   workflow checkpoint --run-id <id> [--runtime-db <path>]
-      Read the current conversational checkpoint.
+      Show the current confirmation card and, in an interactive terminal,
+      choose “yes, next phase” or “no, explain why”.
+
+  workflow decide --run-id <id> (--approve | --revise --text <reason>)
+      Deterministically approve a data/research/plan checkpoint, or submit
+      natural-language revision feedback to MiniMax.
 
   workflow message --run-id <id> --text <natural language> [--message-id <id>]
-      Submit one user message to the current checkpoint and continue the Run.
+      Reply to an ordinary Intake, DatasetDiscovery, or ResearchDialogue question.
+      Final confirmation cards use workflow decide instead.
 
   workflow conversation --run-id <id> [--runtime-db <path>]
       Read the persisted conversation projection.
@@ -91,7 +112,7 @@ export const runThetaWorkflowCliCommand = async (
         userId: stringFlag(parsed, 'user-id') ?? 'local_user',
         workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
       });
-      write(result, json, output);
+      writeOutcome(result, json, output);
       return 0;
     }
     if (parsed.command === "status") {
@@ -105,30 +126,110 @@ export const runThetaWorkflowCliCommand = async (
     if (parsed.command === 'discover') {
       const runId = requiredFlag(parsed, 'run-id');
       const discovered = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runDatasetDiscovery(runId, runtimeDb));
-      write(discovered, json, output);
+      writeOutcome(discovered, json, output);
       return discovered.disposition === 'recoverable_error' ? 1 : 0;
     }
     if (parsed.command === 'research') {
       const runId = requiredFlag(parsed, 'run-id');
       const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runResearchDialogue(runId, runtimeDb));
-      write(result, json, output);
+      writeOutcome(result, json, output);
       return result.disposition === 'recoverable_error' ? 1 : 0;
     }
     if (parsed.command === 'plan') {
       const runId = requiredFlag(parsed, 'run-id');
       const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runPlanDesign(runId, runtimeDb));
-      if (!json && result.planPresentation) output.write(renderPlanPresentation(result.planPresentation));
-      else write(result, json, output);
+      if (!json && result.snapshot.currentState === 'PlanConfirmation') {
+        const checkpoint = await service.currentCheckpoint(runId, runtimeDb);
+        if (!checkpoint || checkpoint.kind !== 'plan') throw new Error('计划已生成，但当前训练计划确认卡不存在。');
+        output.write(renderConfirmationCard(checkpoint));
+      } else writeOutcome(result, json, output);
       return result.disposition === 'recoverable_error' ? 1 : 0;
     }
     if (parsed.command === 'prepare') {
       const runId = requiredFlag(parsed, 'run-id');
       const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.prepareTraining(runId, runtimeDb));
-      write(result, json, output);
+      writeOutcome(result, json, output);
       return result.disposition === 'ready_for_training_confirmation' ? 0 : 2;
     }
+    if (parsed.command === 'advance') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.advanceTraining(runId, runtimeDb));
+      writeOutcome(result, json, output);
+      return ['recovery_required', 'quarantined'].includes(result.disposition) ? 2 : 0;
+    }
+    if (parsed.command === 'cancel') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.cancelTraining(
+        runId,
+        stringFlag(parsed, 'reason') ?? '用户通过 CLI 请求取消训练',
+        runtimeDb,
+      ));
+      writeOutcome(result, json, output);
+      return result.disposition === 'recovery_required' ? 2 : 0;
+    }
     if (parsed.command === 'checkpoint') {
-      write(await service.currentCheckpoint(requiredFlag(parsed, 'run-id'), runtimeDb), json, output);
+      const runId = requiredFlag(parsed, 'run-id');
+      const [latestCheckpoint, snapshot] = await Promise.all([
+        service.currentCheckpoint(runId, runtimeDb),
+        service.status(runId, runtimeDb),
+      ]);
+      const checkpoint = latestCheckpoint !== null && latestCheckpoint.status === 'proposed' && ({
+        dataset: 'DatasetCheckpoint',
+        research: 'ResearchCheckpoint',
+        plan: 'PlanConfirmation',
+        training: 'TrainingConfirmation',
+      } as const)[latestCheckpoint.kind] === snapshot.currentState
+        ? latestCheckpoint
+        : null;
+      if (json) write(checkpoint === null ? null : { ...checkpoint, view: presentConfirmationCard(checkpoint) }, true, output);
+      else if (!checkpoint || checkpoint.status !== 'proposed') output.write('当前没有待确认内容。');
+      else output.write(renderConfirmationCard(checkpoint));
+      if (!json && checkpoint?.status === 'proposed' && ['dataset', 'research', 'plan'].includes(checkpoint.kind) && process.stdin.isTTY) {
+        const selected = await promptCheckpointDecision();
+        const result = await withActivityUpdates(service, runId, runtimeDb, false, output, () => service.decideCheckpoint({
+          runId,
+          action: selected.action,
+          checkpointId: checkpoint.checkpointId,
+          expectedContentHash: checkpoint.contentHash,
+          ...(selected.feedback === undefined ? {} : { feedback: selected.feedback }),
+          ...(runtimeDb ? { runtimeDb } : {}),
+          userId: stringFlag(parsed, 'user-id') ?? 'local_user',
+          workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
+        }));
+        writeOutcome(result, false, output);
+      }
+      return 0;
+    }
+    if (parsed.command === 'intake') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runIntake(runId, runtimeDb));
+      writeOutcome(result, json, output);
+      return result.disposition === 'recoverable_error' ? 1 : 0;
+    }
+    if (parsed.command === 'decide') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const approve = flag(parsed, 'approve');
+      const revise = flag(parsed, 'revise');
+      if (approve === revise) throw new Error('Choose exactly one of --approve or --revise.');
+      const feedback = stringFlag(parsed, 'text');
+      if (revise && !feedback) throw new Error('--revise requires --text <reason>.');
+      if (approve && feedback) throw new Error('--approve cannot be combined with --text.');
+      const checkpoint = await service.currentCheckpoint(runId, runtimeDb);
+      if (!checkpoint) throw new Error('There is no current checkpoint to decide.');
+      if (!['dataset', 'research', 'plan'].includes(checkpoint.kind)) {
+        throw new Error('Training confirmation remains an independent approval flow and cannot use workflow decide.');
+      }
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.decideCheckpoint({
+        runId,
+        action: approve ? 'approve' : 'revise',
+        checkpointId: checkpoint.checkpointId,
+        expectedContentHash: checkpoint.contentHash,
+        ...(feedback === undefined ? {} : { feedback }),
+        ...(runtimeDb ? { runtimeDb } : {}),
+        userId: stringFlag(parsed, 'user-id') ?? 'local_user',
+        workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
+      }));
+      writeOutcome(result, json, output);
       return 0;
     }
     if (parsed.command === 'conversation') {
@@ -136,7 +237,9 @@ export const runThetaWorkflowCliCommand = async (
       return 0;
     }
     if (parsed.command === 'activity') {
-      write(await service.activities(requiredFlag(parsed, 'run-id'), runtimeDb), json, output);
+      const snapshot = await service.activities(requiredFlag(parsed, 'run-id'), runtimeDb);
+      if (json) write(snapshot, true, output);
+      else output.write(renderActivitySnapshot(snapshot));
       return 0;
     }
     if (parsed.command === 'message') {
@@ -150,14 +253,19 @@ export const runThetaWorkflowCliCommand = async (
         workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
       };
       const snapshot = await service.status(runId, runtimeDb);
-      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, async () => snapshot.currentState === 'ResearchDialogue'
-        ? service.submitResearchMessage(request)
-        : snapshot.currentState === 'ResearchCheckpoint'
-          ? service.submitResearchCheckpointMessage(request)
-          : snapshot.currentState === 'PlanConfirmation'
-            ? service.submitPlanConfirmationMessage(request)
+      if (['DatasetCheckpoint', 'ResearchCheckpoint', 'PlanConfirmation'].includes(snapshot.currentState ?? '')) {
+        throw new Error('当前阶段需要明确选择。请运行 theta workflow checkpoint，或使用 workflow decide --approve / --revise --text。');
+      }
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, async () => snapshot.currentState === 'Intake'
+        ? service.submitIntakeMessage(request)
+        : snapshot.currentState === 'DatasetDiscovery'
+        ? service.submitDatasetDiscoveryMessage(request)
+        : snapshot.currentState === 'ResearchDialogue'
+          ? service.submitResearchMessage(request)
+        : snapshot.currentState === 'TrainingConfirmation'
+            ? service.submitTrainingConfirmationMessage(request)
           : service.submitCheckpointMessage(request));
-      write(result, json, output);
+      writeOutcome(result, json, output);
       return 'continuation' in result && result.continuation?.disposition === 'recoverable_error' ? 1 : 0;
     }
     if (parsed.command === "trace") {
@@ -203,6 +311,22 @@ const workflowInput = async (
   };
 };
 
+const promptCheckpointDecision = async (): Promise<{ action: 'approve' | 'revise'; feedback?: string }> => {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    let choice = '';
+    while (choice !== '1' && choice !== '2') {
+      choice = (await terminal.question('\n请输入 1 或 2：')).trim();
+    }
+    if (choice === '1') return { action: 'approve' };
+    let feedback = '';
+    while (!feedback) feedback = (await terminal.question('请说明原因或需要修改的内容：')).trim();
+    return { action: 'revise', feedback };
+  } finally {
+    terminal.close();
+  }
+};
+
 const withActivityUpdates = async <T>(
   service: ThetaAgentApplicationService,
   runId: string,
@@ -213,27 +337,30 @@ const withActivityUpdates = async <T>(
 ): Promise<T> => {
   if (json) return operation();
   const seen = new Set<string>();
-  let reading = false;
+  const initial = await service.activities(runId, runtimeDb);
+  const startingState = (await service.status(runId, runtimeDb)).currentState;
+  for (const activity of initial.recent) seen.add(activity.eventId);
+  output.write(renderPhaseStart(startingState ?? initial.phase));
+  let queue = Promise.resolve();
   const renderNew = async (): Promise<void> => {
-    if (reading) return;
-    reading = true;
-    try {
+    const task = queue.then(async () => {
       const snapshot = await service.activities(runId, runtimeDb);
       for (const activity of snapshot.recent) {
         if (seen.has(activity.eventId)) continue;
         seen.add(activity.eventId);
         output.write(renderActivityLine(activity));
       }
-    } finally {
-      reading = false;
-    }
+    });
+    queue = task.catch(() => undefined);
+    await task;
   };
-  await renderNew();
-  const timer = setInterval(() => { void renderNew(); }, 750);
+  const timer = setInterval(() => { void renderNew().catch(() => undefined); }, 500);
   try { return await operation(); }
   finally {
     clearInterval(timer);
     await renderNew();
+    const endingState = (await service.status(runId, runtimeDb)).currentState;
+    output.write(renderPhaseEnd(startingState ?? initial.phase, endingState));
   }
 };
 
@@ -269,6 +396,15 @@ const write = (
     return;
   }
   output.write(renderValue(value));
+};
+
+const writeOutcome = (
+  value: unknown,
+  json: boolean,
+  output: WorkflowCliOutput,
+): void => {
+  if (json) write(value, true, output);
+  else output.write(renderWorkflowOutcome(value));
 };
 
 const flag = (parsed: ParsedWorkflowArguments, name: string): boolean =>

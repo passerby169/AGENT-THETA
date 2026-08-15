@@ -2,7 +2,7 @@ import type { DatasetWorkspace, ResearchWorkspace } from '../workspaces/contract
 import type { CandidatePlan, PlanValidationReceipt } from './contracts.js';
 
 export interface CandidatePlanPresentation {
-  schemaVersion: '3.0.0';
+  schemaVersion: '4.0.0';
   candidateRef: string;
   candidatePlanHash: string;
   title: string;
@@ -34,7 +34,7 @@ export const presentCandidatePlan = (
   ]);
   const seed = candidate.experimentProtocol.seeds[0];
   return {
-    schemaVersion: '3.0.0',
+    schemaVersion: '4.0.0',
     candidateRef: candidate.candidateRef,
     candidatePlanHash: candidate.candidatePlanHash,
     title: `训练方案：${candidate.model.modelId}`,
@@ -43,11 +43,12 @@ export const presentCandidatePlan = (
       { title: '模型', content: `${candidate.model.modelId} / ${candidate.model.mode}` },
       { title: '超参数', content: entries(candidate.model.parameters) },
       { title: '随机种子', content: String(seed) },
-      { title: '选择理由', content: `${candidate.model.rationale} ${candidate.rationale}`.trim() },
-      { title: '依据', content: candidate.evidenceRefs.join('、') || '仅依据已审计的本地模型能力契约' },
+      { title: '方案解释', content: candidate.rationale },
+      ...(candidate.evidenceRefs.length > 0
+        ? [{ title: '参考依据', content: candidate.evidenceRefs.join('、') }]
+        : []),
       { title: '自动执行说明', content: '数据列继承已确认的数据理解；预处理、评估指标、质量检查和全部可视化由 Python 训练管线自动执行，不属于本计划的选择项。' },
-      { title: '校验', content: `Validator：${validation.valid ? '通过' : '未通过'}；收据：${validation.validationReceiptHash}` },
-      ...(warnings.length > 0 ? [{ title: '限制', content: warnings.join('；') }] : []),
+      { title: '校验', content: `Validator：${validation.valid ? '通过' : '未通过'}` },
     ],
     warnings,
     plan: {

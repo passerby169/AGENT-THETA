@@ -78,6 +78,15 @@ export class ThetaPlannerEventRepository {
     userId: string;
     receipt: PlanApprovalReceipt;
   }): Promise<PlanApprovalReceipt> {
+    const existing = await this.approvalReceipt(input.runId, input.receipt.candidatePlanHash);
+    if (existing) {
+      if (
+        existing.checkpointId === input.receipt.checkpointId &&
+        existing.checkpointContentHash === input.receipt.checkpointContentHash &&
+        existing.principalId === input.receipt.principalId
+      ) return structuredClone(existing);
+      throw new Error('A different approval receipt already exists for the current candidate hash.');
+    }
     await this.append(input, 'theta.plan.approval.bound', { receipt: input.receipt });
     return structuredClone(input.receipt);
   }

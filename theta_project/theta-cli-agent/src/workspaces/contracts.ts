@@ -1,11 +1,23 @@
 export const THETA_WORKSPACE_SCHEMA_VERSION = '3.1.0' as const;
 export type EpistemicStatus = 'observed' | 'user_stated' | 'inferred' | 'proposed' | 'user_confirmed';
-export interface WorkspaceSourceRef { id: string; kind: 'tool_observation' | 'user_message' | 'agent_decision' | 'artifact'; hash: string; }
+export interface WorkspaceSourceRef { id: string; kind: 'tool_observation' | 'user_message' | 'user_decision' | 'agent_decision' | 'artifact'; hash: string; }
 export interface DatasetStatement { id: string; semanticLabel: string; statement: string; epistemicStatus: EpistemicStatus; confidence: number; sourceRefs: string[]; supersedes?: string[]; }
+export interface DatasetColumnRole {
+  column: string;
+  proposedRole: string;
+  confidence: number;
+  sourceRefs: string[];
+  /**
+   * Older persisted workspaces do not contain this field. New dataset
+   * observations are always `proposed`; only an explicit user correction or
+   * acceptance of the Agent's recommendation may promote a role.
+   */
+  epistemicStatus?: EpistemicStatus;
+}
 export interface DatasetWorkspace {
   workspaceType: 'dataset'; schemaVersion: typeof THETA_WORKSPACE_SCHEMA_VERSION; runId: string; datasetHash: string; revision: number;
   narrative: string; statements: DatasetStatement[];
-  columnRoles: Array<{ column: string; proposedRole: string; confidence: number; sourceRefs: string[] }>;
+  columnRoles: DatasetColumnRole[];
   risks: string[]; sourceRefs: WorkspaceSourceRef[]; workspaceHash: string; updatedAt: string;
 }
 export interface ResearchStatement { id: string; semanticLabel: string; statement: string; importance: 'blocking' | 'important' | 'optional'; epistemicStatus: EpistemicStatus; confidence: number; sourceRefs: string[]; supersedes?: string[]; }

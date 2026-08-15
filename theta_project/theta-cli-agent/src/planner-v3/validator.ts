@@ -100,9 +100,9 @@ export const validateCandidatePlan = (input: {
   if (candidate.experimentProtocol.estimatedTrainingRuns !== expectedRuns) {
     blocking('TRAINING_RUN_COUNT_MISMATCH', 'experimentProtocol.estimatedTrainingRuns', `Expected ${expectedRuns} runs from seeds and baselines.`, 'agent_can_repair', ['set_estimated_runs_to_exact_value']);
   }
-  if (!evidenceReceipt) {
-    blocking('EVIDENCE_SELECTION_REQUIRED', 'evidenceRefs', 'Candidate evidence must be bound by theta.planner.select_evidence.', 'needs_more_observation', ['search_rag', 'select_evidence']);
-  } else {
+  if (!evidenceReceipt && candidate.evidenceRefs.length > 0) {
+    blocking('CITED_EVIDENCE_RECEIPT_REQUIRED', 'evidenceRefs', 'The candidate cites RAG references, so those exact IDs must be verified before approval.', 'needs_more_observation', ['verify_cited_evidence', 'remove_optional_citations']);
+  } else if (evidenceReceipt) {
     if (evidenceReceipt.candidatePlanHash !== candidate.candidatePlanHash || evidenceReceipt.researchWorkspaceHash !== research.workspaceHash) {
       blocking('STALE_EVIDENCE_RECEIPT', 'evidenceRefs', 'Evidence receipt is bound to a stale candidate or research workspace.', 'agent_can_repair', ['select_evidence_again']);
     }

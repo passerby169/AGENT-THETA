@@ -14,6 +14,7 @@ export interface ThetaContextBuildRequest {
   userId: string;
   workspaceId?: string;
   runtimeDb?: string;
+  uploadRoot?: string;
   phase: ThetaIntelligentPhase;
   datasetHash: string;
   datasetRef?: string;
@@ -102,6 +103,7 @@ export const buildThetaPhaseContext = (request: ThetaContextBuildRequest): Built
         memoryProfileId: 'theta-native-default',
       }),
       ...(request.runtimeDb === undefined ? {} : { thetaRuntimeDb: request.runtimeDb }),
+      ...(request.uploadRoot === undefined ? {} : { thetaUploadRoot: request.uploadRoot }),
     },
   };
   return {
@@ -113,6 +115,7 @@ export const buildThetaPhaseContext = (request: ThetaContextBuildRequest): Built
 };
 
 const permissionScopesFor = (phase: ThetaIntelligentPhase): string[] => {
+  if (phase === 'Intake') return ['theta:dataset:read', 'theta:dataset:write'];
   if (phase === 'DatasetDiscovery') return ['theta:dataset:read', 'theta:dataset:write'];
   if (phase === 'ResearchDialogue') {
     return ['theta:dataset:read', 'theta:dataset:write', 'theta:research:read', 'theta:research:write', 'theta:model:read', 'theta:rag:read'];

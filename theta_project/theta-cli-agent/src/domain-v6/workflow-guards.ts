@@ -2,6 +2,8 @@ import type { FSMGuardContext } from '@hypha/fsm';
 import { isThetaPhaseOutcome } from '../agent-runtime/contracts.js';
 
 export const THETA_V6_GUARDS = {
+  datasetRegistered: 'theta.guard.dataset-registered',
+  datasetUnderstood: 'theta.guard.dataset-understood',
   datasetReady: 'theta.guard.dataset-ready',
   datasetCheckpointResolved: 'theta.guard.dataset-checkpoint-resolved',
   researchCheckpointResolved: 'theta.guard.research-checkpoint-resolved',
@@ -24,19 +26,35 @@ export const evaluateThetaV6Guard = (
   context: Readonly<FSMGuardContext>,
 ): boolean => {
   const values = records(context);
-  if (guard === THETA_V6_GUARDS.datasetReady) {
+  if (guard === THETA_V6_GUARDS.datasetRegistered) {
+    const outcome = values.phaseOutcome;
+    return typeof values.datasetRef === 'string' && values.datasetRef.length > 0 &&
+      isHash(values.datasetHash) &&
+      isThetaPhaseOutcome(outcome) &&
+      outcome.kind === 'phase_completion_proposed' &&
+      outcome.phase === 'Intake' &&
+      outcome.artifactRef === values.datasetRef &&
+      outcome.artifactHash === values.datasetHash;
+  }
+  if (guard === THETA_V6_GUARDS.datasetUnderstood) {
     return phaseReady(values, 'DatasetDiscovery', 'datasetWorkspaceHash');
+  }
+  if (guard === THETA_V6_GUARDS.datasetReady) {
+    return phaseReady(values, 'DatasetDiscovery', 'datasetWorkspaceHash') &&
+      values.datasetPrimaryTextConfirmed === true;
   }
   if (guard === THETA_V6_GUARDS.researchReady) {
     return phaseReady(values, 'ResearchDialogue', 'researchWorkspaceHash');
   }
   if (guard === THETA_V6_GUARDS.datasetCheckpointResolved) {
     return values.datasetCheckpointStatus === 'confirmed' &&
+      values.datasetPrimaryTextConfirmed === true &&
       isHash(values.datasetCheckpointTargetHash) &&
       values.datasetCheckpointTargetHash === values.datasetWorkspaceHash;
   }
   if (guard === THETA_V6_GUARDS.researchCheckpointResolved) {
     return values.researchCheckpointStatus === 'confirmed' &&
+      values.researchBlockingIssuesResolved === true &&
       isHash(values.researchCheckpointTargetHash) &&
       values.researchCheckpointTargetHash === values.researchWorkspaceHash;
   }

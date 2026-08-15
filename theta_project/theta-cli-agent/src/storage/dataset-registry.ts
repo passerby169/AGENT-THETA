@@ -3,7 +3,6 @@ import { createReadStream, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { resolveDatasetFile, resolveManagedDatasetFile, type ResolvedDatasetFile } from '../tools/dataset-path-policy.js';
-import { defaultThetaV6RuntimeDb } from '../persistence/runtime-composition.js';
 
 export interface DatasetRecord {
   datasetRef: string;
@@ -20,7 +19,7 @@ export interface DatasetRecord {
 export class SQLiteDatasetRegistry {
   private readonly database: DatabaseSync;
 
-  constructor(readonly filename = defaultThetaV6RuntimeDb()) {
+  constructor(readonly filename: string) {
     const resolved = path.resolve(filename);
     mkdirSync(path.dirname(resolved), { recursive: true });
     this.database = new DatabaseSync(resolved);

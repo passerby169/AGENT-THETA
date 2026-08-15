@@ -30,11 +30,11 @@ const toolRef = (id: string): SpecRef => {
 };
 
 const stateGoals: Record<ThetaWorkflowState, string> = {
-  Intake: 'Register the dataset and establish immutable Run identity.',
+  Intake: 'Let MiniMax request and ingest one user-provided attachment through governed tools without receiving a filesystem path.',
   DatasetDiscovery: 'Let MiniMax autonomously explore verified dataset facts through governed tools.',
-  DatasetCheckpoint: 'Wait for optional conversational confirmation or revision of dataset understanding.',
+  DatasetCheckpoint: 'Require explicit owner confirmation or revision of the final dataset understanding.',
   ResearchDialogue: 'Let MiniMax develop an open research narrative without predefined intent fields.',
-  ResearchCheckpoint: 'Wait for optional conversational confirmation or revision of the research synthesis.',
+  ResearchCheckpoint: 'Require explicit owner confirmation or revision of the final research synthesis.',
   PlanDesign: 'Let MiniMax design, ground and validate an executable candidate plan.',
   PlanConfirmation: 'Require explicit owner confirmation of the current candidate plan hash.',
   CreatePlan: 'Create the canonical plan from the approved candidate and receipt.',
@@ -80,16 +80,12 @@ const transition = (from: ThetaWorkflowState, to: ThetaWorkflowState, guard?: st
 });
 
 const normalTransitions = [
-  transition(THETA_WORKFLOW_STATES.intake, THETA_WORKFLOW_STATES.datasetDiscovery),
+  transition(THETA_WORKFLOW_STATES.intake, THETA_WORKFLOW_STATES.intake),
+  transition(THETA_WORKFLOW_STATES.intake, THETA_WORKFLOW_STATES.datasetDiscovery, THETA_V6_GUARDS.datasetRegistered),
   transition(
     THETA_WORKFLOW_STATES.datasetDiscovery,
     THETA_WORKFLOW_STATES.datasetCheckpoint,
-    THETA_V6_GUARDS.datasetReady,
-  ),
-  transition(
-    THETA_WORKFLOW_STATES.datasetDiscovery,
-    THETA_WORKFLOW_STATES.researchDialogue,
-    THETA_V6_GUARDS.datasetReady,
+    THETA_V6_GUARDS.datasetUnderstood,
   ),
   transition(THETA_WORKFLOW_STATES.datasetCheckpoint, THETA_WORKFLOW_STATES.datasetDiscovery),
   transition(
@@ -102,11 +98,8 @@ const normalTransitions = [
     THETA_WORKFLOW_STATES.researchCheckpoint,
     THETA_V6_GUARDS.researchReady,
   ),
-  transition(
-    THETA_WORKFLOW_STATES.researchDialogue,
-    THETA_WORKFLOW_STATES.planDesign,
-    THETA_V6_GUARDS.researchReady,
-  ),
+  transition(THETA_WORKFLOW_STATES.researchDialogue, THETA_WORKFLOW_STATES.datasetCheckpoint),
+  transition(THETA_WORKFLOW_STATES.researchDialogue, THETA_WORKFLOW_STATES.datasetDiscovery),
   transition(THETA_WORKFLOW_STATES.researchCheckpoint, THETA_WORKFLOW_STATES.researchDialogue),
   transition(
     THETA_WORKFLOW_STATES.researchCheckpoint,
@@ -119,6 +112,8 @@ const normalTransitions = [
     THETA_V6_GUARDS.planValid,
   ),
   transition(THETA_WORKFLOW_STATES.planDesign, THETA_WORKFLOW_STATES.researchDialogue),
+  transition(THETA_WORKFLOW_STATES.planDesign, THETA_WORKFLOW_STATES.datasetCheckpoint),
+  transition(THETA_WORKFLOW_STATES.planDesign, THETA_WORKFLOW_STATES.datasetDiscovery),
   transition(THETA_WORKFLOW_STATES.planConfirmation, THETA_WORKFLOW_STATES.planDesign),
   transition(
     THETA_WORKFLOW_STATES.planConfirmation,
@@ -202,7 +197,6 @@ export const thetaTrainingDomainPackV6: DomainPackSpec = validateDomainPackSpec(
       taskType: 'theta_research_training',
       inputSchema: {
         type: 'object',
-        required: ['datasetRef'],
         properties: {
           datasetRef: { type: 'string', minLength: 1 },
           initialMessage: { type: 'string' },

@@ -53,6 +53,16 @@ export interface ThetaContextRequest {
   pendingAction?: { ref: string; reason?: string };
 }
 
+export interface PhaseHandoffMemory {
+  fromPhase: ThetaIntelligentPhase;
+  toPhase: ThetaIntelligentPhase;
+  conversationRevision: number;
+  messages: ThetaConversationMessage[];
+  summary: string;
+  workspaceHashes: string[];
+  humanVerified?: boolean;
+}
+
 export class ThetaGovernedMemoryService {
   constructor(
     private readonly memory: MemoryApplicationService,
@@ -267,12 +277,13 @@ export class ThetaGovernedMemoryService {
     message: ThetaConversationMessage,
   ): Promise<void> {
     const timestamp = this.now();
+    const safeContent = sanitizeMemoryText(message.content);
     await this.working.set({
       id: `message:${message.messageId}`,
       scope: thetaMemoryScope(identity),
       value: {
         role: message.role,
-        content: message.content,
+        content: safeContent,
         contentHash: message.contentHash,
         createdAt: message.createdAt,
         phase,
@@ -280,7 +291,69 @@ export class ThetaGovernedMemoryService {
       createdAt: timestamp,
       updatedAt: timestamp,
       metadata: { phase, messageId: message.messageId },
-    }, 86_400);
+    }, 7 * 24 * 60 * 60);
+    await this.remember({
+      identity,
+      phase,
+      memoryType: 'episodic',
+      subtype: 'conversation-message',
+      input: {
+        messageId: message.messageId,
+        role: message.role,
+        content: safeContent,
+        contentHash: message.contentHash,
+        createdAt: message.createdAt,
+        phase,
+      },
+      canonicalText: `${message.role === 'user' ? '用户' : 'THETA Agent'}：${safeContent}`,
+      source: {
+        type: message.role === 'user' ? 'user_message' : 'assistant_message',
+        sourceRunId: identity.runId,
+        sourceMessageId: message.messageId,
+      },
+      sourceRefs: [message.messageId],
+      humanVerified: false,
+      idempotencyKey: `conversation-message:${message.messageId}`,
+    });
+  }
+
+  async rememberPhaseHandoff(
+    identity: ThetaMemoryIdentity,
+    handoff: PhaseHandoffMemory,
+  ): Promise<ManagedMemoryRecord[]> {
+    const messages = selectGlobalConversationMessages(handoff.messages).map((message) => ({
+      messageId: message.messageId,
+      role: message.role,
+      content: sanitizeMemoryText(message.content),
+      createdAt: message.createdAt,
+    }));
+    return this.remember({
+      identity,
+      phase: handoff.toPhase,
+      memoryType: handoff.humanVerified ? 'semantic' : 'episodic',
+      subtype: 'phase-handoff',
+      input: {
+        fromPhase: handoff.fromPhase,
+        toPhase: handoff.toPhase,
+        conversationRevision: handoff.conversationRevision,
+        summary: sanitizeMemoryText(handoff.summary),
+        messages,
+        workspaceHashes: unique(handoff.workspaceHashes),
+      },
+      canonicalText: [
+        `阶段交接：${handoff.fromPhase} → ${handoff.toPhase}`,
+        sanitizeMemoryText(handoff.summary),
+        ...messages.map((message) => `${message.role === 'user' ? '用户' : 'THETA'}：${message.content}`),
+      ].join('\n'),
+      source: {
+        type: handoff.humanVerified ? 'human_review' : 'workflow_state',
+        sourceRunId: identity.runId,
+      },
+      sourceRefs: messages.map((message) => message.messageId),
+      workspaceHash: handoff.workspaceHashes.at(-1),
+      humanVerified: handoff.humanVerified,
+      idempotencyKey: `phase-handoff:${handoff.fromPhase}:${handoff.toPhase}:${handoff.conversationRevision}:${handoff.workspaceHashes.join(':')}`,
+    });
   }
 
   async buildContext(request: ThetaContextRequest): Promise<ContextEnvelope> {
@@ -296,7 +369,7 @@ export class ThetaGovernedMemoryService {
         query: request.query,
         memoryTypes: ['episodic', 'semantic', 'preference'],
         mode: 'hybrid',
-        topK: 12,
+        topK: 20,
         includeContent: true,
         includeProvenance: true,
         includeRelations: true,
@@ -364,18 +437,19 @@ const contextItems = (
       false,
       { authority: 'authoritative', workspaceHash: workspace.workspaceHash },
     ));
-  const messages = request.messages.slice(-20).map((message, index) =>
+  const selectedMessages = selectGlobalConversationMessages(request.messages);
+  const messages = selectedMessages.map((message, index) =>
     item(
       `message:${message.messageId}`,
       'messages',
       'theta.messages',
       JSON.stringify({ role: message.role, content: message.content, createdAt: message.createdAt }),
       90 + index / 100,
-      index >= Math.max(0, request.messages.length - 8),
+      message.role === 'user' || index >= Math.max(0, selectedMessages.length - 8),
       true,
       { authority: message.role === 'user' ? 'user_asserted' : 'unverified', messageId: message.messageId },
     ));
-  const workingItems = working.slice(-12).map((entry) =>
+  const workingItems = working.slice(-24).map((entry) =>
     item(`working:${entry.id}`, 'working_memory', 'theta.working', JSON.stringify(entry.value), 82, false, true, {
       authority: 'unverified', scopeHash: entry.scopeHash,
     }));
@@ -440,6 +514,21 @@ const researchWorkspaceText = (workspace: ResearchWorkspace): string => [
 ].join('\n');
 
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
+
+const selectGlobalConversationMessages = (
+  messages: ThetaConversationMessage[],
+): ThetaConversationMessage[] => {
+  const firstUserMessages = messages.filter((message) => message.role === 'user').slice(0, 6);
+  const recent = messages.slice(-24);
+  const selectedIds = new Set([...firstUserMessages, ...recent].map((message) => message.messageId));
+  return messages.filter((message) => selectedIds.has(message.messageId));
+};
+
+const sanitizeMemoryText = (value: string): string => value
+  .replace(/sk-api-[A-Za-z0-9_-]+/gu, '[API_KEY_REDACTED]')
+  .replace(/(?:[A-Za-z]:\\|\\\\)[^\r\n"']+/gu, '[LOCAL_PATH_REDACTED]')
+  .replace(/\/(?:Users|home|tmp|var)\/[^\r\n"']+/gu, '[LOCAL_PATH_REDACTED]')
+  .trim();
 
 const isHumanVerified = (record: ManagedMemoryRecord): boolean =>
   record.humanVerified === true || record.metadata?.humanVerified === true;

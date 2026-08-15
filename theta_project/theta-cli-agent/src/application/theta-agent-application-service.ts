@@ -29,19 +29,28 @@ import {
 import { SQLiteDatasetRegistry } from '../storage/dataset-registry.js';
 import { ThetaWorkspaceEventRepository } from '../workspaces/event-store.js';
 import { emptyDatasetWorkspace, emptyPlanWorkspace, emptyResearchWorkspace } from '../workspaces/factories.js';
+import {
+  confirmUniquePrimaryTextRole,
+  hasUniqueConfirmedPrimaryTextColumn,
+  primaryTextCandidates,
+} from '../workspaces/dataset-column-roles.js';
+import type { DatasetWorkspace } from '../workspaces/contracts.js';
 import { SQLiteRemoteSampleAuthorizationStore } from '../storage/remote-sample-authorization-store.js';
 import { createMiniMaxProviderFromEnv } from '../providers/minimax.js';
 import { buildThetaPhaseContext } from '../agent-runtime/context-builder.js';
 import { ThetaAgentRunner } from '../agent-runtime/theta-agent-runner.js';
+import { ThetaToolCircuitOpenError } from '../agent-runtime/tool-failure-circuit-breaker.js';
 import { thetaPhaseBudget } from '../agent-runtime/phase-budget.js';
 import { isThetaPhaseOutcome, type ThetaPhaseOutcome, type ThetaPlanConfirmationDecision } from '../agent-runtime/contracts.js';
 import { evaluateThetaV6Guard } from '../domain-v6/workflow-guards.js';
 import { ThetaConversationEventRepository } from '../messages/message-event-store.js';
 import type { ConversationDigest } from '../messages/contracts.js';
+import { ConversationMemoryCoordinator } from '../memory/conversation-memory-coordinator.js';
 import { ThetaCheckpointEventRepository } from '../checkpoints/checkpoint-service.js';
 import type {
   CheckpointFeedbackDecision,
   ConversationalCheckpoint,
+  SubmitCheckpointDecisionRequest,
   SubmitCheckpointMessageRequest,
 } from '../checkpoints/contracts.js';
 import { MiniMaxCheckpointFeedbackInterpreter } from '../checkpoints/feedback-interpreter.js';
@@ -57,6 +66,7 @@ import { ThetaPlannerEventRepository } from '../planner-v3/event-store.js';
 import { planApprovalReceiptHash, PLANNER_TOOL_CONTRACT_SNAPSHOT_HASH, type PlanApprovalReceipt } from '../planner-v3/contracts.js';
 import { presentCandidatePlan, type CandidatePlanPresentation } from '../planner-v3/candidate-presenter.js';
 import { ThetaActivityEventRepository } from '../activities/activity-event-store.js';
+import { toolActivityCopy } from '../activities/activity-copy.js';
 import type { AgentActivitySnapshot } from '../activities/contracts.js';
 import {
   ThetaExecutionEventRepository,
@@ -69,6 +79,10 @@ import {
   type HumanTrainingReview,
   type TrainingProgressSnapshot,
 } from '../execution/index.js';
+import {
+  DatasetAttachmentBroker,
+  type DatasetUploadRequestRecord,
+} from '../datasets/dataset-attachment-broker.js';
 
 export interface ThetaAgentCreateRunRequest {
   filePath?: string;
@@ -107,8 +121,21 @@ export interface ThetaAgentRunSnapshot {
   remoteSampleAuthorizationReceiptId?: string;
   pendingActionRef?: string;
   pendingReason?: string;
+  recoveryReason?: string;
   currentActivity?: AgentActivitySnapshot['current'];
   progress?: AgentActivitySnapshot['progress'];
+}
+
+export interface ThetaIntakeResult {
+  snapshot: ThetaAgentRunSnapshot;
+  disposition: 'completed' | 'waiting_human' | 'recoverable_error';
+  outcome?: ThetaPhaseOutcome;
+  uploadRequest?: DatasetUploadRequestRecord;
+  assistantMessage?: string;
+  toolIds: string[];
+  modelCalls: number;
+  quanta: number;
+  error?: string;
 }
 
 export interface ThetaDatasetDiscoveryResult {
@@ -155,6 +182,17 @@ export interface ThetaCheckpointMessageResult {
   checkpoint: ConversationalCheckpoint;
   assistantMessage: string;
   continuation?: ThetaDatasetDiscoveryResult;
+}
+
+export interface ThetaCheckpointDecisionResult {
+  snapshot: ThetaAgentRunSnapshot;
+  action: 'approve' | 'revise';
+  checkpoint: ConversationalCheckpoint;
+  assistantMessage: string;
+  modelCalls: number;
+  toolIds: string[];
+  approvalReceipt?: PlanApprovalReceipt;
+  continuation?: ThetaDatasetDiscoveryResult | ThetaResearchDialogueResult | ThetaPlanDesignResult;
 }
 
 export interface ThetaPlanConfirmationMessageResult {
@@ -233,19 +271,19 @@ export class ThetaAgentApplicationService {
     const userId = request.userId ?? 'local_user';
     const workspaceId = request.workspaceId ?? 'local_workspace';
     const scope = runtimeScope(runId, userId, workspaceId);
-    const runtime = await createThetaRuntimeComposition(runtimeDb);
+    const runtime = await createThetaRuntimeComposition(runtimeDb, { memory: true });
     const registry = new SQLiteDatasetRegistry(runtimeDb);
     const sampleAuthorizations = new SQLiteRemoteSampleAuthorizationStore(runtimeDb);
     try {
       const filePath = request.filePath?.trim();
       const datasetRef = request.datasetRef?.trim();
-      if (Boolean(filePath) === Boolean(datasetRef)) {
-        throw new Error('Create Run requires exactly one dataset source: filePath or datasetRef.');
-      }
+      if (filePath && datasetRef) throw new Error('Create Run accepts at most one dataset source: filePath or datasetRef.');
       const dataset = datasetRef
         ? registry.require(datasetRef, { userId, workspaceId })
-        : await registry.registerLocalFile(path.resolve(filePath as string), { userId, workspaceId });
-      const sampleAuthorization = request.allowRemoteSamples === true
+        : filePath
+          ? await registry.registerLocalFile(path.resolve(filePath), { userId, workspaceId })
+          : undefined;
+      const sampleAuthorization = request.allowRemoteSamples === true && dataset
         ? sampleAuthorizations.grant({
             runId,
             datasetHash: dataset.sha256,
@@ -255,25 +293,22 @@ export class ThetaAgentApplicationService {
           })
         : undefined;
       await seedRun(runtime, scope, {
-        datasetRef: dataset.datasetRef,
-        datasetHash: dataset.sha256,
+        ...(dataset === undefined ? {} : { datasetRef: dataset.datasetRef, datasetHash: dataset.sha256 }),
         initialMessage: request.initialMessage ?? '',
         allowRemoteSamples: request.allowRemoteSamples === true,
         remoteSampleAuthorizationReceiptId: sampleAuthorization?.receiptId ?? '',
         domainPackVersion: THETA_DOMAIN_PACK_VERSION,
         workflowVersion: THETA_WORKFLOW_VERSION,
       });
-      const workspaceRepository = new ThetaWorkspaceEventRepository(runtime.eventBridge);
-      const workspace = await workspaceRepository.revise({
-        runId,
-        sessionId: scope.sessionId,
-        userId,
-        expectedRevision: 0,
-        draft: emptyDatasetWorkspace(runId, `sha256:${dataset.sha256}`),
-        reason: 'Run intake established the initial dataset workspace.',
-      });
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
+      const conversationRepository = new ThetaConversationEventRepository(runtime.eventBridge);
+      const memoryCoordinator = new ConversationMemoryCoordinator(
+        conversationRepository,
+        runtime.memory,
+        { userId, workspaceId, sessionId: scope.sessionId, runId },
+      );
       if (request.initialMessage?.trim()) {
-        await new ThetaConversationEventRepository(runtime.eventBridge).append({
+        await memoryCoordinator.append('Intake', {
           runId,
           sessionId: scope.sessionId,
           userId,
@@ -282,19 +317,47 @@ export class ThetaAgentApplicationService {
           messageId: `message:intake:${runId}`,
         });
       }
-      const driver = runtimeDriver(runtime, async () => ({
-        result: {
-          kind: 'completed' as const,
-          variablesPatch: {
+      const datasetHash = dataset === undefined ? undefined : `sha256:${dataset.sha256}`;
+      const intakeOutcome = dataset === undefined ? undefined : {
+        kind: 'phase_completion_proposed' as const,
+        phase: 'Intake' as const,
+        artifactRef: dataset.datasetRef,
+        artifactHash: datasetHash as string,
+        rationale: 'A pre-registered dataset was supplied by an explicit non-interactive caller.',
+        confidence: 1,
+        checkpointDecision: 'skip' as const,
+      };
+      const workspace = dataset === undefined
+        ? undefined
+        : await new ThetaWorkspaceEventRepository(runtime.eventBridge).revise({
+            runId,
+            sessionId: scope.sessionId,
+            userId,
+            expectedRevision: 0,
+            draft: emptyDatasetWorkspace(runId, datasetHash as string),
+            reason: 'Run intake established the initial dataset workspace.',
+          });
+      const variables = dataset === undefined
+        ? {}
+        : {
             datasetRef: dataset.datasetRef,
-            datasetHash: `sha256:${dataset.sha256}`,
-            datasetWorkspaceHash: workspace.workspaceHash,
+            datasetHash,
+            datasetWorkspaceHash: workspace?.workspaceHash,
+            phaseOutcome: intakeOutcome,
             ...(sampleAuthorization === undefined
               ? {}
               : { remoteSampleAuthorizationReceiptId: sampleAuthorization.receiptId }),
-          },
+          };
+      const driver = runtimeDriver(runtime, async () => ({
+        result: {
+          kind: 'completed' as const,
+          variablesPatch: variables,
         },
-        transition: { to: THETA_WORKFLOW_STATES.datasetDiscovery },
+        transition: {
+          to: dataset === undefined ? THETA_WORKFLOW_STATES.intake : THETA_WORKFLOW_STATES.datasetDiscovery,
+          ...(dataset === undefined ? {} : { variablesPatch: variables }),
+        },
+        ...(dataset === undefined ? {} : { guardContext: { variables } }),
       }));
       await driver.run({
         scope,
@@ -304,12 +367,343 @@ export class ThetaAgentApplicationService {
         leaseTtlMs: 30_000,
         stateClaimTtlMs: 30_000,
       });
+      if (dataset !== undefined) {
+        await memoryCoordinator.handoff({
+          fromPhase: 'Intake',
+          toPhase: 'DatasetDiscovery',
+          summary: '用户通过受治理数据接入开始任务；上传前表达的目标和偏好必须继续影响数据探索。',
+          workspaceHashes: workspace === undefined ? [] : [workspace.workspaceHash],
+        });
+      }
       return this.status(runId, runtimeDb);
     } finally {
       sampleAuthorizations.close();
       registry.close();
       runtime.close();
     }
+  }
+
+  async runIntake(
+    runId: string,
+    runtimeDb = defaultThetaV6RuntimeDb(),
+    uploadRoot = managedUploadRoot(runtimeDb),
+  ): Promise<ThetaIntakeResult> {
+    const resolvedDb = path.resolve(runtimeDb);
+    const userId = 'local_user';
+    const workspaceId = 'local_workspace';
+    const sessionId = `session:${runId}`;
+    const scope = runtimeScope(runId, userId, workspaceId);
+    const runtime = await createThetaRuntimeComposition(resolvedDb, { memory: true });
+    const broker = new DatasetAttachmentBroker({ runtimeDb: resolvedDb, managedRoot: uploadRoot });
+    try {
+      const snapshot = await this.status(runId, resolvedDb);
+      if (snapshot.currentState !== THETA_WORKFLOW_STATES.intake || snapshot.status === 'waiting_human') {
+        throw new Error(`Run is not ready for Intake reasoning: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
+      }
+      if (snapshot.datasetRef || snapshot.datasetHash) throw new Error('Intake cannot replace an already registered Run dataset.');
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
+      const events = await runtime.events.read({ scope: { userId, runId } });
+      const initialMessage = initialMessageFrom(events);
+      const conversation = await new ThetaConversationEventRepository(runtime.eventBridge).digest(runId);
+      const uploadRequest = broker.current(runId, { userId, workspaceId });
+      const placeholderHash = `sha256:${'0'.repeat(64)}`;
+      const placeholderWorkspace = emptyDatasetWorkspace(runId, placeholderHash);
+      const workspaceHash = hashCanonicalJson(placeholderWorkspace);
+      const intakeWorkspace = { ...placeholderWorkspace, workspaceHash, revision: 0, updatedAt: new Date().toISOString() };
+      const verifiedIntake = {
+        runHasDataset: false,
+        upload: uploadRequest === null
+          ? { status: 'not_requested' }
+          : {
+              status: uploadRequest.status,
+              uploadRequestId: uploadRequest.uploadRequestId,
+              reason: uploadRequest.reason,
+              acceptedFormats: uploadRequest.acceptedFormats,
+              ...(uploadRequest.attachmentRef === undefined ? {} : { attachmentRef: uploadRequest.attachmentRef }),
+              ...(uploadRequest.displayName === undefined ? {} : { displayName: uploadRequest.displayName }),
+              ...(uploadRequest.suffix === undefined ? {} : { suffix: uploadRequest.suffix }),
+              ...(uploadRequest.sizeBytes === undefined ? {} : { sizeBytes: uploadRequest.sizeBytes }),
+              ...(uploadRequest.datasetRef === undefined ? {} : { datasetRef: uploadRequest.datasetRef }),
+              ...(uploadRequest.sha256 === undefined ? {} : { datasetHash: `sha256:${uploadRequest.sha256}` }),
+              ...(uploadRequest.allowRemoteSamples === undefined ? {} : { remoteSamplesAuthorized: uploadRequest.allowRemoteSamples }),
+            },
+        instruction: 'This is a trusted host projection. The local filesystem path is intentionally unavailable.',
+      };
+      const identity = { userId, workspaceId, sessionId, runId };
+      const conversationRepository = new ThetaConversationEventRepository(runtime.eventBridge);
+      const memoryCoordinator = new ConversationMemoryCoordinator(conversationRepository, runtime.memory, identity);
+      await memoryCoordinator.synchronize('Intake', conversation.messages);
+      const memoryEnvelope = await runtime.memory.buildContext({
+        identity,
+        phase: 'Intake',
+        stateId: THETA_WORKFLOW_STATES.intake,
+        systemInstructions: 'You are the single THETA Agent operating in Intake. Request and ingest data only through governed attachment tools.',
+        currentWorkspace: intakeWorkspace,
+        messages: conversation.messages,
+        query: [initialMessage, uploadRequest?.status, uploadRequest?.displayName, 'governed dataset intake'].filter(Boolean).join('\n'),
+      });
+      const built = buildThetaPhaseContext({
+        runId,
+        sessionId,
+        userId,
+        workspaceId,
+        runtimeDb: resolvedDb,
+        uploadRoot: path.resolve(uploadRoot),
+        phase: 'Intake',
+        datasetHash: placeholderHash,
+        workspace: intakeWorkspace,
+        memoryEnvelope,
+        messages: [
+          { role: 'system', content: JSON.stringify({ verifiedIntake }) },
+          ...(conversation.messages.length === 0
+            ? [{
+                role: 'user' as const,
+                content: initialMessage || '我刚进入 THETA。请先简洁介绍你能做什么、怎样与你协作，并邀请我用任何自然方式开始。',
+              }]
+            : conversation.messages.map((message) => ({
+                role: message.role,
+                content: JSON.stringify({ messageId: message.messageId, content: message.content }),
+              }))),
+        ],
+      });
+      const inference = this.inferenceProvider();
+      if (!inference) throw new Error('MINIMAX_API_KEY is not configured.');
+      const budget = thetaPhaseBudget('Intake');
+      const runner = new ThetaAgentRunner({
+        composition: runtime,
+        inference,
+        artifactRoot: path.join(path.dirname(resolvedDb), 'react-artifacts'),
+        quantumIterations: budget.quantumIterations,
+      });
+      let resume = false;
+      let quanta = 0;
+      const toolIds: string[] = [];
+      let modelCalls = 0;
+      let result: Awaited<ReturnType<ThetaAgentRunner['runQuantum']>>;
+      do {
+        result = await runner.runQuantum({ runId, sessionId, userId, built, budget, resume });
+        quanta += 1;
+        const steps = result.react?.steps ?? [];
+        toolIds.push(...steps
+          .filter((step) => step.phase === 'act')
+          .map((step) => record(step.input).target)
+          .filter((value): value is string => typeof value === 'string'));
+        modelCalls += steps.filter((step) => step.phase === 'reason').length;
+        resume = true;
+      } while (isQuantumYield(result));
+
+      if (result.disposition === 'waiting_human') {
+        const request = result.react?.finalAction?.input;
+        if (!request || typeof request !== 'object' || record(request).purpose !== 'intake_question') {
+          throw new Error('Intake produced an invalid natural conversation request.');
+        }
+        const message = String(record(request).message);
+        const question = String(record(request).question);
+        const assistant = await memoryCoordinator.append('Intake', {
+          runId,
+          sessionId,
+          userId,
+          role: 'assistant',
+          content: `${message}\n\n${question}`,
+        });
+        await runDatasetStateDecision(runtime, scope, {
+          result: {
+            kind: 'waiting',
+            wait: {
+              type: 'human',
+              key: `intake-question:${runId}:${assistant.messageId}`,
+              pendingActionRef: `theta.intake.question:${assistant.messageId}`,
+              reason: assistant.content,
+              metadata: { request: JSON.stringify(request) },
+            },
+          },
+        });
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: 'waiting_human',
+          assistantMessage: assistant.content,
+          uploadRequest: broker.current(runId, { userId, workspaceId }) ?? undefined,
+          toolIds,
+          modelCalls,
+          quanta,
+        };
+      }
+
+      if (result.disposition !== 'completed') {
+        const message = result.react?.error instanceof Error
+          ? result.react.error.message
+          : `Intake Agent ended with ${result.disposition}. ${JSON.stringify(safeReactFailureSummary(result.react))}`;
+        if (result.react?.error instanceof ThetaToolCircuitOpenError) {
+          await enterToolFailureRecovery(runtime, scope, result.react.error);
+        }
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: 'recoverable_error',
+          uploadRequest: broker.current(runId, { userId, workspaceId }) ?? undefined,
+          toolIds,
+          modelCalls,
+          quanta,
+          error: message,
+        };
+      }
+
+      const outcome = result.react?.output;
+      if (!isThetaPhaseOutcome(outcome)) throw new Error('Intake Agent did not return a legal phase outcome.');
+      const currentUpload = broker.current(runId, { userId, workspaceId });
+      if (outcome.kind === 'phase_blocked') {
+        if (!currentUpload || currentUpload.status !== 'waiting_for_file') {
+          throw new Error('Intake may wait for a user only after theta.dataset.request_upload created a pending request.');
+        }
+        await runDatasetStateDecision(runtime, scope, {
+          result: {
+            kind: 'waiting',
+            wait: {
+              type: 'human',
+              key: `dataset-upload:${currentUpload.uploadRequestId}`,
+              pendingActionRef: currentUpload.uploadRequestId,
+              reason: currentUpload.reason,
+              metadata: { actionRef: 'theta.dataset.upload', acceptedFormats: currentUpload.acceptedFormats.join(',') },
+            },
+          },
+        });
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: 'waiting_human',
+          outcome,
+          uploadRequest: currentUpload,
+          toolIds,
+          modelCalls,
+          quanta,
+        };
+      }
+      if (outcome.kind !== 'phase_completion_proposed' || outcome.phase !== 'Intake') {
+        throw new Error('Intake Agent did not return an Intake completion proposal.');
+      }
+      if (!currentUpload?.datasetRef || currentUpload.status !== 'ingested' || !currentUpload.sha256) {
+        throw new Error('Intake completion is not bound to an ingested attachment.');
+      }
+      const registry = new SQLiteDatasetRegistry(resolvedDb);
+      const sampleAuthorizations = new SQLiteRemoteSampleAuthorizationStore(resolvedDb);
+      try {
+        const dataset = registry.require(currentUpload.datasetRef, { userId, workspaceId });
+        const datasetHash = `sha256:${dataset.sha256}`;
+        if (outcome.artifactRef !== dataset.datasetRef || outcome.artifactHash !== datasetHash) {
+          throw new Error('Intake completion does not match the governed ingestion result.');
+        }
+        const workspaceRepository = new ThetaWorkspaceEventRepository(runtime.eventBridge);
+        const existingWorkspace = await workspaceRepository.current(runId, 'dataset');
+        const workspace = existingWorkspace ?? await workspaceRepository.revise({
+          runId,
+          sessionId,
+          userId,
+          expectedRevision: 0,
+          draft: emptyDatasetWorkspace(runId, datasetHash),
+          reason: 'Governed Intake attached the ingested dataset to this Run.',
+        });
+        const allowRemoteSamples = currentUpload.allowRemoteSamples === true;
+        const sampleAuthorization = allowRemoteSamples
+          ? sampleAuthorizations.grant({ runId, datasetHash: dataset.sha256, userId, workspaceId, maxRows: 10 })
+          : undefined;
+        const outcomeJson = structuredClone(outcome) as unknown as Record<string, string | number>;
+        const variables = {
+          datasetRef: dataset.datasetRef,
+          datasetHash,
+          datasetWorkspaceHash: workspace.workspaceHash,
+          phaseOutcome: outcomeJson,
+          ...(sampleAuthorization === undefined ? {} : { remoteSampleAuthorizationReceiptId: sampleAuthorization.receiptId }),
+        };
+        await runDatasetStateDecision(runtime, scope, {
+          result: { kind: 'completed', output: outcomeJson, variablesPatch: variables },
+          transition: {
+            to: THETA_WORKFLOW_STATES.datasetDiscovery,
+            reason: 'MiniMax ingested a Run-scoped attachment and the FSM verified its exact registered identity.',
+            variablesPatch: variables,
+          },
+          guardContext: { variables },
+        });
+        await memoryCoordinator.handoff({
+          fromPhase: 'Intake',
+          toPhase: 'DatasetDiscovery',
+          summary: `已通过受治理附件接入数据集 ${currentUpload.displayName ?? '未命名数据集'}；上传前对话继续作为全局研究上下文。`,
+          workspaceHashes: [workspace.workspaceHash],
+        });
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: 'completed',
+          outcome,
+          uploadRequest: currentUpload,
+          toolIds,
+          modelCalls,
+          quanta,
+        };
+      } finally {
+        sampleAuthorizations.close();
+        registry.close();
+      }
+    } finally {
+      await runtime.close();
+    }
+  }
+
+  currentDatasetUploadRequest(
+    runId: string,
+    runtimeDb = defaultThetaV6RuntimeDb(),
+    uploadRoot = managedUploadRoot(runtimeDb),
+  ): DatasetUploadRequestRecord | null {
+    return new DatasetAttachmentBroker({ runtimeDb: path.resolve(runtimeDb), managedRoot: uploadRoot })
+      .current(runId, { userId: 'local_user', workspaceId: 'local_workspace' });
+  }
+
+  async stageDatasetAttachment(request: {
+    runId: string;
+    uploadRequestId: string;
+    filePath: string;
+    runtimeDb?: string;
+    uploadRoot?: string;
+    userId?: string;
+    workspaceId?: string;
+    allowRemoteSamples?: boolean;
+  }): Promise<DatasetUploadRequestRecord> {
+    const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
+    const userId = request.userId ?? 'local_user';
+    const workspaceId = request.workspaceId ?? 'local_workspace';
+    const snapshot = await this.status(request.runId, resolvedDb);
+    if (snapshot.currentState !== THETA_WORKFLOW_STATES.intake || snapshot.status !== 'waiting_human') {
+      throw new Error(`Run is not waiting for a dataset upload: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
+    }
+    if (snapshot.pendingActionRef !== request.uploadRequestId) throw new Error('Upload request does not match the current FSM human wait.');
+    const broker = new DatasetAttachmentBroker({
+      runtimeDb: resolvedDb,
+      managedRoot: request.uploadRoot ?? managedUploadRoot(resolvedDb),
+    });
+    const staged = await broker.stageLocalFile({
+      runId: request.runId,
+      uploadRequestId: request.uploadRequestId,
+      filePath: request.filePath,
+      userId,
+      workspaceId,
+      allowRemoteSamples: request.allowRemoteSamples === true,
+    });
+    const runtime = await createThetaRuntimeComposition(resolvedDb);
+    try {
+      await resolveHumanWait(runtime, runtimeScope(request.runId, userId, workspaceId), snapshot, userId, 'approved');
+      await new ThetaActivityEventRepository(runtime.eventBridge).record({
+        runId: request.runId,
+        sessionId: `session:${request.runId}`,
+        userId,
+        activityId: `attachment:${staged.attachmentRef}`,
+        phase: THETA_WORKFLOW_STATES.intake,
+        kind: 'phase_completed',
+        displayName: '接收用户选择的附件',
+        userMessage: '已接收文件，正在交还给 Agent 决定如何摄取',
+        status: 'completed',
+        safeOutputSummary: `attachmentRef=${staged.attachmentRef}; file=${staged.displayName}; size=${staged.sizeBytes}`,
+        completedAt: new Date().toISOString(),
+      });
+    } finally {
+      runtime.close();
+    }
+    return staged;
   }
 
   async status(runId: string, runtimeDb = defaultThetaV6RuntimeDb()): Promise<ThetaAgentRunSnapshot> {
@@ -366,6 +760,9 @@ export class ThetaAgentApplicationService {
         ...(projection.pendingWait?.reason === undefined
           ? {}
           : { pendingReason: projection.pendingWait.reason }),
+        ...(typeof variables.recoveryReason === 'string'
+          ? { recoveryReason: variables.recoveryReason }
+          : {}),
         ...(activity.current === undefined ? {} : { currentActivity: activity.current }),
         progress: activity.progress,
       };
@@ -406,6 +803,12 @@ export class ThetaAgentApplicationService {
         ?.filter((toolId) => !revisionPass || toolId !== THETA_TOOL_IDS.datasetSubmitUnderstanding);
       if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
       const identity = { userId, workspaceId, sessionId, runId };
+      const memoryCoordinator = new ConversationMemoryCoordinator(
+        new ThetaConversationEventRepository(runtime.eventBridge),
+        runtime.memory,
+        identity,
+      );
+      await memoryCoordinator.synchronize('DatasetDiscovery', conversation.messages);
       await runtime.memory.rememberDatasetWorkspace(identity, initialWorkspace);
       const memoryEnvelope = await runtime.memory.buildContext({
         identity,
@@ -490,6 +893,17 @@ export class ThetaAgentApplicationService {
         const message = result.react?.error instanceof Error
           ? result.react.error.message
           : `Dataset Agent ended with ${result.disposition}. ${JSON.stringify(safeReactFailureSummary(result.react))}`;
+        if (result.react?.error instanceof ThetaToolCircuitOpenError) {
+          await enterToolFailureRecovery(runtime, runtimeScope(runId, userId, workspaceId), result.react.error);
+          return {
+            snapshot: await this.status(runId, resolvedDb),
+            disposition: 'recoverable_error',
+            toolIds,
+            modelCalls,
+            quanta,
+            error: message,
+          };
+        }
         await runDatasetStateDecision(runtime, runtimeScope(runId, userId, workspaceId), {
           result: {
             kind: 'continued',
@@ -517,10 +931,11 @@ export class ThetaAgentApplicationService {
       if (!workspace || workspace.workspaceType !== 'dataset' || workspace.workspaceHash !== outcome.artifactHash) {
         throw new Error('Dataset Agent completion is not bound to the current DatasetWorkspace hash.');
       }
+      const primaryTextConfirmed = hasUniqueConfirmedPrimaryTextColumn(workspace);
       await runtime.memory.rememberDatasetWorkspace(identity, workspace, {
-        checkpointStatus: outcome.checkpointDecision === 'request' ? 'proposed' : 'skipped',
+        checkpointStatus: 'proposed',
       });
-      const target = outcome.checkpointDecision === 'request' ? THETA_WORKFLOW_STATES.datasetCheckpoint : THETA_WORKFLOW_STATES.researchDialogue;
+      const target = THETA_WORKFLOW_STATES.datasetCheckpoint;
       const outcomeJson = structuredClone(outcome) as unknown as Record<string, string | number>;
       await runDatasetStateDecision(runtime, runtimeScope(runId, userId, workspaceId), {
         result: {
@@ -528,6 +943,7 @@ export class ThetaAgentApplicationService {
           output: outcomeJson,
           variablesPatch: {
             datasetWorkspaceHash: workspace.workspaceHash,
+            datasetPrimaryTextConfirmed: primaryTextConfirmed,
             phaseOutcome: outcomeJson,
           },
         },
@@ -536,17 +952,25 @@ export class ThetaAgentApplicationService {
           reason: 'MiniMax proposed DatasetDiscovery completion and the FSM accepted the verified workspace hash.',
           variablesPatch: {
             datasetWorkspaceHash: workspace.workspaceHash,
+            datasetPrimaryTextConfirmed: primaryTextConfirmed,
             phaseOutcome: outcomeJson,
           },
         },
         guardContext: {
-          variables: { datasetWorkspaceHash: workspace.workspaceHash, phaseOutcome: outcomeJson },
+          variables: { datasetWorkspaceHash: workspace.workspaceHash, datasetPrimaryTextConfirmed: primaryTextConfirmed, phaseOutcome: outcomeJson },
         },
       });
-      if (target === THETA_WORKFLOW_STATES.datasetCheckpoint) {
-        const checkpoint = await new ThetaCheckpointEventRepository(runtime.eventBridge).proposeDataset({ runId, sessionId, userId, workspace, requestedBy: 'minimax', rationale: outcome.rationale });
-        await runtime.humanWaits.create({ commandId: `create-wait:${checkpoint.checkpointId}`, scope: runtimeScope(runId, userId, workspaceId), ownerId: 'theta-v6-checkpoint', leaseTtlMs: 30_000, waitId: `wait:${checkpoint.checkpointId}`, pendingActionRef: checkpoint.checkpointId, reason: checkpoint.summaryForUser, requestedAt: new Date().toISOString() });
-      }
+      const checkpoint = await new ThetaCheckpointEventRepository(runtime.eventBridge).proposeDataset({
+        runId,
+        sessionId,
+        userId,
+        workspace,
+        requestedBy: 'fsm',
+        rationale: primaryTextConfirmed
+          ? '数据理解最终确认是进入研究对话前的强制边界。'
+          : `进入研究对话前必须确认唯一主文本列。Agent 当前建议：${primaryTextCandidates(workspace).map((role) => role.column).join('、') || '尚无唯一候选'}。`,
+      });
+      await runtime.humanWaits.create({ commandId: `create-wait:${checkpoint.checkpointId}`, scope: runtimeScope(runId, userId, workspaceId), ownerId: 'theta-v6-checkpoint', leaseTtlMs: 30_000, waitId: `wait:${checkpoint.checkpointId}`, pendingActionRef: checkpoint.checkpointId, reason: checkpoint.summaryForUser, requestedAt: new Date().toISOString() });
       return {
         snapshot: await this.status(runId, resolvedDb),
         disposition: 'completed',
@@ -579,6 +1003,24 @@ export class ThetaAgentApplicationService {
       const repository = new ThetaWorkspaceEventRepository(runtime.eventBridge);
       const dataset = await repository.current(runId, 'dataset');
       if (!dataset || dataset.workspaceType !== 'dataset') throw new Error('DatasetWorkspace was not found.');
+      const datasetRoleRecovery = await recoverDatasetRoleBoundary({
+        runtime,
+        scope: runtimeScope(runId, userId, workspaceId),
+        workspace: dataset,
+        fromState: THETA_WORKFLOW_STATES.researchDialogue,
+        sessionId,
+        userId,
+      });
+      if (datasetRoleRecovery) {
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: datasetRoleRecovery.waiting ? 'waiting_human' : 'completed',
+          assistantMessage: datasetRoleRecovery.assistantMessage,
+          toolIds: [],
+          modelCalls: 0,
+          quanta: 0,
+        };
+      }
       let research = await repository.current(runId, 'research');
       if (!research) {
         research = await repository.revise({
@@ -596,11 +1038,10 @@ export class ThetaAgentApplicationService {
       const events = await runtime.events.read({ scope: { userId, runId } });
       const initialMessage = initialMessageFrom(events);
       const identity = { userId, workspaceId, sessionId, runId };
+      const memoryCoordinator = new ConversationMemoryCoordinator(conversationRepository, runtime.memory, identity);
       await runtime.memory.rememberDatasetWorkspace(identity, dataset, { phase: 'ResearchDialogue' });
       await runtime.memory.rememberResearchWorkspace(identity, research);
-      for (const message of conversation.messages.slice(-12)) {
-        await runtime.memory.rememberMessage(identity, 'ResearchDialogue', message);
-      }
+      await memoryCoordinator.synchronize('ResearchDialogue', conversation.messages);
       const latestUserMessage = [...conversation.messages].reverse().find((message) => message.role === 'user');
       const memoryEnvelope = await runtime.memory.buildContext({
         identity,
@@ -656,7 +1097,7 @@ export class ThetaAgentApplicationService {
         }
         const question = String(record(request).question);
         const whyItMatters = String(record(request).whyItMatters);
-        const assistant = await conversationRepository.append({
+        const assistant = await memoryCoordinator.append('ResearchDialogue', {
           runId,
           sessionId,
           userId,
@@ -664,7 +1105,6 @@ export class ThetaAgentApplicationService {
           content: `${question}\n\n${whyItMatters}`,
           ...(latestUserMessage === undefined ? {} : { replyToMessageId: latestUserMessage.messageId }),
         });
-        await runtime.memory.rememberMessage(identity, 'ResearchDialogue', assistant);
         await runDatasetStateDecision(runtime, runtimeScope(runId, userId, workspaceId), {
           result: {
             kind: 'waiting',
@@ -681,11 +1121,17 @@ export class ThetaAgentApplicationService {
       }
       if (result.disposition !== 'completed') {
         const message = result.react?.error instanceof Error ? result.react.error.message : `ResearchDialogue ended with ${result.disposition}.`;
+        if (result.react?.error instanceof ThetaToolCircuitOpenError) {
+          await enterToolFailureRecovery(runtime, runtimeScope(runId, userId, workspaceId), result.react.error);
+        }
         return { snapshot: await this.status(runId, resolvedDb), disposition: 'recoverable_error', toolIds, modelCalls, quanta, error: message };
       }
       const outcome = result.react?.output;
       if (!isThetaPhaseOutcome(outcome) || outcome.kind !== 'phase_completion_proposed' || outcome.phase !== 'ResearchDialogue') {
         throw new Error('THETA Agent did not return a ResearchDialogue completion proposal.');
+      }
+      if (outcome.checkpointDecision !== 'request') {
+        throw new Error('ResearchCheckpoint is mandatory; ResearchDialogue cannot skip it.');
       }
       research = await repository.current(runId, 'research');
       if (!research || research.workspaceType !== 'research' || research.workspaceHash !== outcome.artifactHash) {
@@ -696,23 +1142,10 @@ export class ThetaAgentApplicationService {
         throw new Error('ResearchDialogue cannot complete while consequential questions or contradictions remain open.');
       }
       await runtime.memory.rememberResearchWorkspace(identity, research, {
-        checkpointStatus: outcome.checkpointDecision === 'request' ? 'proposed' : 'skipped',
+        checkpointStatus: 'proposed',
       });
-      const target = outcome.checkpointDecision === 'request'
-        ? THETA_WORKFLOW_STATES.researchCheckpoint
-        : THETA_WORKFLOW_STATES.planDesign;
+      const target = THETA_WORKFLOW_STATES.researchCheckpoint;
       const checkpointRepository = new ThetaCheckpointEventRepository(runtime.eventBridge);
-      if (outcome.checkpointDecision === 'skip') {
-        await checkpointRepository.proposeResearch({
-          runId,
-          sessionId,
-          userId,
-          workspace: research,
-          requestedBy: 'minimax',
-          rationale: outcome.rationale,
-          status: 'skipped',
-        });
-      }
       const outcomeJson = structuredClone(outcome) as unknown as Record<string, string | number>;
       await runDatasetStateDecision(runtime, runtimeScope(runId, userId, workspaceId), {
         result: { kind: 'completed', output: outcomeJson, variablesPatch: { researchWorkspaceHash: research.workspaceHash, phaseOutcome: outcomeJson } },
@@ -723,21 +1156,19 @@ export class ThetaAgentApplicationService {
         },
         guardContext: { variables: { researchWorkspaceHash: research.workspaceHash, phaseOutcome: outcomeJson } },
       });
-      if (target === THETA_WORKFLOW_STATES.researchCheckpoint) {
-        const checkpoint = await checkpointRepository.proposeResearch({
-          runId, sessionId, userId, workspace: research, requestedBy: 'minimax', rationale: outcome.rationale,
-        });
-        await runtime.humanWaits.create({
-          commandId: `create-wait:${checkpoint.checkpointId}`,
-          scope: runtimeScope(runId, userId, workspaceId),
-          ownerId: 'theta-v7-research-checkpoint',
-          leaseTtlMs: 30_000,
-          waitId: `wait:${checkpoint.checkpointId}`,
-          pendingActionRef: checkpoint.checkpointId,
-          reason: checkpoint.summaryForUser,
-          requestedAt: new Date().toISOString(),
-        });
-      }
+      const checkpoint = await checkpointRepository.proposeResearch({
+        runId, sessionId, userId, workspace: research, requestedBy: 'fsm', rationale: '研究意图最终确认是进入计划设计前的强制边界。',
+      });
+      await runtime.humanWaits.create({
+        commandId: `create-wait:${checkpoint.checkpointId}`,
+        scope: runtimeScope(runId, userId, workspaceId),
+        ownerId: 'theta-v7-research-checkpoint',
+        leaseTtlMs: 30_000,
+        waitId: `wait:${checkpoint.checkpointId}`,
+        pendingActionRef: checkpoint.checkpointId,
+        reason: checkpoint.summaryForUser,
+        requestedAt: new Date().toISOString(),
+      });
       return { snapshot: await this.status(runId, resolvedDb), disposition: 'completed', outcome, toolIds, modelCalls, quanta };
     } finally {
       await runtime.close();
@@ -766,6 +1197,24 @@ export class ThetaAgentApplicationService {
       const research = await workspaces.current(runId, 'research');
       if (!dataset || dataset.workspaceType !== 'dataset') throw new Error('DatasetWorkspace was not found.');
       if (!research || research.workspaceType !== 'research') throw new Error('ResearchWorkspace was not found.');
+      const datasetRoleRecovery = await recoverDatasetRoleBoundary({
+        runtime,
+        scope: runtimeScope(runId, userId, workspaceId),
+        workspace: dataset,
+        fromState: THETA_WORKFLOW_STATES.planDesign,
+        sessionId,
+        userId,
+      });
+      if (datasetRoleRecovery) {
+        return {
+          snapshot: await this.status(runId, resolvedDb),
+          disposition: datasetRoleRecovery.waiting ? 'waiting_human' : 'completed',
+          assistantMessage: datasetRoleRecovery.assistantMessage,
+          toolIds: [],
+          modelCalls: 0,
+          quanta: 0,
+        };
+      }
       let plan = await workspaces.current(runId, 'plan');
       if (!plan || plan.workspaceType !== 'plan' || plan.researchWorkspaceHash !== research.workspaceHash) {
         plan = await workspaces.revise({
@@ -781,6 +1230,7 @@ export class ThetaAgentApplicationService {
       if (plan.workspaceType !== 'plan') throw new Error('PlanWorkspace has the wrong type.');
       const conversations = new ThetaConversationEventRepository(runtime.eventBridge);
       const conversation = await conversations.digest(runId, 40);
+      const memoryCoordinator = new ConversationMemoryCoordinator(conversations, runtime.memory, identity);
       const planner = new ThetaPlannerEventRepository(runtime.eventBridge);
       const priorCandidates = (await planner.candidates(runId)).slice(-6);
       await runtime.memory.rememberDatasetWorkspace(identity, dataset, { phase: 'PlanDesign' });
@@ -793,9 +1243,7 @@ export class ThetaAgentApplicationService {
         const priorValidation = await planner.validationReceipt(runId, candidate.candidatePlanHash);
         if (priorValidation) await runtime.memory.rememberPlanValidation(identity, priorValidation);
       }
-      for (const message of conversation.messages.slice(-12)) {
-        await runtime.memory.rememberMessage(identity, 'PlanDesign', message);
-      }
+      await memoryCoordinator.synchronize('PlanDesign', conversation.messages);
       const latestUserMessage = [...conversation.messages].reverse().find((message) => message.role === 'user');
       const memoryEnvelope = await runtime.memory.buildContext({
         identity,
@@ -858,6 +1306,9 @@ export class ThetaAgentApplicationService {
         const message = result.react?.error instanceof Error
           ? result.react.error.message
           : `PlanDesign ended with ${result.disposition}. ${JSON.stringify(safeReactFailureSummary(result.react))}`;
+        if (result.react?.error instanceof ThetaToolCircuitOpenError) {
+          await enterToolFailureRecovery(runtime, runtimeScope(runId, userId, workspaceId), result.react.error);
+        }
         return {
           snapshot: await this.status(runId, resolvedDb),
           disposition: 'recoverable_error',
@@ -870,24 +1321,33 @@ export class ThetaAgentApplicationService {
       const outcome = result.react?.output;
       if (!isThetaPhaseOutcome(outcome)) throw new Error('THETA Agent did not return a legal PlanDesign outcome.');
       if (outcome.kind === 'return_to_phase_requested') {
-        if (outcome.targetPhase !== 'ResearchDialogue') {
-          throw new Error(`PlanDesign may only return to ResearchDialogue, not ${outcome.targetPhase}.`);
+        if (outcome.targetPhase !== 'ResearchDialogue' && outcome.targetPhase !== 'DatasetDiscovery') {
+          throw new Error(`PlanDesign cannot return to ${outcome.targetPhase}.`);
         }
-        const assistant = await conversations.append({
+        const target = outcome.targetPhase === 'DatasetDiscovery'
+          ? THETA_WORKFLOW_STATES.datasetDiscovery
+          : THETA_WORKFLOW_STATES.researchDialogue;
+        const assistant = await memoryCoordinator.append(outcome.targetPhase, {
           runId,
           sessionId,
           userId,
           role: 'assistant',
-          content: `制定计划时发现一个会实质改变方案的研究决定尚未明确：${outcome.reason}`,
+          content: outcome.targetPhase === 'DatasetDiscovery'
+            ? `制定计划前发现数据绑定尚未落定：${outcome.reason}。我会返回数据探索处理，Planner 不会自行猜测列角色。`
+            : `制定计划时发现一个会实质改变方案的研究决定尚未明确：${outcome.reason}`,
         });
-        await runtime.memory.rememberMessage(identity, 'ResearchDialogue', assistant);
         const outcomeJson = structuredClone(outcome) as unknown as Record<string, string | number>;
         await runDatasetStateDecision(runtime, runtimeScope(runId, userId, workspaceId), {
           result: { kind: 'completed', output: outcomeJson, variablesPatch: { phaseOutcome: outcomeJson } },
           transition: {
-            to: THETA_WORKFLOW_STATES.researchDialogue,
-            reason: 'PlanDesign identified a consequential missing research decision and returned control to the same Agent dialogue.',
-            variablesPatch: { phaseOutcome: outcomeJson },
+            to: target,
+            reason: outcome.targetPhase === 'DatasetDiscovery'
+              ? 'PlanDesign identified an unresolved dataset binding and returned control to DatasetDiscovery.'
+              : 'PlanDesign identified a consequential missing research decision and returned control to the same Agent dialogue.',
+            variablesPatch: {
+              phaseOutcome: outcomeJson,
+              ...(outcome.targetPhase === 'DatasetDiscovery' ? { datasetPrimaryTextConfirmed: false } : {}),
+            },
           },
         });
         return {
@@ -995,6 +1455,18 @@ export class ThetaAgentApplicationService {
         reason: checkpoint.summaryForUser,
         requestedAt: new Date().toISOString(),
       });
+      await memoryCoordinator.handoff({
+        fromPhase: 'PlanDesign',
+        toPhase: 'PlanConfirmation',
+        summary: presentation.summary,
+        workspaceHashes: [
+          dataset.workspaceHash,
+          research.workspaceHash,
+          plan.workspaceHash,
+          candidate.candidatePlanHash,
+        ],
+        humanVerified: false,
+      });
       return {
         snapshot: await this.status(runId, resolvedDb),
         disposition: 'completed',
@@ -1013,9 +1485,311 @@ export class ThetaAgentApplicationService {
     }
   }
 
+  async decideCheckpoint(
+    request: SubmitCheckpointDecisionRequest,
+  ): Promise<ThetaCheckpointDecisionResult> {
+    if (request.action === 'approve' && request.feedback?.trim()) {
+      throw new Error('Choosing approve cannot include revision feedback. Choose revise and explain why instead.');
+    }
+    const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
+    const userId = request.userId ?? 'local_user';
+    const workspaceId = request.workspaceId ?? 'local_workspace';
+    const sessionId = `session:${request.runId}`;
+    const identity = { userId, workspaceId, sessionId, runId: request.runId };
+    const scope = runtimeScope(request.runId, userId, workspaceId);
+    const runtime = await createThetaRuntimeComposition(resolvedDb, { memory: true });
+    try {
+      const snapshot = await this.status(request.runId, resolvedDb);
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
+      const expected = checkpointKindForState(snapshot.currentState);
+      if (!expected || snapshot.status !== 'waiting_human') {
+        throw new Error(`Run is not waiting at a data, research, or plan confirmation: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
+      }
+      const checkpoints = new ThetaCheckpointEventRepository(runtime.eventBridge);
+      const conversations = new ThetaConversationEventRepository(runtime.eventBridge);
+      const memoryCoordinator = new ConversationMemoryCoordinator(conversations, runtime.memory, identity);
+      const checkpoint = await checkpoints.current(request.runId, expected.kind);
+      if (!checkpoint || checkpoint.status !== 'proposed') throw new Error('There is no active checkpoint that can be decided.');
+      if (checkpoint.checkpointId !== request.checkpointId) throw new Error('Checkpoint decision targets a stale checkpoint id.');
+      if (checkpoint.contentHash !== request.expectedContentHash) throw new Error('Checkpoint decision targets a stale content hash.');
+      const decisionId = `checkpoint-decision:${checkpoint.checkpointId}:${request.action}:${hashCanonicalJson({ userId, contentHash: checkpoint.contentHash })}`;
+
+      if (request.action === 'revise') {
+        const feedback = request.feedback?.trim();
+        if (!feedback) throw new Error('Choosing revise requires a non-empty natural-language explanation.');
+        const message = await memoryCoordinator.append(expected.memoryPhase, {
+          runId: request.runId,
+          sessionId,
+          userId,
+          role: 'user',
+          content: feedback,
+          messageId: decisionId,
+        });
+        const changed = await checkpoints.changeStatus({
+          runId: request.runId,
+          sessionId,
+          userId,
+          checkpointId: checkpoint.checkpointId,
+          expectedContentHash: checkpoint.contentHash,
+          status: 'revising',
+          messageId: message.messageId,
+          reason: feedback,
+        });
+        await resolveHumanWait(runtime, scope, snapshot, userId, 'rejected');
+        await runDatasetStateDecision(runtime, scope, {
+          result: { kind: 'completed', variablesPatch: { checkpointFeedbackMessageId: message.messageId } },
+          transition: {
+            to: expected.revisionTarget,
+            reason: `${expected.kind} checkpoint revision feedback returns to the owning intelligent phase.`,
+            variablesPatch: { checkpointFeedbackMessageId: message.messageId },
+          },
+        });
+        await recordCheckpointDecisionActivity(runtime, {
+          runId: request.runId,
+          sessionId,
+          userId,
+          phase: snapshot.currentState ?? expected.kind,
+          action: 'revise',
+          message: '已记录修改原因，MiniMax 将在原阶段结合上下文继续修订',
+        });
+        const continuation = expected.kind === 'dataset'
+          ? await this.runDatasetDiscovery(request.runId, resolvedDb)
+          : expected.kind === 'research'
+            ? await this.runResearchDialogue(request.runId, resolvedDb)
+            : await this.runPlanDesign(request.runId, resolvedDb);
+        return {
+          snapshot: continuation.snapshot,
+          action: 'revise',
+          checkpoint: changed,
+          assistantMessage: '已记录你的修改原因，并交回同一个 THETA Agent 继续修订。',
+          modelCalls: continuation.modelCalls,
+          toolIds: continuation.toolIds,
+          continuation,
+        };
+      }
+
+      if (expected.kind === 'dataset') {
+        const workspaces = new ThetaWorkspaceEventRepository(runtime.eventBridge);
+        const current = await workspaces.current(request.runId, 'dataset');
+        if (!current || current.workspaceType !== 'dataset' || current.workspaceHash !== checkpoint.targetHash) {
+          throw new Error('Dataset checkpoint is stale relative to the current DatasetWorkspace.');
+        }
+        if (primaryTextCandidates(current).length !== 1) {
+          throw new Error('当前没有唯一主文本列候选，不能选择“是”。请选择“否，说明原因”并明确正文列。');
+        }
+        let acceptedWorkspace = current;
+        let checkpointToConfirm = checkpoint;
+        if (!hasUniqueConfirmedPrimaryTextColumn(current)) {
+          await checkpoints.changeStatus({
+            runId: request.runId,
+            sessionId,
+            userId,
+            checkpointId: checkpoint.checkpointId,
+            expectedContentHash: checkpoint.contentHash,
+            status: 'invalidated',
+            messageId: decisionId,
+            reason: 'Direct user approval promotes the single recommended primary text role into a new provenance-bound workspace revision.',
+          });
+          acceptedWorkspace = await workspaces.revise({
+            runId: request.runId,
+            sessionId,
+            userId,
+            expectedRevision: current.revision,
+            draft: confirmUniquePrimaryTextRole(current, {
+              id: decisionId,
+              kind: 'user_decision',
+              hash: hashCanonicalJson({ action: 'approve', checkpointId: checkpoint.checkpointId, contentHash: checkpoint.contentHash, userId }),
+            }),
+            reason: 'The user selected “yes” and accepted the Agent recommended unique primary text column.',
+            invalidates: ['plan', 'approval', 'dry_run', 'training_approval'],
+          }) as DatasetWorkspace;
+          checkpointToConfirm = await checkpoints.proposeDataset({
+            runId: request.runId,
+            sessionId,
+            userId,
+            workspace: acceptedWorkspace,
+            requestedBy: 'fsm',
+            rationale: 'Bind direct user approval to the promoted unique primary text role.',
+          });
+        }
+        const approvalMessage = await memoryCoordinator.append('DatasetDiscovery', {
+          runId: request.runId,
+          sessionId,
+          userId,
+          role: 'user',
+          content: '我确认当前数据理解，进入下一阶段。',
+          messageId: decisionId,
+        });
+        const confirmed = await checkpoints.changeStatus({
+          runId: request.runId,
+          sessionId,
+          userId,
+          checkpointId: checkpointToConfirm.checkpointId,
+          expectedContentHash: checkpointToConfirm.contentHash,
+          status: 'confirmed',
+          messageId: approvalMessage.messageId,
+          reason: 'The user selected “yes, enter the next phase”; no language model interpreted this approval.',
+        });
+        await resolveHumanWait(runtime, scope, snapshot, userId, 'approved');
+        const variables = {
+          datasetWorkspaceHash: acceptedWorkspace.workspaceHash,
+          datasetPrimaryTextConfirmed: true,
+          datasetCheckpointStatus: 'confirmed',
+          datasetCheckpointTargetHash: confirmed.targetHash,
+        };
+        await runDatasetStateDecision(runtime, scope, {
+          result: { kind: 'completed', variablesPatch: variables },
+          transition: { to: THETA_WORKFLOW_STATES.researchDialogue, reason: 'Direct user approval confirmed the current dataset checkpoint and unique primary text role.', variablesPatch: variables },
+          guardContext: { variables },
+        });
+        await runtime.memory.rememberDatasetWorkspace(identity, acceptedWorkspace, { checkpointStatus: 'confirmed', humanVerified: true });
+        await memoryCoordinator.handoff({
+          fromPhase: 'DatasetDiscovery',
+          toPhase: 'ResearchDialogue',
+          summary: acceptedWorkspace.narrative,
+          workspaceHashes: [acceptedWorkspace.workspaceHash, acceptedWorkspace.datasetHash],
+          humanVerified: true,
+        });
+        await recordCheckpointDecisionActivity(runtime, { runId: request.runId, sessionId, userId, phase: THETA_WORKFLOW_STATES.datasetCheckpoint, action: 'approve', message: '已确认数据理解，未调用 MiniMax' });
+        return { snapshot: await this.status(request.runId, resolvedDb), action: 'approve', checkpoint: confirmed, assistantMessage: '已确认数据理解，正在进入研究意图阶段。', modelCalls: 0, toolIds: [] };
+      }
+
+      if (expected.kind === 'research') {
+        const workspaces = new ThetaWorkspaceEventRepository(runtime.eventBridge);
+        const current = await workspaces.current(request.runId, 'research');
+        if (!current || current.workspaceType !== 'research' || current.workspaceHash !== checkpoint.targetHash) {
+          throw new Error('Research checkpoint is stale relative to the current ResearchWorkspace.');
+        }
+        const blockers = [
+          ...current.contradictions.filter((item) => item.status === 'open').map((item) => item.description),
+          ...current.questions.filter((item) => item.blocking && item.status === 'open').map((item) => item.question),
+        ];
+        if (blockers.length > 0) throw new Error('研究意图仍存在未解决的关键矛盾，不能选择“是”。请选择“否，说明原因”。');
+        const approvalMessage = await memoryCoordinator.append('ResearchDialogue', {
+          runId: request.runId,
+          sessionId,
+          userId,
+          role: 'user',
+          content: '我确认当前研究意图，进入下一阶段。',
+          messageId: decisionId,
+        });
+        const confirmed = await checkpoints.changeStatus({
+          runId: request.runId,
+          sessionId,
+          userId,
+          checkpointId: checkpoint.checkpointId,
+          expectedContentHash: checkpoint.contentHash,
+          status: 'confirmed',
+          messageId: approvalMessage.messageId,
+          reason: 'The user directly approved the current research synthesis; no language model interpreted this approval.',
+        });
+        await resolveHumanWait(runtime, scope, snapshot, userId, 'approved');
+        const variables = { researchWorkspaceHash: current.workspaceHash, researchCheckpointStatus: 'confirmed', researchCheckpointTargetHash: confirmed.targetHash, researchBlockingIssuesResolved: true };
+        await runDatasetStateDecision(runtime, scope, {
+          result: { kind: 'completed', variablesPatch: variables },
+          transition: { to: THETA_WORKFLOW_STATES.planDesign, reason: 'Direct user approval confirmed the current ResearchWorkspace hash.', variablesPatch: variables },
+          guardContext: { variables },
+        });
+        await runtime.memory.rememberResearchWorkspace(identity, current, { checkpointStatus: 'confirmed', humanVerified: true });
+        const datasetWorkspace = await workspaces.current(request.runId, 'dataset');
+        await memoryCoordinator.handoff({
+          fromPhase: 'ResearchDialogue',
+          toPhase: 'PlanDesign',
+          summary: current.narrative,
+          workspaceHashes: [
+            ...(datasetWorkspace?.workspaceType === 'dataset' ? [datasetWorkspace.workspaceHash] : []),
+            current.workspaceHash,
+          ],
+          humanVerified: true,
+        });
+        await recordCheckpointDecisionActivity(runtime, { runId: request.runId, sessionId, userId, phase: THETA_WORKFLOW_STATES.researchCheckpoint, action: 'approve', message: '已确认研究意图，未调用 MiniMax' });
+        return { snapshot: await this.status(request.runId, resolvedDb), action: 'approve', checkpoint: confirmed, assistantMessage: '已确认研究意图，正在进入计划设计阶段。', modelCalls: 0, toolIds: [] };
+      }
+
+      const workspaces = new ThetaWorkspaceEventRepository(runtime.eventBridge);
+      const dataset = await workspaces.current(request.runId, 'dataset');
+      const research = await workspaces.current(request.runId, 'research');
+      const plan = await workspaces.current(request.runId, 'plan');
+      if (!dataset || dataset.workspaceType !== 'dataset' || !research || research.workspaceType !== 'research' || !plan || plan.workspaceType !== 'plan' || !plan.activeCandidateRef) {
+        throw new Error('Plan confirmation cannot reconstruct its current workspace chain.');
+      }
+      const planner = new ThetaPlannerEventRepository(runtime.eventBridge);
+      const candidate = await planner.candidate(request.runId, plan.activeCandidateRef);
+      if (!candidate || candidate.candidatePlanHash !== checkpoint.targetHash || candidate.candidateRef !== checkpoint.targetWorkspaceRef) {
+        throw new Error('Plan checkpoint is stale relative to the active candidate.');
+      }
+      const evidenceReceipt = await planner.evidenceReceipt(request.runId, candidate.candidatePlanHash);
+      const validationReceipt = await planner.validationReceipt(request.runId, candidate.candidatePlanHash);
+      if (!evidenceReceipt || !validationReceipt?.valid || validationReceipt.evidenceBundleHash !== evidenceReceipt.evidenceBundleHash) {
+        throw new Error('Plan checkpoint receipts are missing, invalid, or stale.');
+      }
+      const approvalMessage = await memoryCoordinator.append('PlanConfirmation', {
+        runId: request.runId,
+        sessionId,
+        userId,
+        role: 'user',
+        content: '我确认当前训练计划，进入下一阶段。',
+        messageId: decisionId,
+      });
+      const material = {
+        receiptId: `plan-approval:${randomUUID()}`,
+        runId: request.runId,
+        checkpointId: checkpoint.checkpointId,
+        checkpointContentHash: checkpoint.contentHash,
+        candidateRef: candidate.candidateRef,
+        candidatePlanHash: candidate.candidatePlanHash,
+        planWorkspaceHash: plan.workspaceHash,
+        validationReceiptHash: validationReceipt.validationReceiptHash,
+        evidenceBundleHash: evidenceReceipt.evidenceBundleHash,
+        principalId: userId,
+        messageId: approvalMessage.messageId,
+      };
+      const approvalReceipt: PlanApprovalReceipt = { ...material, approvedAt: new Date().toISOString(), planApprovalHash: planApprovalReceiptHash(material) };
+      await planner.recordApproval({ runId: request.runId, sessionId, userId, receipt: approvalReceipt });
+      await runtime.memory.rememberPlanApproval(identity, approvalReceipt);
+      const confirmed = await checkpoints.changeStatus({
+        runId: request.runId,
+        sessionId,
+        userId,
+        checkpointId: checkpoint.checkpointId,
+        expectedContentHash: checkpoint.contentHash,
+        status: 'confirmed',
+        messageId: approvalMessage.messageId,
+        reason: 'The owner directly approved the exact current candidate hash; no language model interpreted this approval.',
+      });
+      await resolveHumanWait(runtime, scope, snapshot, userId, 'approved');
+      const variables = {
+        planApprovalHash: approvalReceipt.planApprovalHash,
+        approvedPlanHash: approvalReceipt.candidatePlanHash,
+        planApprovalCandidateHash: approvalReceipt.candidatePlanHash,
+        planApprovalWorkspaceHash: approvalReceipt.planWorkspaceHash,
+        planApprovalValidationHash: approvalReceipt.validationReceiptHash,
+        planApprovalEvidenceHash: approvalReceipt.evidenceBundleHash,
+        planApprovalCheckpointHash: approvalReceipt.checkpointContentHash,
+        planCheckpointContentHash: checkpoint.contentHash,
+        approvalPrincipalId: approvalReceipt.principalId,
+        candidatePlanHash: candidate.candidatePlanHash,
+        planWorkspaceHash: plan.workspaceHash,
+        validationReceiptHash: validationReceipt.validationReceiptHash,
+        evidenceBundleHash: evidenceReceipt.evidenceBundleHash,
+      };
+      await runDatasetStateDecision(runtime, scope, {
+        result: { kind: 'completed', variablesPatch: variables },
+        transition: { to: THETA_WORKFLOW_STATES.createPlan, reason: 'Direct owner approval produced an exact principal-bound PlanApprovalReceipt.', variablesPatch: variables },
+        guardContext: { variables },
+      });
+      await recordCheckpointDecisionActivity(runtime, { runId: request.runId, sessionId, userId, phase: THETA_WORKFLOW_STATES.planConfirmation, action: 'approve', message: '已确认训练计划，未调用 MiniMax' });
+      return { snapshot: await this.status(request.runId, resolvedDb), action: 'approve', checkpoint: confirmed, assistantMessage: '已确认当前计划，正在进入可执行计划生成阶段。', modelCalls: 0, toolIds: [], approvalReceipt };
+    } finally {
+      await runtime.close();
+    }
+  }
+
   async submitPlanConfirmationMessage(
     request: SubmitCheckpointMessageRequest,
   ): Promise<ThetaPlanConfirmationMessageResult> {
+    rejectNaturalLanguageCheckpointDecision('PlanConfirmation');
+    /* Legacy implementation is intentionally unreachable until removed after downstream callers migrate. */
     const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
     const userId = request.userId ?? 'local_user';
     const workspaceId = request.workspaceId ?? 'local_workspace';
@@ -1112,6 +1886,9 @@ export class ThetaAgentApplicationService {
         resume = true;
       } while (isQuantumYield(result));
       if (result.disposition !== 'completed') {
+        if (result.react?.error instanceof ThetaToolCircuitOpenError) {
+          await enterToolFailureRecovery(runtime, scope, result.react.error);
+        }
         throw new Error(result.react?.error instanceof Error ? result.react.error.message : `PlanConfirmation ended with ${result.disposition}.`);
       }
       const output = result.react?.output;
@@ -1121,13 +1898,21 @@ export class ThetaAgentApplicationService {
       let decision: ThetaPlanConfirmationDecision = output;
       if (decision.action === 'confirm_checkpoint') {
         if (decision.targetHash !== checkpoint.targetHash) throw new Error('Plan confirmation targeted a stale or invented candidate hash.');
-        const verification = await new MiniMaxPlanConfirmationVerifier(inference).verify({
+        const verification = await runVisibleLanguageStep(runtime, {
+          runId: request.runId,
+          sessionId,
+          userId,
+          phase: THETA_WORKFLOW_STATES.planConfirmation,
+          displayName: '复核计划确认',
+          runningMessage: 'MiniMax 正在判断你的回复是否无条件确认当前计划',
+          completedMessage: 'MiniMax 已完成计划确认语义复核',
+        }, () => new MiniMaxPlanConfirmationVerifier(inference).verify({
           runId: request.runId,
           messageId: userMessage.messageId,
           message: userMessage.content,
           targetHash: checkpoint.targetHash,
           checkpointSummary: checkpoint.summaryForUser,
-        });
+        }));
         modelCalls += 1;
         if (!verification.unqualifiedAcceptance) {
           decision = {
@@ -1211,7 +1996,7 @@ export class ThetaAgentApplicationService {
       await resolveHumanWait(runtime, scope, snapshot, userId, 'rejected');
       await runDatasetStateDecision(runtime, scope, {
         result: { kind: 'completed', variablesPatch: { planCheckpointFeedbackMessageId: userMessage.messageId } },
-        transition: { to: THETA_WORKFLOW_STATES.planDesign, reason: 'PlanConfirmation feedback requires a new candidate, validation receipt, evidence receipt and checkpoint hash.', variablesPatch: { planCheckpointFeedbackMessageId: userMessage.messageId } },
+        transition: { to: THETA_WORKFLOW_STATES.planDesign, reason: 'PlanConfirmation feedback requires a new candidate, validation receipt, optional-citation audit receipt and checkpoint hash.', variablesPatch: { planCheckpointFeedbackMessageId: userMessage.messageId } },
       });
       return { snapshot: await this.status(request.runId, resolvedDb), messageId: userMessage.messageId, decision, checkpoint: changed, assistantMessage: assistant.content, toolIds, modelCalls, quanta };
     } finally {
@@ -1264,6 +2049,7 @@ export class ThetaAgentApplicationService {
           state: THETA_WORKFLOW_STATES.createPlan,
           toolId: THETA_TOOL_IDS.planCreate,
           input: { candidateRef: candidate.candidateRef, expectedPlanApprovalHash: approval.planApprovalHash },
+          emitActivity: false,
         });
         toolIds.push(THETA_TOOL_IDS.planCreate);
         if (result.status !== 'completed') {
@@ -1338,6 +2124,7 @@ export class ThetaAgentApplicationService {
           state: THETA_WORKFLOW_STATES.dryRun,
           toolId: THETA_TOOL_IDS.trainingDryRun,
           input: { planId, expectedPlanHash: planHash },
+          emitActivity: false,
         });
         toolIds.push(THETA_TOOL_IDS.trainingDryRun);
         if (result.status !== 'completed') {
@@ -1499,21 +2286,37 @@ export class ThetaAgentApplicationService {
       const provider = this.inferenceProvider();
       if (!provider) throw new Error('MINIMAX_API_KEY is not configured.');
       const interpreter = new MiniMaxTrainingConfirmationInterpreter(provider);
-      let decision = await interpreter.interpret({
+      let decision = await runVisibleLanguageStep(runtime, {
+        runId: request.runId,
+        sessionId,
+        userId,
+        phase: THETA_WORKFLOW_STATES.trainingConfirmation,
+        displayName: '理解训练确认反馈',
+        runningMessage: 'MiniMax 正在理解你对训练启动的反馈',
+        completedMessage: 'MiniMax 已理解训练启动反馈',
+      }, () => interpreter.interpret({
         runId: request.runId,
         messageId: userMessage.messageId,
         message: userMessage.content,
         dryRunHash: dryRun.dryRunHash,
         checkpointSummary: checkpoint.summaryForUser,
-      });
+      }));
       if (decision.kind === 'confirm_checkpoint') {
-        const verdict = await interpreter.verifyUnqualifiedAcceptance({
+        const verdict = await runVisibleLanguageStep(runtime, {
+          runId: request.runId,
+          sessionId,
+          userId,
+          phase: THETA_WORKFLOW_STATES.trainingConfirmation,
+          displayName: '复核训练批准',
+          runningMessage: 'MiniMax 正在复核是否收到明确且无条件的训练批准',
+          completedMessage: 'MiniMax 已完成训练批准复核',
+        }, () => interpreter.verifyUnqualifiedAcceptance({
           runId: request.runId,
           messageId: userMessage.messageId,
           message: userMessage.content,
           dryRunHash: dryRun.dryRunHash,
           checkpointSummary: checkpoint.summaryForUser,
-        });
+        }));
         if (!verdict.accepted) {
           decision = {
             kind: 'ask_about_checkpoint',
@@ -1746,6 +2549,45 @@ export class ThetaAgentApplicationService {
     }
   }
 
+  async submitIntakeMessage(
+    request: SubmitCheckpointMessageRequest & { uploadRoot?: string },
+  ): Promise<ThetaIntakeResult> {
+    const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
+    const userId = request.userId ?? 'local_user';
+    const workspaceId = request.workspaceId ?? 'local_workspace';
+    const sessionId = `session:${request.runId}`;
+    const runtime = await createThetaRuntimeComposition(resolvedDb, { memory: true });
+    try {
+      const snapshot = await this.status(request.runId, resolvedDb);
+      if (
+        snapshot.currentState !== THETA_WORKFLOW_STATES.intake ||
+        snapshot.status !== 'waiting_human' ||
+        !snapshot.pendingActionRef?.startsWith('theta.intake.question:')
+      ) {
+        throw new Error(`Run is not waiting for an Intake conversation reply: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
+      }
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
+      const messages = new ThetaConversationEventRepository(runtime.eventBridge);
+      const memoryCoordinator = new ConversationMemoryCoordinator(
+        messages,
+        runtime.memory,
+        { userId, workspaceId, sessionId, runId: request.runId },
+      );
+      await memoryCoordinator.append('Intake', {
+        runId: request.runId,
+        sessionId,
+        userId,
+        role: 'user',
+        content: request.content,
+        messageId: request.messageId,
+      });
+      await resolveHumanWait(runtime, runtimeScope(request.runId, userId, workspaceId), snapshot, userId, 'approved');
+    } finally {
+      await runtime.close();
+    }
+    return this.runIntake(request.runId, resolvedDb, request.uploadRoot ?? managedUploadRoot(resolvedDb));
+  }
+
   async submitResearchMessage(request: SubmitCheckpointMessageRequest): Promise<ThetaResearchDialogueResult> {
     const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
     const userId = request.userId ?? 'local_user';
@@ -1757,8 +2599,14 @@ export class ThetaAgentApplicationService {
       if (snapshot.currentState !== THETA_WORKFLOW_STATES.researchDialogue || snapshot.status !== 'waiting_human') {
         throw new Error(`Run is not waiting for a ResearchDialogue answer: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
       }
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
       const messages = new ThetaConversationEventRepository(runtime.eventBridge);
-      const message = await messages.append({
+      const memoryCoordinator = new ConversationMemoryCoordinator(
+        messages,
+        runtime.memory,
+        { userId, workspaceId, sessionId, runId: request.runId },
+      );
+      await memoryCoordinator.append('ResearchDialogue', {
         runId: request.runId,
         sessionId,
         userId,
@@ -1766,8 +2614,6 @@ export class ThetaAgentApplicationService {
         content: request.content,
         messageId: request.messageId,
       });
-      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
-      await runtime.memory.rememberMessage({ userId, workspaceId, sessionId, runId: request.runId }, 'ResearchDialogue', message);
       await resolveHumanWait(runtime, runtimeScope(request.runId, userId, workspaceId), snapshot, userId, 'approved');
     } finally {
       await runtime.close();
@@ -1775,7 +2621,42 @@ export class ThetaAgentApplicationService {
     return this.runResearchDialogue(request.runId, resolvedDb);
   }
 
+  async submitDatasetDiscoveryMessage(request: SubmitCheckpointMessageRequest): Promise<ThetaDatasetDiscoveryResult> {
+    const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
+    const userId = request.userId ?? 'local_user';
+    const workspaceId = request.workspaceId ?? 'local_workspace';
+    const sessionId = `session:${request.runId}`;
+    const runtime = await createThetaRuntimeComposition(resolvedDb, { memory: true });
+    try {
+      const snapshot = await this.status(request.runId, resolvedDb);
+      if (snapshot.currentState !== THETA_WORKFLOW_STATES.datasetDiscovery || snapshot.status !== 'waiting_human') {
+        throw new Error(`Run is not waiting for a DatasetDiscovery answer: ${snapshot.currentState ?? '(none)'} / ${snapshot.status}.`);
+      }
+      if (!runtime.memory) throw new Error('Hypha Governed Memory is not initialized.');
+      const messages = new ThetaConversationEventRepository(runtime.eventBridge);
+      const memoryCoordinator = new ConversationMemoryCoordinator(
+        messages,
+        runtime.memory,
+        { userId, workspaceId, sessionId, runId: request.runId },
+      );
+      await memoryCoordinator.append('DatasetDiscovery', {
+        runId: request.runId,
+        sessionId,
+        userId,
+        role: 'user',
+        content: request.content,
+        messageId: request.messageId,
+      });
+      await resolveHumanWait(runtime, runtimeScope(request.runId, userId, workspaceId), snapshot, userId, 'approved');
+    } finally {
+      await runtime.close();
+    }
+    return this.runDatasetDiscovery(request.runId, resolvedDb);
+  }
+
   async submitResearchCheckpointMessage(request: SubmitCheckpointMessageRequest): Promise<ThetaCheckpointMessageResult> {
+    rejectNaturalLanguageCheckpointDecision('ResearchCheckpoint');
+    /* Legacy implementation is intentionally unreachable until removed after downstream callers migrate. */
     const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
     const userId = request.userId ?? 'local_user';
     const workspaceId = request.workspaceId ?? 'local_workspace';
@@ -1798,13 +2679,21 @@ export class ThetaAgentApplicationService {
       }
       const provider = this.inferenceProvider();
       if (!provider) throw new Error('MINIMAX_API_KEY is not configured.');
-      const decision = await new MiniMaxResearchCheckpointFeedbackInterpreter(provider).interpret({
+      const decision = await runVisibleLanguageStep(runtime, {
+        runId: request.runId,
+        sessionId,
+        userId,
+        phase: THETA_WORKFLOW_STATES.researchCheckpoint,
+        displayName: '理解研究意图反馈',
+        runningMessage: 'MiniMax 正在理解你对研究意图摘要的确认或修改',
+        completedMessage: 'MiniMax 已完成研究意图反馈判断',
+      }, () => new MiniMaxResearchCheckpointFeedbackInterpreter(provider).interpret({
         runId: request.runId,
         messageId: message.messageId,
         message: message.content,
         checkpoint,
         workspace,
-      });
+      }));
       const assistant = await conversations.append({ runId: request.runId, sessionId, userId, role: 'assistant', content: decision.responseToUser, replyToMessageId: message.messageId });
       if (runtime.memory) {
         const identity = { userId, workspaceId, sessionId, runId: request.runId };
@@ -1873,6 +2762,8 @@ export class ThetaAgentApplicationService {
   async submitCheckpointMessage(
     request: SubmitCheckpointMessageRequest,
   ): Promise<ThetaCheckpointMessageResult> {
+    rejectNaturalLanguageCheckpointDecision('DatasetCheckpoint');
+    /* Legacy implementation is intentionally unreachable until removed after downstream callers migrate. */
     const resolvedDb = path.resolve(request.runtimeDb ?? defaultThetaV6RuntimeDb());
     const userId = request.userId ?? 'local_user';
     const workspaceId = request.workspaceId ?? 'local_workspace';
@@ -1905,13 +2796,34 @@ export class ThetaAgentApplicationService {
       }
       const provider = this.inferenceProvider();
       if (!provider) throw new Error('MINIMAX_API_KEY is not configured.');
-      const decision = await new MiniMaxCheckpointFeedbackInterpreter(provider).interpret({
+      const interpretedDecision = await runVisibleLanguageStep(runtime, {
+        runId: request.runId,
+        sessionId,
+        userId,
+        phase: THETA_WORKFLOW_STATES.datasetCheckpoint,
+        displayName: '理解数据确认反馈',
+        runningMessage: 'MiniMax 正在理解你对数据概况的确认或修改',
+        completedMessage: 'MiniMax 已完成数据确认反馈判断',
+      }, () => new MiniMaxCheckpointFeedbackInterpreter(provider).interpret({
         runId: request.runId,
         messageId: message.messageId,
         message: message.content,
         checkpoint,
         workspace,
-      });
+      }));
+      const candidateCount = primaryTextCandidates(workspace).length;
+      const decision: CheckpointFeedbackDecision = interpretedDecision.kind === 'confirm_checkpoint' &&
+        !hasUniqueConfirmedPrimaryTextColumn(workspace) && candidateCount !== 1
+        ? {
+            kind: 'ask_about_checkpoint',
+            question: candidateCount === 0
+              ? '目前没有可确认的主文本列候选。请说明哪一列是正文，或让我返回数据探索重新判断。'
+              : `目前存在 ${candidateCount} 个主文本列候选。请明确选择其中一列，不能同时确认多个主文本列。`,
+            responseToUser: candidateCount === 0
+              ? '当前数据理解还没有形成主文本列候选，暂时不能进入研究阶段。请告诉我正文列，或让我重新探索数据。'
+              : `当前有 ${candidateCount} 个正文候选，暂时不能整体确认。请告诉我哪一列是唯一主文本列。`,
+          }
+        : interpretedDecision;
       const assistant = await messages.append({
         runId: request.runId,
         sessionId,
@@ -1930,12 +2842,47 @@ export class ThetaAgentApplicationService {
         };
       }
       if (decision.kind === 'confirm_checkpoint') {
+        let acceptedWorkspace = workspace;
+        let checkpointToConfirm = checkpoint;
+        if (!hasUniqueConfirmedPrimaryTextColumn(workspace)) {
+          await checkpointRepository.changeStatus({
+            runId: request.runId,
+            sessionId,
+            userId,
+            checkpointId: checkpoint.checkpointId,
+            expectedContentHash: checkpoint.contentHash,
+            status: 'invalidated',
+            messageId: message.messageId,
+            reason: 'The accepted primary-text recommendation creates a new provenance-bound DatasetWorkspace revision.',
+          });
+          acceptedWorkspace = await workspaceRepository.revise({
+            runId: request.runId,
+            sessionId,
+            userId,
+            expectedRevision: workspace.revision,
+            draft: confirmUniquePrimaryTextRole(workspace, {
+              id: `message-ref:${message.messageId}`,
+              kind: 'user_message',
+              hash: message.contentHash,
+            }),
+            reason: 'The user confirmed, or explicitly delegated acceptance of, the Agent recommended unique primary text column.',
+            invalidates: ['plan', 'approval', 'dry_run', 'training_approval'],
+          }) as DatasetWorkspace;
+          checkpointToConfirm = await checkpointRepository.proposeDataset({
+            runId: request.runId,
+            sessionId,
+            userId,
+            workspace: acceptedWorkspace,
+            requestedBy: 'fsm',
+            rationale: 'This revision records the accepted unique primary text column before ResearchDialogue.',
+          });
+        }
         const confirmed = await checkpointRepository.changeStatus({
           runId: request.runId,
           sessionId,
           userId,
-          checkpointId: checkpoint.checkpointId,
-          expectedContentHash: checkpoint.contentHash,
+          checkpointId: checkpointToConfirm.checkpointId,
+          expectedContentHash: checkpointToConfirm.contentHash,
           status: 'confirmed',
           messageId: message.messageId,
           reason: 'The current principal explicitly confirmed the current checkpoint revision.',
@@ -1945,7 +2892,8 @@ export class ThetaAgentApplicationService {
           result: {
             kind: 'completed',
             variablesPatch: {
-              datasetWorkspaceHash: workspace.workspaceHash,
+              datasetWorkspaceHash: acceptedWorkspace.workspaceHash,
+              datasetPrimaryTextConfirmed: true,
               datasetCheckpointStatus: 'confirmed',
               datasetCheckpointTargetHash: confirmed.targetHash,
             },
@@ -1954,13 +2902,15 @@ export class ThetaAgentApplicationService {
             to: THETA_WORKFLOW_STATES.researchDialogue,
             reason: 'The current user confirmed the current DatasetCheckpoint hash.',
             variablesPatch: {
-              datasetWorkspaceHash: workspace.workspaceHash,
+              datasetWorkspaceHash: acceptedWorkspace.workspaceHash,
+              datasetPrimaryTextConfirmed: true,
               datasetCheckpointStatus: 'confirmed',
               datasetCheckpointTargetHash: confirmed.targetHash,
             },
           },
           guardContext: { variables: {
-            datasetWorkspaceHash: workspace.workspaceHash,
+            datasetWorkspaceHash: acceptedWorkspace.workspaceHash,
+            datasetPrimaryTextConfirmed: true,
             datasetCheckpointStatus: 'confirmed',
             datasetCheckpointTargetHash: confirmed.targetHash,
           } },
@@ -2035,6 +2985,66 @@ export class ThetaAgentApplicationService {
   }
 }
 
+const runVisibleLanguageStep = async <T>(
+  runtime: ThetaRuntimeComposition,
+  request: {
+    runId: string;
+    sessionId: string;
+    userId: string;
+    phase: ThetaWorkflowState;
+    displayName: string;
+    runningMessage: string;
+    completedMessage: string;
+  },
+  operation: () => Promise<T>,
+): Promise<T> => {
+  const activities = new ThetaActivityEventRepository(runtime.eventBridge);
+  const activityId = `language:${request.runId}:${request.phase}:${randomUUID()}`;
+  await activities.record({
+    runId: request.runId,
+    sessionId: request.sessionId,
+    userId: request.userId,
+    activityId,
+    phase: request.phase,
+    kind: 'thinking',
+    displayName: request.displayName,
+    userMessage: request.runningMessage,
+    status: 'running',
+  });
+  try {
+    const result = await operation();
+    await activities.record({
+      runId: request.runId,
+      sessionId: request.sessionId,
+      userId: request.userId,
+      activityId,
+      phase: request.phase,
+      kind: 'thinking',
+      displayName: request.displayName,
+      userMessage: request.completedMessage,
+      status: 'completed',
+      safeOutputSummary: '语义判断已完成；未展示模型内部推理',
+      completedAt: new Date().toISOString(),
+    });
+    return result;
+  } catch (error) {
+    await activities.record({
+      runId: request.runId,
+      sessionId: request.sessionId,
+      userId: request.userId,
+      activityId,
+      phase: request.phase,
+      kind: 'thinking',
+      displayName: request.displayName,
+      userMessage: `${request.displayName}未能完成`,
+      status: 'failed',
+      safeOutputSummary: error instanceof Error ? error.message : String(error),
+      completedAt: new Date().toISOString(),
+    });
+    throw error;
+  }
+};
+
 const runGovernedStateTool = async (
   runtime: ThetaRuntimeComposition,
   request: {
@@ -2047,31 +3057,98 @@ const runGovernedStateTool = async (
     toolId: string;
     input: Record<string, unknown>;
     idempotencyKey?: string;
+    emitActivity?: boolean;
   },
 ): Promise<ToolCallResult> => {
   const profile = THETA_STATE_TOOL_PROFILES[request.state];
-  return runtime.toolRunner.run({
-    toolId: request.toolId,
-    input: request.input,
-    context: {
+  const invocationId = randomUUID();
+  const activityId = `tool:${request.runId}:${request.state}:${request.toolId}:${invocationId}`;
+  const emitActivity = request.emitActivity !== false;
+  const activities = emitActivity ? new ThetaActivityEventRepository(runtime.eventBridge) : undefined;
+  const copy = toolActivityCopy(request.toolId, runtime.toolRegistry.getSpec(request.toolId)?.displayName);
+  if (activities) {
+    await activities.record({
       runId: request.runId,
-      stepId: `${request.state}:${request.toolId}:${randomUUID()}`,
       sessionId: request.sessionId,
       userId: request.userId,
-      workspaceId: request.workspaceId,
-      fsmState: request.state,
-      executionScope: resolveThetaV6StateToolScope(request.state),
-      principal: {
-        id: request.userId,
-        type: 'user',
+      activityId,
+      phase: request.state,
+      kind: 'tool_started',
+      toolId: request.toolId,
+      displayName: copy.displayName,
+      userMessage: copy.running,
+      status: 'running',
+      safeInputSummary: governedToolInputSummary(request.input),
+    });
+  }
+  let result: ToolCallResult;
+  try {
+    result = await runtime.toolRunner.run({
+      toolId: request.toolId,
+      input: request.input,
+      context: {
+        runId: request.runId,
+        stepId: `${request.state}:${request.toolId}:${invocationId}`,
+        sessionId: request.sessionId,
         userId: request.userId,
         workspaceId: request.workspaceId,
-        permissionScopes: [...profile.permissionScopes],
+        fsmState: request.state,
+        executionScope: resolveThetaV6StateToolScope(request.state),
+        principal: {
+          id: request.userId,
+          type: 'user',
+          userId: request.userId,
+          workspaceId: request.workspaceId,
+          permissionScopes: [...profile.permissionScopes],
+        },
+        metadata: { thetaRuntimeDb: request.runtimeDb },
+        ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
       },
-      metadata: { thetaRuntimeDb: request.runtimeDb },
-      ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
-    },
-  } as ToolCallRequest);
+    } as ToolCallRequest);
+  } catch (error) {
+    if (activities) {
+      await activities.record({
+        runId: request.runId,
+        sessionId: request.sessionId,
+        userId: request.userId,
+        activityId,
+        phase: request.state,
+        kind: 'tool_failed',
+        toolId: request.toolId,
+        displayName: copy.displayName,
+        userMessage: `${copy.displayName}调用失败`,
+        status: 'failed',
+        safeOutputSummary: error instanceof Error ? error.message : String(error),
+        completedAt: new Date().toISOString(),
+      });
+    }
+    throw error;
+  }
+  if (activities) {
+    await activities.record({
+      runId: request.runId,
+      sessionId: request.sessionId,
+      userId: request.userId,
+      activityId,
+      phase: request.state,
+      kind: result.status === 'completed' ? 'tool_completed' : 'tool_failed',
+      toolId: request.toolId,
+      displayName: copy.displayName,
+      userMessage: result.status === 'completed' ? copy.completed : `${copy.displayName}未能完成`,
+      status: result.status === 'completed' ? 'completed' : 'failed',
+      safeOutputSummary: result.status === 'completed' ? '工具调用成功，结果已写入受治理的运行记录' : toolFailureMessage(result),
+      completedAt: new Date().toISOString(),
+    });
+  }
+  return result;
+};
+
+const governedToolInputSummary = (input: Record<string, unknown>): string => {
+  if (typeof input.candidateRef === 'string') return `候选计划：${input.candidateRef}`;
+  if (typeof input.planId === 'string') return `计划：${input.planId}`;
+  if (typeof input.trainingRunId === 'string') return `训练任务：${input.trainingRunId}`;
+  if (typeof input.column === 'string') return `数据列：${input.column}`;
+  return '输入已按隐私策略隐藏';
 };
 
 const ensureTrainingCheckpoint = async (
@@ -2161,6 +3238,144 @@ const dryRunRecoverySummary = (receipt: DryRunReceipt): string => {
   return `当前计划未通过训练前检查（${codes}），已返回计划设计阶段。`;
 };
 
+const checkpointKindForState = (state?: string): {
+  kind: 'dataset' | 'research' | 'plan';
+  revisionTarget: ThetaWorkflowState;
+  memoryPhase: 'DatasetDiscovery' | 'ResearchDialogue' | 'PlanDesign';
+} | null => {
+  if (state === THETA_WORKFLOW_STATES.datasetCheckpoint) {
+    return { kind: 'dataset', revisionTarget: THETA_WORKFLOW_STATES.datasetDiscovery, memoryPhase: 'DatasetDiscovery' };
+  }
+  if (state === THETA_WORKFLOW_STATES.researchCheckpoint) {
+    return { kind: 'research', revisionTarget: THETA_WORKFLOW_STATES.researchDialogue, memoryPhase: 'ResearchDialogue' };
+  }
+  if (state === THETA_WORKFLOW_STATES.planConfirmation) {
+    return { kind: 'plan', revisionTarget: THETA_WORKFLOW_STATES.planDesign, memoryPhase: 'PlanDesign' };
+  }
+  return null;
+};
+
+const rejectNaturalLanguageCheckpointDecision = (checkpoint: string): void => {
+  throw new Error(`${checkpoint} no longer accepts natural-language approval. Use decideCheckpoint with action=approve or action=revise.`);
+};
+
+const recordCheckpointDecisionActivity = async (
+  runtime: ThetaRuntimeComposition,
+  request: {
+    runId: string;
+    sessionId: string;
+    userId: string;
+    phase: string;
+    action: 'approve' | 'revise';
+    message: string;
+  },
+): Promise<void> => {
+  const timestamp = new Date().toISOString();
+  await new ThetaActivityEventRepository(runtime.eventBridge).record({
+    runId: request.runId,
+    sessionId: request.sessionId,
+    userId: request.userId,
+    activityId: `checkpoint-decision:${request.phase}:${randomUUID()}`,
+    phase: request.phase,
+    kind: 'phase_completed',
+    displayName: request.action === 'approve' ? '确认当前阶段' : '提交修改反馈',
+    userMessage: request.message,
+    status: 'completed',
+    startedAt: timestamp,
+    completedAt: timestamp,
+    safeOutputSummary: request.action === 'approve'
+      ? '用户通过确定性确认控件批准；语言模型调用数为 0'
+      : '反馈已保存并交回原智能阶段',
+  });
+};
+
+interface DatasetRoleRecoveryRequest {
+  runtime: ThetaRuntimeComposition;
+  scope: RuntimeScope;
+  workspace: DatasetWorkspace;
+  fromState: ThetaWorkflowState;
+  sessionId: string;
+  userId: string;
+}
+
+const recoverDatasetRoleBoundary = async (
+  request: DatasetRoleRecoveryRequest,
+): Promise<{ waiting: boolean; assistantMessage: string } | null> => {
+  if (hasUniqueConfirmedPrimaryTextColumn(request.workspace)) return null;
+  const candidates = primaryTextCandidates(request.workspace);
+  const messages = new ThetaConversationEventRepository(request.runtime.eventBridge);
+  if (candidates.length !== 1) {
+    const assistantMessage = candidates.length === 0
+      ? '数据理解中还没有形成有效的主文本列候选。我会返回数据探索，重新检查真实列和样本；Planner 不会自行发明正文列。'
+      : `数据理解中存在 ${candidates.length} 个主文本列候选（${candidates.map((item) => item.column).join('、')}），尚未落定唯一正文列。我会返回数据探索处理这个歧义。`;
+    await messages.append({
+      runId: request.scope.runId,
+      sessionId: request.sessionId,
+      userId: request.userId,
+      role: 'assistant',
+      content: assistantMessage,
+    });
+    await runDatasetStateDecision(request.runtime, request.scope, {
+      result: { kind: 'completed', variablesPatch: { datasetPrimaryTextConfirmed: false } },
+      transition: {
+        to: THETA_WORKFLOW_STATES.datasetDiscovery,
+        reason: `${request.fromState} cannot continue without exactly one primary text candidate.`,
+        variablesPatch: { datasetPrimaryTextConfirmed: false },
+      },
+    });
+    return { waiting: false, assistantMessage };
+  }
+
+  const candidate = candidates[0];
+  const assistantMessage = [
+    `进入下一阶段前需要落定唯一主文本列。根据数据探索，Agent 建议使用「${candidate.column}」作为正文列。`,
+    '你可以直接确认、指定另一列；如果你不确定，也可以回答“按你的判断”，系统会采用这项有证据的建议。',
+  ].join('\n');
+  await messages.append({
+    runId: request.scope.runId,
+    sessionId: request.sessionId,
+    userId: request.userId,
+    role: 'assistant',
+    content: assistantMessage,
+  });
+  await runDatasetStateDecision(request.runtime, request.scope, {
+    result: {
+      kind: 'completed',
+      variablesPatch: {
+        datasetWorkspaceHash: request.workspace.workspaceHash,
+        datasetPrimaryTextConfirmed: false,
+      },
+    },
+    transition: {
+      to: THETA_WORKFLOW_STATES.datasetCheckpoint,
+      reason: `${request.fromState} reached the mandatory unique-primary-text boundary.`,
+      variablesPatch: {
+        datasetWorkspaceHash: request.workspace.workspaceHash,
+        datasetPrimaryTextConfirmed: false,
+      },
+    },
+  });
+  const checkpoint = await new ThetaCheckpointEventRepository(request.runtime.eventBridge).proposeDataset({
+    runId: request.scope.runId,
+    sessionId: request.sessionId,
+    userId: request.userId,
+    workspace: request.workspace,
+    requestedBy: 'fsm',
+    rationale: `A unique primary text column must be confirmed before leaving DatasetDiscovery; Agent recommends ${candidate.column}.`,
+  });
+  await request.runtime.humanWaits.create({
+    commandId: `create-wait:${checkpoint.checkpointId}`,
+    scope: request.scope,
+    ownerId: 'theta-v6-checkpoint',
+    leaseTtlMs: 30_000,
+    waitId: `wait:${checkpoint.checkpointId}`,
+    pendingActionRef: checkpoint.checkpointId,
+    reason: assistantMessage,
+    requestedAt: new Date().toISOString(),
+  });
+  return { waiting: true, assistantMessage };
+};
+
 const runtimeDriver = (
   runtime: ThetaRuntimeComposition,
   executeState: FencedBoundedFSMDriverOptions['executeState'],
@@ -2189,6 +3404,34 @@ const runDatasetStateDecision = async (
   leaseTtlMs: 30_000,
   stateClaimTtlMs: 30_000,
 });
+
+const enterToolFailureRecovery = async (
+  runtime: ThetaRuntimeComposition,
+  scope: RuntimeScope,
+  error: ThetaToolCircuitOpenError,
+): Promise<void> => {
+  const variables = {
+    recoveryReason: error.message,
+    recoveryToolId: error.state.toolId,
+    recoveryFailureCount: error.state.consecutiveFailures,
+  };
+  await runDatasetStateDecision(runtime, scope, {
+    result: { kind: 'completed', variablesPatch: variables },
+    transition: {
+      to: THETA_WORKFLOW_STATES.recovering,
+      reason: error.message,
+      variablesPatch: variables,
+    },
+  });
+  await runDatasetStateDecision(runtime, scope, {
+    result: { kind: 'completed', variablesPatch: variables },
+    transition: {
+      to: THETA_WORKFLOW_STATES.humanRecovery,
+      reason: '同一工具连续失败超过5次，已停止自动流程并等待人工处理。',
+      variablesPatch: variables,
+    },
+  });
+};
 
 const seedRun = async (
   runtime: ThetaRuntimeComposition,
@@ -2248,7 +3491,7 @@ const resolveHumanWait = async (
     decision,
     resolvedAt: new Date().toISOString(),
   });
-  if (result.disposition === 'lease_unavailable') throw new Error('DatasetCheckpoint wait lease is unavailable.');
+  if (result.disposition === 'lease_unavailable') throw new Error('The current human-wait lease is unavailable.');
 };
 
 const initialMessageFrom = (events: readonly FrameworkEvent[]): string => {
@@ -2256,6 +3499,9 @@ const initialMessageFrom = (events: readonly FrameworkEvent[]): string => {
   const input = record(record(created?.payload).input);
   return typeof input.initialMessage === 'string' ? input.initialMessage.trim() : '';
 };
+
+const managedUploadRoot = (runtimeDb: string): string =>
+  path.resolve(process.env.THETA_DATASET_UPLOAD_DIR ?? path.join(path.dirname(path.resolve(runtimeDb)), 'uploads'));
 
 const runtimeScope = (runId: string, userId: string, workspaceId: string): RuntimeScope => ({
   userId,

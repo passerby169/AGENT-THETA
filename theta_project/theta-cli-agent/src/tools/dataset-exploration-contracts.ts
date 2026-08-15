@@ -1,4 +1,5 @@
 export interface ExploreColumnProfile {
+  columnRef?: string;
   name: string;
   inferredType: 'empty' | 'number' | 'datetime' | 'text' | 'string';
   missingRatio: number;
@@ -11,6 +12,7 @@ export interface ExploreColumnProfile {
 }
 
 export interface ExploreColumnCandidate {
+  columnRef?: string;
   name: string;
   score: number;
   reason: string;
@@ -21,6 +23,7 @@ export interface ThetaDatasetExploreOutput {
   datasetHash: string;
   fileName: string;
   format: string;
+  readerVersion?: string;
   sizeBytes: number;
   encoding?: string;
   delimiter?: string | null;
@@ -28,6 +31,13 @@ export interface ThetaDatasetExploreOutput {
   selectedSheet?: string | null;
   rowCount: number;
   columns: string[];
+  columnDefinitions?: Array<{
+    columnRef: string;
+    position: number;
+    originalName: string;
+    normalizedName: string;
+    displayName: string;
+  }>;
   columnProfiles: ExploreColumnProfile[];
   sampleRows: Array<Record<string, unknown>>;
   sampleSeed: string;

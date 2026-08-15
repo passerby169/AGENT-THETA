@@ -1,5 +1,7 @@
 export const THETA_TOOL_IDS = {
   agentProtocolFeedback: 'theta.agent.protocol_feedback',
+  datasetRequestUpload: 'theta.dataset.request_upload',
+  datasetIngestAttachment: 'theta.dataset.ingest_attachment',
   datasetOverview: "theta.dataset.overview",
   datasetSample: "theta.dataset.sample",
   datasetColumnProfile: "theta.dataset.column_profile",

@@ -19,7 +19,8 @@ import { validateCandidatePlan } from '../planner-v3/validator.js';
 import { createThetaRuntimeComposition, defaultThetaV6RuntimeDb } from '../persistence/runtime-composition.js';
 import { ThetaWorkspaceEventRepository } from '../workspaces/event-store.js';
 import { emptyPlanWorkspace } from '../workspaces/factories.js';
-import type { DatasetWorkspace, PlanWorkspace, WorkspaceSourceRef } from '../workspaces/contracts.js';
+import type { DatasetColumnRole, DatasetWorkspace, PlanWorkspace, WorkspaceSourceRef } from '../workspaces/contracts.js';
+import { isConfirmedColumnRole, isPrimaryTextRole } from '../workspaces/dataset-column-roles.js';
 import { thetaRagGetEvidenceHandler } from './rag-planning-tools.js';
 import { THETA_PERMISSION_SCOPES, THETA_TOOL_IDS } from './tool-ids.js';
 import { thetaRuntimeCheckOfflineReadinessHandler } from './runtime-planning-tools.js';
@@ -110,7 +111,7 @@ const spec = (id: string, name: string, description: string, inputSchema: JsonSc
   auditPolicy: { enabled: true, includeInput: true, includeOutput: true }, source: 'local',
 });
 
-export const thetaPlannerCreateCandidateToolSpec = spec(THETA_TOOL_IDS.plannerCreateCandidate, 'Create plan candidate', 'Choose exactly one model, one random seed and that model\'s executable hyperparameters. The backend inherits dataset bindings and Python automatically produces metrics and visualizations.', draftSchema, true);
+export const thetaPlannerCreateCandidateToolSpec = spec(THETA_TOOL_IDS.plannerCreateCandidate, 'Create plan candidate', 'Choose exactly one model, one random seed and that model\'s executable hyperparameters, with one coherent plan-specific rationale. RAG citations are optional. The backend inherits dataset bindings and Python automatically produces metrics and visualizations.', draftSchema, true);
 export const thetaPlannerSubmitRevisionToolSpec = spec(THETA_TOOL_IDS.plannerSubmitRevision, 'Revise plan candidate', 'Revise only the model, single seed, executable hyperparameters, rationale or evidence. System-managed execution fields are rebuilt automatically.', {
   type: 'object', required: ['candidateRef', 'draft'], properties: { candidateRef: { type: 'string' }, draft: draftSchema }, additionalProperties: false,
 }, true);
@@ -123,8 +124,8 @@ export const thetaPlannerCompareCandidatesToolSpec = spec(THETA_TOOL_IDS.planner
 export const thetaPlannerEstimateProtocolToolSpec = spec(THETA_TOOL_IDS.plannerEstimateProtocol, 'Confirm single-run protocol', 'Normalize one random seed into the fixed one-model, one-run protocol.', {
   type: 'object', required: ['seed'], properties: { seed: { type: 'integer', minimum: 0, maximum: 2147483647 } }, additionalProperties: false,
 });
-export const thetaPlannerSelectEvidenceToolSpec = spec(THETA_TOOL_IDS.plannerSelectEvidence, 'Select legal evidence', 'Bind exact evidence IDs returned by the local RAG index to the current candidate. Any unknown ID rejects the whole call.', {
-  type: 'object', required: ['candidateRef', 'evidenceIds'], properties: { candidateRef: { type: 'string' }, evidenceIds: { type: 'array', minItems: 1, maxItems: 30, uniqueItems: true, items: { type: 'string' } } }, additionalProperties: false,
+export const thetaPlannerSelectEvidenceToolSpec = spec(THETA_TOOL_IDS.plannerSelectEvidence, 'Bind optional references', 'Bind the candidate citation set. An empty set is legal; any cited ID must exist in the local RAG index and match the candidate exactly.', {
+  type: 'object', required: ['candidateRef'], properties: { candidateRef: { type: 'string' }, evidenceIds: { type: 'array', maxItems: 30, uniqueItems: true, items: { type: 'string' }, default: [] } }, additionalProperties: false,
 }, true);
 export const thetaPlannerValidatePreviewToolSpec = spec(THETA_TOOL_IDS.plannerValidatePreview, 'Validate plan candidate', 'Run strict local validation and return structured repairability issues. A valid receipt is required before PlanConfirmation.', {
   type: 'object', required: ['candidateRef'], properties: { candidateRef: { type: 'string' } }, additionalProperties: false,
@@ -173,7 +174,7 @@ export const thetaPlannerEstimateProtocolHandler: ToolHandler<unknown, Record<st
 export const thetaPlannerSelectEvidenceHandler: ToolHandler<unknown, Record<string, unknown>> = async (input, context) => withRuntime(context, async (runtime) => {
   const value = record(input);
   const candidate = await requireCandidate(runtime, context.runId, String(value.candidateRef));
-  const evidenceIds = value.evidenceIds as string[];
+  const evidenceIds = Array.isArray(value.evidenceIds) ? value.evidenceIds as string[] : [];
   const requested = [...new Set(evidenceIds)].sort();
   const declared = [...new Set(candidate.evidenceRefs)].sort();
   if (requested.length !== declared.length || requested.some((id, index) => id !== declared[index])) {
@@ -188,8 +189,9 @@ export const thetaPlannerSelectEvidenceHandler: ToolHandler<unknown, Record<stri
       reused: true,
     } as unknown as Record<string, unknown>;
   }
-  const exact = await thetaRagGetEvidenceHandler({ evidenceIds }, context) as Record<string, unknown>;
-  const evidence = exact.evidence as Array<{ evidenceId: string }>;
+  const evidence = requested.length === 0
+    ? []
+    : ((await thetaRagGetEvidenceHandler({ evidenceIds: requested }, context) as Record<string, unknown>).evidence as Array<{ evidenceId: string }>);
   const selectedEvidenceIds = evidence.map((item) => item.evidenceId).sort();
   const bundleHash = evidenceBundleHash({ candidatePlanHash: candidate.candidatePlanHash, researchWorkspaceHash: candidate.researchWorkspaceHash, selectedEvidenceIds });
   const receipt: EvidenceSelectionReceipt = { receiptId: `evidence-selection:${bundleHash.slice(7, 23)}`, runId: context.runId, candidateRef: candidate.candidateRef, candidatePlanHash: candidate.candidatePlanHash, researchWorkspaceHash: candidate.researchWorkspaceHash, selectedEvidenceIds, evidenceBundleHash: bundleHash, createdAt: new Date().toISOString() };
@@ -328,7 +330,7 @@ const hydratePlannerDecision = (
   const card = new CapabilityRegistry().require(decision.model.modelId);
   const inherited = inheritedColumns(dataset.columnRoles);
   const textColumns = inherited.textColumns;
-  if (textColumns.length === 0) throw new Error('DatasetWorkspace has no confirmed primary text column. Return to dataset understanding instead of inventing one in Planner.');
+  if (textColumns.length !== 1) throw new Error(`DatasetWorkspace must have exactly one confirmed primary text column; found ${textColumns.length}. Return to dataset understanding instead of inventing one in Planner.`);
   const timeColumn = card.capabilities.temporalTopics ? inherited.timeColumn : null;
   const trainingCovariates = card.capabilities.metadataEffects ? inherited.trainingCovariates : [];
   const displayGroups = unique([
@@ -366,7 +368,7 @@ const hydratePlannerDecision = (
   });
 };
 
-const inheritedColumns = (roles: Array<{ column: string; proposedRole: string }>): {
+const inheritedColumns = (roles: DatasetColumnRole[]): {
   textColumns: string[];
   timeColumn: string | null;
   trainingCovariates: string[];
@@ -374,7 +376,7 @@ const inheritedColumns = (roles: Array<{ column: string; proposedRole: string }>
   idColumn: string | null;
 } => {
   const normalized = roles.map((item) => ({ ...item, role: item.proposedRole.trim().toLowerCase() }));
-  const textColumns = normalized.filter((item) => item.role === 'text' || item.role.includes('primary_text')).map((item) => item.column);
+  const textColumns = roles.filter((item) => isPrimaryTextRole(item) && isConfirmedColumnRole(item)).map((item) => item.column);
   const timeColumn = normalized.find((item) => item.role === 'time' || item.role.includes('time_column'))?.column ?? null;
   const idColumn = normalized.find((item) => item.role === 'id' || item.role.includes('identifier'))?.column ?? null;
   const trainingCovariates = normalized

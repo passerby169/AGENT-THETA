@@ -25,6 +25,8 @@ export class MiniMaxCheckpointFeedbackInterpreter {
           'Choose semantic intent from the complete message; never use keyword matching.',
           'A message that both confirms and requests any modification MUST be revise_checkpoint, never confirm_checkpoint.',
           'confirm_checkpoint is allowed only when the user clearly accepts the current checkpoint without changes.',
+          'If there is exactly one proposed primary text column, a user response such as “不知道”, “不确定”, “按你的判断”, or “采用你的建议” delegates that column decision to the Agent and counts as acceptance of the current recommendation. Return confirm_checkpoint unless the same message requests another change.',
+          'If there is no primary text candidate or more than one candidate, delegation is not enough: ask one focused question or request DatasetDiscovery revision instead of confirming ambiguity.',
           'Questions are ask_about_checkpoint. Corrections, additions, removals or role changes are revise_checkpoint.',
           'Return exactly one JSON action satisfying the supplied schema. Do not invent a different target hash.',
           'Allowed JSON shapes: {"kind":"ask_about_checkpoint","question":"...","responseToUser":"..."}; {"kind":"revise_checkpoint","requestedChanges":"...","responseToUser":"..."}; {"kind":"confirm_checkpoint","targetHash":"CURRENT_HASH","responseToUser":"..."}; {"kind":"reject_checkpoint","reason":"...","responseToUser":"..."}; {"kind":"return_to_phase","phase":"DatasetDiscovery","reason":"...","responseToUser":"..."}.',

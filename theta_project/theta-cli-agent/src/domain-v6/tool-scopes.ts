@@ -15,6 +15,12 @@ const datasetReadTools = [
   THETA_TOOL_IDS.datasetRelationships,
 ] as const;
 
+const intakeTools = [
+  THETA_TOOL_IDS.agentProtocolFeedback,
+  THETA_TOOL_IDS.datasetRequestUpload,
+  THETA_TOOL_IDS.datasetIngestAttachment,
+] as const;
+
 const datasetDiscoveryTools = [
   THETA_TOOL_IDS.agentProtocolFeedback,
   ...datasetReadTools,
@@ -67,6 +73,7 @@ const planConfirmationReadTools = [
 ] as const;
 
 export const thetaToolsForPhase = (phase: ThetaIntelligentPhase): readonly string[] => {
+  if (phase === 'Intake') return intakeTools;
   if (phase === 'DatasetDiscovery') return datasetDiscoveryTools;
   if (phase === 'ResearchDialogue') return researchDialogueTools;
   if (phase === 'PlanDesign') return plannerTools;
@@ -95,7 +102,11 @@ const datasetWorkspaceProfile = (allowedToolIds: readonly string[]): ThetaStateT
 });
 
 export const THETA_STATE_TOOL_PROFILES: Readonly<Record<ThetaWorkflowState, ThetaStateToolProfile>> = {
-  [THETA_WORKFLOW_STATES.intake]: readonlyProfile([], []),
+  [THETA_WORKFLOW_STATES.intake]: {
+    allowedToolIds: intakeTools,
+    permissionScopes: [THETA_PERMISSION_SCOPES.datasetRead, THETA_PERMISSION_SCOPES.datasetWrite],
+    policyRefs: ['policy.theta.v6.readonly', 'policy.theta.v6.state-write'],
+  },
   [THETA_WORKFLOW_STATES.datasetDiscovery]: datasetWorkspaceProfile(datasetDiscoveryTools),
   [THETA_WORKFLOW_STATES.datasetCheckpoint]: datasetWorkspaceProfile(datasetCheckpointTools),
   [THETA_WORKFLOW_STATES.researchDialogue]: {

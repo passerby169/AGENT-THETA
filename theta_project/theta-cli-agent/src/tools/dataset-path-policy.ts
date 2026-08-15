@@ -12,7 +12,10 @@ export const supportedDatasetSuffixes = new Set([
   '.xls',
   '.parquet',
 ]);
-const defaultMaxDatasetBytes = 100 * 1024 * 1024;
+// Large CSV corpora are streamed and profiled with bounded reservoir samples.
+// Keep a configurable safety ceiling, but do not reject ordinary research corpora
+// merely because they exceed the former 100 MiB desktop-oriented default.
+const defaultMaxDatasetBytes = 1024 * 1024 * 1024;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const agentRoot = resolve(moduleDirectory, '..', '..');

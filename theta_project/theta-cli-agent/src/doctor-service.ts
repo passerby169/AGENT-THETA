@@ -287,6 +287,7 @@ export class DoctorService {
       'numpy',
       'sklearn',
       'docx',
+      'openpyxl',
     ] as const;
     try {
       const probe = probeThetaPythonModules(requiredModules);
@@ -298,7 +299,7 @@ export class DoctorService {
           `请在当前 conda 环境安装缺失模块，然后重新运行 doctor。当前环境：${probe.condaEnvironment ?? '未识别'}。`,
         );
       }
-      const optionalModules = ['pyarrow'];
+      const optionalModules = ['xlrd', 'pyarrow'];
       const optionalProbe = probeThetaPythonModules(optionalModules);
       const missingOptional = optionalModules.filter(
         (name) => !optionalProbe.modules[name],
@@ -306,13 +307,13 @@ export class DoctorService {
       if (missingOptional.length > 0) {
         return warn(
           'python.runtime',
-          `训练将使用 ${probe.executable}（conda=${probe.condaEnvironment ?? '未识别'}）；可选格式依赖未安装：${missingOptional.join(', ')}。CSV 训练不受影响。`,
-          `仅在读取 Parquet/Arrow 数据时安装：${probe.executable} -m pip install ${missingOptional.join(' ')}`,
+          `训练将使用 ${probe.executable}（conda=${probe.condaEnvironment ?? '未识别'}）；可选格式依赖未安装：${missingOptional.join(', ')}。CSV 和 XLSX 读取不受影响。`,
+          `仅在读取旧版 XLS 或 Parquet 时安装相应依赖：${probe.executable} -m pip install ${missingOptional.join(' ')}`,
         );
       }
       return pass(
         'python.runtime',
-        `训练将使用 ${probe.executable}（Python ${probe.version}，conda=${probe.condaEnvironment ?? '未识别'}）。`,
+        `训练将使用 ${probe.executable}（Python ${probe.version}，conda=${probe.condaEnvironment ?? '未识别'}）；XLSX 流式读取引擎 openpyxl 已就绪。`,
       );
     } catch (error) {
       return fail(

@@ -1,32 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { access, mkdir, rename, unlink } from 'node:fs/promises';
+import { access, mkdir, unlink } from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import busboy from 'busboy';
-import { SQLiteDatasetRegistry, type DatasetRecord } from '../storage/dataset-registry.js';
+import {
+  DatasetIngestionError as DatasetUploadError,
+  DatasetIngestionService,
+  type PublicDatasetRecord,
+} from '../datasets/dataset-ingestion-service.js';
 import { configuredMaxDatasetBytes, supportedDatasetSuffixes } from '../tools/dataset-path-policy.js';
 
-export class DatasetUploadError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = 'DatasetUploadError';
-  }
-}
-
-export interface PublicDatasetRecord {
-  datasetRef: string;
-  displayName: string;
-  sha256: string;
-  sizeBytes: number;
-  suffix: string;
-  createdAt: string;
-}
+export { DatasetIngestionError as DatasetUploadError } from '../datasets/dataset-ingestion-service.js';
+export type { PublicDatasetRecord } from '../datasets/dataset-ingestion-service.js';
 
 export const uploadDataset = async (input: {
   request: IncomingMessage;
@@ -127,29 +114,18 @@ export const uploadDataset = async (input: {
     if (uploaded.truncated) {
       throw new DatasetUploadError('THETA_DATASET_TOO_LARGE', `Dataset exceeds THETA_MAX_DATASET_BYTES (${maximumBytes}).`, 413);
     }
-    const managedPath = path.join(uploadRoot, `${uploaded.sha256}${uploaded.suffix}`);
-    if (await exists(managedPath)) await unlink(uploaded.temporaryPath);
-    else {
-      try {
-        await rename(uploaded.temporaryPath, managedPath);
-      } catch (error) {
-        if (await exists(managedPath)) await unlink(uploaded.temporaryPath);
-        else throw error;
-      }
-    }
+    const service = new DatasetIngestionService({ runtimeDb: input.runtimeDb, managedRoot: uploadRoot });
+    const record = await service.ingestPreparedFile({
+      temporaryPath: uploaded.temporaryPath,
+      displayName: uploaded.displayName,
+      suffix: uploaded.suffix,
+      sha256: uploaded.sha256,
+      sizeBytes: uploaded.sizeBytes,
+      userId: input.userId,
+      workspaceId: input.workspaceId,
+    });
     temporaryPath = undefined;
-    const registry = new SQLiteDatasetRegistry(input.runtimeDb);
-    try {
-      const record = await registry.registerManagedFile(
-        managedPath,
-        uploadRoot,
-        { userId: input.userId, workspaceId: input.workspaceId },
-        uploaded.displayName,
-      );
-      return publicDatasetRecord(record);
-    } finally {
-      registry.close();
-    }
+    return record;
   } catch (error) {
     if (temporaryPath && await exists(temporaryPath)) await unlink(temporaryPath);
     if (error instanceof DatasetUploadError) throw error;
@@ -165,22 +141,9 @@ export const listDatasets = (
   runtimeDb: string,
   owner: { userId: string; workspaceId: string },
 ): PublicDatasetRecord[] => {
-  const registry = new SQLiteDatasetRegistry(runtimeDb);
-  try {
-    return registry.list(owner).map(publicDatasetRecord);
-  } finally {
-    registry.close();
-  }
+  const managedRoot = path.resolve(process.env.THETA_DATASET_UPLOAD_DIR ?? path.join(path.dirname(runtimeDb), 'uploads'));
+  return new DatasetIngestionService({ runtimeDb, managedRoot }).list(owner);
 };
-
-export const publicDatasetRecord = (record: DatasetRecord): PublicDatasetRecord => ({
-  datasetRef: record.datasetRef,
-  displayName: record.displayName,
-  sha256: record.sha256,
-  sizeBytes: record.sizeBytes,
-  suffix: record.suffix,
-  createdAt: record.createdAt,
-});
 
 interface StoredUpload {
   temporaryPath: string;
