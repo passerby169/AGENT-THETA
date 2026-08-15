@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "data": {
+    "message": {
+      "messageId": "message_server_02",
+      "clientMessageId": "message.client.02",
+      "sequence": 2,
+      "role": "user",
+      "kind": "text",
+      "content": "正文列应当是 comment，而不是 review_text。",
+      "createdAt": "2026-08-13T10:03:00.000Z",
+      "status": "accepted",
+      "commandId": "command_02",
+      "checkpointId": "checkpoint_dataset_01"
+    },
+    "command": {
+      "commandId": "command_02",
+      "clientCommandId": "command.client.02",
+      "status": "accepted",
+      "acceptedAt": "2026-08-13T10:03:00.000Z",
+      "statusUrl": "/api/v3/runs/run_dataset_checkpoint_01/commands/command_02"
+    },
+    "runRevision": 5
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_message_02",
+    "serverTime": "2026-08-13T10:03:00.010Z",
+    "runRevision": 5
+  }
+}

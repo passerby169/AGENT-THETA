@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "data": {
+    "items": [
+      {
+        "artifactId": "artifact_overview_report",
+        "name": "研究结果概览.html",
+        "kind": "report",
+        "mimeType": "text/html",
+        "sizeBytes": 184320,
+        "createdAt": "2026-08-14T10:20:00.000Z",
+        "contentUrl": "/api/v3/runs/run_1/results/artifacts/artifact_overview_report/content"
+      },
+      {
+        "artifactId": "artifact_topic_table",
+        "name": "主题关键词.csv",
+        "kind": "table",
+        "mimeType": "text/csv",
+        "sizeBytes": 42180,
+        "createdAt": "2026-08-14T10:20:00.000Z",
+        "contentUrl": "/api/v3/runs/run_1/results/artifacts/artifact_topic_table/content",
+        "experimentId": "experiment_primary_1"
+      }
+    ]
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_artifacts_1",
+    "serverTime": "2026-08-14T10:20:00.000Z",
+    "runRevision": 18
+  }
+}

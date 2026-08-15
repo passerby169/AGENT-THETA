@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": false,
+    "incremental": false,
+    "outDir": ".next/v3-contract-tests",
+    "rootDir": "."
+  },
+  "include": [
+    "lib/api/v3/**/*.ts",
+    "lib/agent/**/*.ts",
+    "mocks/v3/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

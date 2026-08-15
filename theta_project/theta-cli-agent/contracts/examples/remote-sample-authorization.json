@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "data": {
+    "authorizationId": "authorization_remote_sample_01",
+    "datasetRef": "dataset_mock_courses",
+    "datasetHash": "sha256:dataset-mock-courses",
+    "maxRows": 10,
+    "purpose": "dataset_understanding",
+    "redactionPolicyVersion": "theta-redaction@1.0.0",
+    "authorizedBy": "local_user",
+    "authorizedAt": "2026-08-13T10:00:00.000Z",
+    "expiresAt": "2026-08-13T12:00:00.000Z"
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_authorization_01",
+    "serverTime": "2026-08-13T10:00:00.010Z"
+  }
+}

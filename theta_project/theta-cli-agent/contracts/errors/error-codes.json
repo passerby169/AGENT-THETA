@@ -1,0 +1,61 @@
+{
+  "apiVersion": "3.0.0",
+  "errors": [
+    {
+      "code": "INVALID_REQUEST",
+      "category": "validation",
+      "httpStatus": 400,
+      "retryable": false,
+      "recoveryAction": "none"
+    },
+    {
+      "code": "STALE_RUN_REVISION",
+      "category": "conflict",
+      "httpStatus": 409,
+      "retryable": true,
+      "recoveryAction": "refresh"
+    },
+    {
+      "code": "CHECKPOINT_SUPERSEDED",
+      "category": "conflict",
+      "httpStatus": 409,
+      "retryable": true,
+      "recoveryAction": "refresh"
+    },
+    {
+      "code": "RUN_NOT_FOUND",
+      "category": "not_found",
+      "httpStatus": 404,
+      "retryable": false,
+      "recoveryAction": "none"
+    },
+    {
+      "code": "EVENT_CURSOR_EXPIRED",
+      "category": "conflict",
+      "httpStatus": 409,
+      "retryable": true,
+      "recoveryAction": "refresh"
+    },
+    {
+      "code": "REMOTE_SAMPLE_AUTHORIZATION_REQUIRED",
+      "category": "permission",
+      "httpStatus": 403,
+      "retryable": true,
+      "recoveryAction": "contact_user"
+    },
+    {
+      "code": "AGENT_PROVIDER_UNAVAILABLE",
+      "category": "provider",
+      "httpStatus": 503,
+      "retryable": true,
+      "recoveryAction": "retry"
+    },
+    {
+      "code": "TOOL_EXECUTION_FAILED",
+      "category": "tool",
+      "httpStatus": 502,
+      "retryable": true,
+      "recoveryAction": "retry"
+    }
+  ]
+}

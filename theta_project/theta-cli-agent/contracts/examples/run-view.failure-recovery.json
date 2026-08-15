@@ -1,0 +1,26 @@
+{
+  "failureId": "failure_tool_permission_1",
+  "code": "TOOL_PERMISSION_DENIED",
+  "category": "permission",
+  "stage": "plan_validation",
+  "title": "模型环境检查被拒绝",
+  "userMessage": "Agent 无权读取所选模型的运行环境信息，当前方案未被修改。",
+  "technicalMessageRef": "technical-event://failure_tool_permission_1",
+  "retryable": true,
+  "recoverable": true,
+  "suggestedActions": [
+    {
+      "id": "retry_plan_validation",
+      "label": "重试环境检查",
+      "description": "重新执行当前方案的只读环境检查。",
+      "type": "retry"
+    },
+    {
+      "id": "return_plan",
+      "label": "返回方案修改",
+      "description": "保留当前研究理解并返回方案确认。",
+      "type": "return_plan"
+    }
+  ],
+  "occurredAt": "2026-08-14T10:05:00.000Z"
+}

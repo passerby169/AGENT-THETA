@@ -1,0 +1,962 @@
+openapi: 3.1.0
+info:
+  title: THETA Agent API
+  version: 3.0.0
+  description: Stable product API for the THETA ReAct and FSM runtime.
+servers:
+  - url: http://127.0.0.1:4318/api/v3
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service health and capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthSuccess'
+  /datasets:
+    get:
+      operationId: listDatasets
+      responses:
+        '200':
+          description: Datasets available for creating a run
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DatasetCatalogPage'
+  /runs:
+    get:
+      operationId: listRuns
+      responses:
+        '200':
+          description: Run summaries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunListSuccess'
+    post:
+      operationId: createRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+      responses:
+        '202':
+          description: Run creation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunSuccess'
+        '400':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/view:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getRunView
+      responses:
+        '200':
+          description: Authoritative run snapshot
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RunView'
+        '404':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listMessages
+      parameters:
+        - name: afterSequence
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        '200':
+          description: Cursor-based conversation page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ConversationPage'
+    post:
+      operationId: sendMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '202':
+          description: Message command accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MessageAccepted'
+        '409':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/commands/{commandId}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - name: commandId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    get:
+      operationId: getCommand
+      responses:
+        '200':
+          description: Command state
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CommandReceipt'
+  /runs/{runId}/events/stream:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - name: afterEventId
+        in: query
+        schema: { type: string }
+    get:
+      operationId: streamRunEvents
+      responses:
+        '200':
+          description: Product event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '409':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/checkpoints/current:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getCurrentCheckpoint
+      responses:
+        '200':
+          description: Current conversational checkpoint
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/CheckpointView'
+                          - type: 'null'
+  /runs/{runId}/checkpoints/{checkpointId}/confirmations:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/CheckpointId'
+    post:
+      operationId: confirmCheckpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmCheckpointRequest'
+      responses:
+        '202':
+          description: Confirmation accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CheckpointConfirmationReceipt'
+        '409':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/training/approvals:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: approveTraining
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApproveTrainingRequest' }
+      responses:
+        '202':
+          description: Training approval accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data: { $ref: '#/components/schemas/TrainingApprovalReceipt' }
+        '409':
+          $ref: '#/components/responses/ApiFailure'
+  /runs/{runId}/recovery-commands:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: executeRecoveryCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoveryCommandRequest' }
+      responses:
+        '202':
+          description: Recovery command accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data: { $ref: '#/components/schemas/RecoveryCommandAccepted' }
+  /runs/{runId}/results/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listResultArtifacts
+      responses:
+        '200':
+          description: Controlled result artifacts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data: { $ref: '#/components/schemas/ResultArtifactPage' }
+  /runs/{runId}/results/analysis-messages:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: sendResultAnalysisMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResultAnalysisMessageRequest' }
+      responses:
+        '202':
+          description: Result analysis command accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data: { $ref: '#/components/schemas/MessageAccepted' }
+  /datasets/{datasetRef}/remote-sample-authorizations:
+    parameters:
+      - name: datasetRef
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    post:
+      operationId: authorizeRemoteSample
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRemoteSampleAuthorizationRequest'
+      responses:
+        '201':
+          description: Authorization receipt
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RemoteSampleAuthorizationReceipt'
+components:
+  parameters:
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    CheckpointId:
+      name: checkpointId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+  responses:
+    ApiFailure:
+      description: Structured API failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+  schemas:
+    ApiMeta:
+      type: object
+      required: [apiVersion, requestId, serverTime]
+      properties:
+        apiVersion: { const: 3.0.0 }
+        requestId: { type: string }
+        serverTime: { type: string, format: date-time }
+        runRevision: { type: integer, minimum: 0 }
+        currentRunRevision: { type: integer, minimum: 0 }
+    ApiSuccessBase:
+      type: object
+      required: [ok, meta]
+      properties:
+        ok: { const: true }
+        meta: { $ref: '#/components/schemas/ApiMeta' }
+    ApiFailure:
+      type: object
+      required: [ok, error, meta]
+      properties:
+        ok: { const: false }
+        error:
+          $ref: '#/components/schemas/ApiError'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+    ApiError:
+      type: object
+      required: [code, category, message, retryable]
+      properties:
+        code: { type: string }
+        category:
+          enum: [validation, conflict, permission, not_found, provider, tool, runtime, unavailable]
+        message: { type: string }
+        retryable: { type: boolean }
+        fieldIssues:
+          type: array
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path: { type: string }
+              message: { type: string }
+        recovery:
+          type: object
+          required: [action, label, description]
+          properties:
+            action: { enum: [refresh, retry, resume, contact_user, none] }
+            label: { type: string }
+            description: { type: string }
+        correlationId: { type: string }
+        detailsRef: { type: string }
+    HealthSuccess:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessBase'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [status, checkedAt, capabilities]
+              properties:
+                status: { enum: [ready, degraded, blocked] }
+                checkedAt: { type: string, format: date-time }
+                capabilities:
+                  type: object
+                  required: [agent, events, checkpoints]
+                  properties:
+                    agent: { type: boolean }
+                    events: { type: boolean }
+                    checkpoints: { type: boolean }
+                checks: { type: array, items: { type: object } }
+    RunListSuccess:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessBase'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items: { $ref: '#/components/schemas/RunSummary' }
+    RunSummary:
+      type: object
+      required: [runId, revision, lifecycle, phase, updatedAt, interaction]
+      properties:
+        runId: { type: string }
+        revision: { type: integer, minimum: 0 }
+        lifecycle: { $ref: '#/components/schemas/RunLifecycle' }
+        phase: { $ref: '#/components/schemas/RunPhase' }
+        updatedAt: { type: string, format: date-time }
+        title: { type: string }
+        interaction: { $ref: '#/components/schemas/Interaction' }
+    CreateRunRequest:
+      type: object
+      required: [datasetRef, clientCommandId]
+      properties:
+        datasetRef: { type: string, minLength: 1 }
+        initialMessage: { type: string, minLength: 1, maxLength: 4000 }
+        remoteSampleAuthorizationId: { type: string }
+        clientCommandId: { type: string, minLength: 1 }
+    DatasetCatalogPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DatasetCatalogItem' }
+    DatasetCatalogItem:
+      type: object
+      required: [datasetRef, fileName, sizeBytes, suffix, createdAt, source, availability]
+      properties:
+        datasetRef: { type: string, minLength: 1 }
+        fileName: { type: string, minLength: 1 }
+        sizeBytes: { type: integer, minimum: 0 }
+        suffix: { type: string }
+        createdAt: { type: string, format: date-time }
+        source: { enum: [local, remote] }
+        availability: { enum: [ready, remote_sample_authorization_required] }
+        rowCount: { type: integer, minimum: 0 }
+        columnCount: { type: integer, minimum: 0 }
+        languageSummary: { type: string }
+    CreateRunSuccess:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessBase'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [runId, command, view]
+              properties:
+                runId: { type: string }
+                command: { $ref: '#/components/schemas/CommandReceipt' }
+                view: { $ref: '#/components/schemas/RunView' }
+    RunView:
+      type: object
+      required: [runId, revision, createdAt, updatedAt, lifecycle, phase, activity, interaction, progress, capabilities, links]
+      properties:
+        runId: { type: string }
+        revision: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lifecycle: { $ref: '#/components/schemas/RunLifecycle' }
+        phase: { $ref: '#/components/schemas/RunPhase' }
+        activity: { $ref: '#/components/schemas/Activity' }
+        interaction: { $ref: '#/components/schemas/Interaction' }
+        progress: { $ref: '#/components/schemas/Progress' }
+        checkpoint: { $ref: '#/components/schemas/CheckpointView' }
+        dataset: { $ref: '#/components/schemas/DatasetWorkspaceSummary' }
+        research: { $ref: '#/components/schemas/ResearchWorkspaceSummary' }
+        plan: { $ref: '#/components/schemas/PlanCandidateView' }
+        training: { $ref: '#/components/schemas/TrainingView' }
+        results: { $ref: '#/components/schemas/ResultAvailabilitySummary' }
+        failure: { $ref: '#/components/schemas/FailureDescriptor' }
+        capabilities: { $ref: '#/components/schemas/RunCapabilities' }
+        links:
+          type: object
+          additionalProperties: { type: string }
+        debug:
+          type: object
+          properties:
+            hyphaState: { type: string }
+            eventCount: { type: integer, minimum: 0 }
+            lastEventId: { type: string }
+    RunLifecycle:
+      enum: [active, waiting_user, waiting_runtime, completed, failed, quarantined, cancelled]
+    RunPhase:
+      enum: [intake, dataset_understanding, research_dialogue, plan_design, plan_confirmation, dry_run, training_confirmation, training, result_analysis, completed, recovery]
+    Activity:
+      type: object
+      required: [kind, label]
+      properties:
+        kind: { enum: [idle, agent_reasoning, tool_calling, validating, waiting_user, waiting_timer, training, recovering] }
+        label: { type: string }
+        detail: { type: string }
+        startedAt: { type: string, format: date-time }
+        tool:
+          type: object
+          required: [displayName, safePurpose]
+          properties:
+            displayName: { type: string }
+            safePurpose: { type: string }
+    Interaction:
+      type: object
+      required: [kind, expectsUserInput]
+      properties:
+        kind: { enum: [none, conversation, checkpoint, training_approval, recovery] }
+        prompt: { type: string }
+        checkpointId: { type: string }
+        expectsUserInput: { type: boolean }
+    Progress:
+      type: object
+      required: [scope, stageId, label, percent, indeterminate]
+      properties:
+        scope: { enum: [run, phase, training] }
+        stageId: { type: string }
+        label: { type: string }
+        detail: { type: string }
+        completedUnits: { type: integer, minimum: 0 }
+        totalUnits: { type: integer, minimum: 0 }
+        percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
+        indeterminate: { type: boolean }
+    RunCapabilities:
+      type: object
+      required: [canSendMessage, canConfirmCheckpoint, canRejectCheckpoint, canApprovePlan, canApproveTraining, canCancelAgentWork, canCancelTraining, canRetry, canResume, canDeleteRun, canViewTechnicalEvents]
+      properties:
+        canSendMessage: { type: boolean }
+        canConfirmCheckpoint: { type: boolean }
+        canRejectCheckpoint: { type: boolean }
+        canApprovePlan: { type: boolean }
+        canApproveTraining: { type: boolean }
+        canCancelAgentWork: { type: boolean }
+        canCancelTraining: { type: boolean }
+        canRetry: { type: boolean }
+        canResume: { type: boolean }
+        canDeleteRun: { type: boolean }
+        canViewTechnicalEvents: { type: boolean }
+    ConversationPage:
+      type: object
+      required: [items, nextAfterSequence]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ConversationMessage' }
+        nextAfterSequence: { type: [integer, 'null'], minimum: 0 }
+    ConversationMessage:
+      type: object
+      required: [messageId, sequence, role, kind, content, createdAt, status]
+      properties:
+        messageId: { type: string }
+        clientMessageId: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        role: { enum: [user, assistant, system] }
+        kind: { enum: [text, agent_question, agent_summary, checkpoint_proposed, checkpoint_revised, checkpoint_confirmed, activity_notice, failure_notice] }
+        content: { type: string }
+        createdAt: { type: string, format: date-time }
+        status: { enum: [accepted, processing, completed, failed] }
+        commandId: { type: string }
+        checkpointId: { type: string }
+    SendMessageRequest:
+      type: object
+      required: [clientMessageId, clientCommandId, expectedRunRevision, content]
+      properties:
+        clientMessageId: { type: string, minLength: 1 }
+        clientCommandId: { type: string, minLength: 1 }
+        expectedRunRevision: { type: integer, minimum: 0 }
+        content: { type: string, minLength: 1, maxLength: 4000 }
+        checkpointContext:
+          type: object
+          required: [checkpointId, revision, contentHash]
+          properties:
+            checkpointId: { type: string }
+            revision: { type: integer, minimum: 1 }
+            contentHash: { type: string }
+    MessageAccepted:
+      type: object
+      required: [message, command, runRevision]
+      properties:
+        message: { $ref: '#/components/schemas/ConversationMessage' }
+        command: { $ref: '#/components/schemas/CommandReceipt' }
+        runRevision: { type: integer, minimum: 0 }
+    CommandReceipt:
+      type: object
+      required: [commandId, clientCommandId, status, acceptedAt, statusUrl]
+      properties:
+        commandId: { type: string }
+        clientCommandId: { type: string }
+        status: { enum: [accepted, running, waiting_user, completed, failed] }
+        acceptedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        statusUrl: { type: string }
+        error: { $ref: '#/components/schemas/ApiError' }
+    CheckpointView:
+      type: object
+      required: [checkpointId, kind, revision, contentHash, mandatory, status, requestedBy, title, summary, sections, assumptions, warnings, allowedActions, createdAt]
+      properties:
+        checkpointId: { type: string }
+        kind: { enum: [dataset, research, plan] }
+        revision: { type: integer, minimum: 1 }
+        contentHash: { type: string }
+        mandatory: { type: boolean }
+        status: { enum: [proposed, revising, confirmed, skipped, rejected] }
+        requestedBy: { enum: [minimax, fsm] }
+        title: { type: string }
+        summary: { type: string }
+        sections:
+          type: array
+          items:
+            type: object
+            required: [id, title, kind, content]
+            properties:
+              id: { type: string }
+              title: { type: string }
+              kind: { enum: [text, facts, list, table, decision, warning] }
+              content: {}
+        assumptions: { type: array, items: { type: string } }
+        warnings: { type: array, items: { type: string } }
+        allowedActions:
+          type: array
+          items: { enum: [ask, revise, confirm, reject, return_previous] }
+        createdAt: { type: string, format: date-time }
+    DatasetWorkspaceSummary:
+      type: object
+      required: [datasetRef, datasetHash, fileName, rowCount, columnCount, qualityWarnings, assumptions]
+      properties:
+        datasetRef: { type: string }
+        datasetHash: { type: string }
+        fileName: { type: string }
+        rowCount: { type: integer, minimum: 0 }
+        columnCount: { type: integer, minimum: 0 }
+        languageSummary: { type: string }
+        qualityWarnings:
+          type: array
+          items: { type: string }
+        assumptions:
+          type: array
+          items: { type: string }
+    ResearchWorkspaceSummary:
+      type: object
+      required: [workspaceHash, narrative, statements, assumptions, contradictions]
+      properties:
+        workspaceHash: { type: string }
+        narrative: { type: string }
+        statements:
+          type: array
+          items:
+            type: object
+            required: [id, text, status]
+            properties:
+              id: { type: string }
+              text: { type: string }
+              status: { enum: [confirmed, inferred, uncertain, contradicted] }
+        assumptions:
+          type: array
+          items: { type: string }
+        contradictions:
+          type: array
+          items: { type: string }
+    ConfirmCheckpointRequest:
+      type: object
+      required: [clientCommandId, expectedRunRevision, checkpointRevision, contentHash]
+      properties:
+        clientCommandId: { type: string }
+        expectedRunRevision: { type: integer, minimum: 0 }
+        checkpointRevision: { type: integer, minimum: 1 }
+        contentHash: { type: string }
+    CheckpointConfirmationReceipt:
+      type: object
+      required: [receiptId, checkpointId, checkpointRevision, contentHash, kind, confirmedBy, confirmedAt, command]
+      properties:
+        receiptId: { type: string }
+        checkpointId: { type: string }
+        checkpointRevision: { type: integer }
+        contentHash: { type: string }
+        kind: { enum: [dataset, research, plan] }
+        confirmedBy: { type: string }
+        confirmedAt: { type: string, format: date-time }
+        command: { $ref: '#/components/schemas/CommandReceipt' }
+    ProductRunEvent:
+      type: object
+      required: [eventId, sequence, type, runId, runRevision, occurredAt, payload]
+      properties:
+        eventId: { type: string }
+        sequence: { type: integer, minimum: 1 }
+        type: { enum: [run.view.updated, conversation.message.created, agent.activity.started, agent.activity.updated, agent.activity.completed, checkpoint.proposed, checkpoint.revised, checkpoint.confirmed, checkpoint.skipped, plan.candidate.updated, plan.validation.updated, training.progress.updated, run.failure.updated, run.completed] }
+        runId: { type: string }
+        runRevision: { type: integer, minimum: 0 }
+        occurredAt: { type: string, format: date-time }
+        payload: {}
+    PlanCandidateView:
+      type: object
+      required: [candidateId, revision, candidatePlanHash, boundDatasetHash, boundResearchWorkspaceHash, status, summary, parameters, assumptions, warnings]
+      properties:
+        candidateId: { type: string }
+        revision: { type: integer, minimum: 1 }
+        candidatePlanHash: { type: string }
+        boundDatasetHash: { type: string }
+        boundResearchWorkspaceHash: { type: string }
+        status: { enum: [designing, validating, valid, invalid, superseded] }
+        summary: { type: string }
+        primaryModel: { $ref: '#/components/schemas/ModelDecisionView' }
+        baselineModel: { $ref: '#/components/schemas/ModelDecisionView' }
+        parameters:
+          type: array
+          items: { $ref: '#/components/schemas/PlanParameterView' }
+        experiment: { $ref: '#/components/schemas/PlanExperimentView' }
+        preprocessing: { type: array, items: { type: string } }
+        evaluation: { type: array, items: { type: string } }
+        visualizations: { type: array, items: { type: string } }
+        expectedOutputs: { type: array, items: { type: string } }
+        resources: { $ref: '#/components/schemas/PlanResourceEstimateView' }
+        alternatives:
+          type: array
+          items: { $ref: '#/components/schemas/PlanAlternativeView' }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/PlanEvidenceView' }
+        assumptions: { type: array, items: { type: string } }
+        warnings: { type: array, items: { type: string } }
+        validation: { $ref: '#/components/schemas/PlanValidationView' }
+    ModelDecisionView:
+      type: object
+      required: [modelId, rationale]
+      properties:
+        modelId: { type: string }
+        displayName: { type: string }
+        rationale: { type: string }
+    PlanParameterView:
+      type: object
+      required: [field, value, rationale, source]
+      properties:
+        field: { type: string }
+        value: {}
+        rationale: { type: string }
+        source: { enum: [agent, user, validator_default] }
+    PlanExperimentView:
+      type: object
+      required: [mode, runCount, seeds, rationale]
+      properties:
+        mode: { type: string }
+        runCount: { type: integer, minimum: 1 }
+        seeds: { type: array, items: { type: integer } }
+        rationale: { type: string }
+    PlanValidationView:
+      type: object
+      required: [valid, receiptHash, issues]
+      properties:
+        valid: { type: boolean }
+        receiptHash: { type: string }
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationIssueView' }
+    ValidationIssueView:
+      type: object
+      required: [code, severity, message]
+      properties:
+        code: { type: string }
+        severity: { enum: [warning, blocking] }
+        message: { type: string }
+        field: { type: string }
+    PlanResourceEstimateView:
+      type: object
+      required: [notes]
+      properties:
+        estimatedMinutes: { type: integer, minimum: 0 }
+        cpuCores: { type: integer, minimum: 0 }
+        memoryGb: { type: number, minimum: 0 }
+        accelerator: { type: string }
+        notes: { type: array, items: { type: string } }
+    PlanAlternativeView:
+      type: object
+      required: [modelId, tradeoff]
+      properties:
+        modelId: { type: string }
+        displayName: { type: string }
+        tradeoff: { type: string }
+    PlanEvidenceView:
+      type: object
+      required: [refId, label, summary, type]
+      properties:
+        refId: { type: string }
+        label: { type: string }
+        summary: { type: string }
+        type: { enum: [dataset_observation, model_capability, validator, research] }
+    TrainingView:
+      type: object
+      required: [status, stage, progress, experiments, updatedAt, recentNotices]
+      properties:
+        status: { enum: [not_started, queued, running, evaluating, visualizing, completed, failed, cancelled] }
+        stage: { $ref: '#/components/schemas/TrainingStageView' }
+        progress: { $ref: '#/components/schemas/Progress' }
+        experiments:
+          type: array
+          items: { $ref: '#/components/schemas/TrainingExperimentView' }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        etaSeconds: { type: [integer, 'null'] }
+        recentNotices: { type: array, items: { type: string } }
+        canonicalPlanHash: { type: string }
+        dryRunHash: { type: string }
+    TrainingStageView:
+      type: object
+      required: [id, label]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        detail: { type: string }
+    TrainingExperimentView:
+      type: object
+      required: [experimentId, modelId, status, percent]
+      properties:
+        experimentId: { type: string }
+        modelId: { type: string }
+        seed: { type: integer }
+        status: { type: string }
+        percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
+    ApproveTrainingRequest:
+      type: object
+      required: [clientCommandId, expectedRunRevision, dryRunHash]
+      properties:
+        clientCommandId: { type: string }
+        expectedRunRevision: { type: integer, minimum: 0 }
+        dryRunHash: { type: string }
+    TrainingApprovalReceipt:
+      type: object
+      required: [receiptId, dryRunHash, canonicalPlanHash, approvedBy, approvedAt, command]
+      properties:
+        receiptId: { type: string }
+        dryRunHash: { type: string }
+        canonicalPlanHash: { type: string }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        command: { $ref: '#/components/schemas/CommandReceipt' }
+    FailureDescriptor:
+      type: object
+      required: [failureId, code, category, stage, title, userMessage, retryable, recoverable, suggestedActions, occurredAt]
+      properties:
+        failureId: { type: string }
+        code: { type: string }
+        category: { enum: [provider, tool, validation, runtime, training, storage, permission] }
+        stage: { type: string }
+        title: { type: string }
+        userMessage: { type: string }
+        technicalMessageRef: { type: string }
+        retryable: { type: boolean }
+        recoverable: { type: boolean }
+        suggestedActions:
+          type: array
+          items: { $ref: '#/components/schemas/RecoveryActionView' }
+        occurredAt: { type: string, format: date-time }
+    RecoveryActionView:
+      type: object
+      required: [id, label, description, type]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        description: { type: string }
+        type: { enum: [retry, resume, return_plan, return_research, cancel] }
+    RecoveryCommandRequest:
+      type: object
+      required: [clientCommandId, expectedRunRevision, actionId]
+      properties:
+        clientCommandId: { type: string }
+        expectedRunRevision: { type: integer, minimum: 0 }
+        actionId: { type: string }
+    RecoveryCommandAccepted:
+      type: object
+      required: [failureId, actionId, runRevision, command]
+      properties:
+        failureId: { type: string }
+        actionId: { type: string }
+        runRevision: { type: integer, minimum: 0 }
+        command: { $ref: '#/components/schemas/CommandReceipt' }
+    ResultAvailabilitySummary:
+      type: object
+      required: [status, artifactCount]
+      properties:
+        status: { enum: [unavailable, preparing, available, failed] }
+        artifactCount: { type: integer, minimum: 0 }
+        overviewUrl: { type: string }
+    ResultArtifactPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ResultArtifactSummary' }
+    ResultArtifactSummary:
+      type: object
+      required: [artifactId, name, kind, mimeType, sizeBytes, createdAt, contentUrl]
+      properties:
+        artifactId: { type: string }
+        name: { type: string }
+        kind: { enum: [report, table, image, interactive, model, log] }
+        mimeType: { type: string }
+        sizeBytes: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        contentUrl: { type: string }
+        experimentId: { type: string }
+    ResultAnalysisMessageRequest:
+      type: object
+      required: [clientMessageId, clientCommandId, expectedRunRevision, content]
+      properties:
+        clientMessageId: { type: string }
+        clientCommandId: { type: string }
+        expectedRunRevision: { type: integer, minimum: 0 }
+        content: { type: string, minLength: 1, maxLength: 4000 }
+        artifactIds:
+          type: array
+          items: { type: string }
+    CreateRemoteSampleAuthorizationRequest:
+      type: object
+      required: [clientCommandId, maxRows, purpose, expiresInMinutes, acceptedRedactionPolicyVersion]
+      properties:
+        clientCommandId: { type: string }
+        maxRows: { type: integer, minimum: 1, maximum: 100 }
+        purpose: { const: dataset_understanding }
+        expiresInMinutes: { type: integer, minimum: 1, maximum: 1440 }
+        acceptedRedactionPolicyVersion: { type: string }
+    RemoteSampleAuthorizationReceipt:
+      type: object
+      required: [authorizationId, datasetRef, datasetHash, maxRows, purpose, redactionPolicyVersion, authorizedBy, authorizedAt, expiresAt]
+      properties:
+        authorizationId: { type: string }
+        datasetRef: { type: string }
+        datasetHash: { type: string }
+        maxRows: { type: integer }
+        purpose: { const: dataset_understanding }
+        redactionPolicyVersion: { type: string }
+        authorizedBy: { type: string }
+        authorizedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }

@@ -1,0 +1,136 @@
+{
+  "ok": true,
+  "data": {
+    "runId": "run_plan_checkpoint_1",
+    "revision": 12,
+    "createdAt": "2026-08-14T09:00:00.000Z",
+    "updatedAt": "2026-08-14T09:20:00.000Z",
+    "lifecycle": "waiting_user",
+    "phase": "plan_confirmation",
+    "activity": {
+      "kind": "waiting_user",
+      "label": "等待审批研究方案"
+    },
+    "interaction": {
+      "kind": "checkpoint",
+      "prompt": "可在对话中要求修改；只有点击批准当前方案才会生成审批回执。",
+      "checkpointId": "checkpoint_plan_1",
+      "expectsUserInput": true
+    },
+    "progress": {
+      "scope": "phase",
+      "stageId": "plan_confirmation",
+      "label": "确认方案",
+      "percent": null,
+      "indeterminate": true
+    },
+    "checkpoint": {
+      "checkpointId": "checkpoint_plan_1",
+      "kind": "plan",
+      "revision": 2,
+      "contentHash": "sha256:plan-candidate-v2",
+      "mandatory": true,
+      "status": "proposed",
+      "requestedBy": "fsm",
+      "title": "研究方案审批",
+      "summary": "使用 BERTopic 与 NMF 对照分析跨语言新闻议题。",
+      "sections": [],
+      "assumptions": ["来源字段可用于分组评价"],
+      "warnings": ["跨语言主题标签需要人工抽查"],
+      "allowedActions": ["ask", "revise", "confirm", "return_previous"],
+      "createdAt": "2026-08-14T09:20:00.000Z"
+    },
+    "plan": {
+      "candidateId": "plan_candidate_1",
+      "revision": 2,
+      "candidatePlanHash": "sha256:plan-candidate-v2",
+      "boundDatasetHash": "sha256:dataset-news",
+      "boundResearchWorkspaceHash": "sha256:research-v2",
+      "status": "valid",
+      "summary": "使用 BERTopic 与 NMF 对照分析跨语言新闻议题。",
+      "primaryModel": {
+        "modelId": "bertopic-multilingual",
+        "displayName": "BERTopic Multilingual",
+        "rationale": "适合中英文混合语料"
+      },
+      "baselineModel": {
+        "modelId": "nmf-tfidf",
+        "displayName": "NMF + TF-IDF",
+        "rationale": "提供可解释基线"
+      },
+      "parameters": [
+        {
+          "field": "num_topics",
+          "value": 12,
+          "rationale": "根据用户修订要求调整",
+          "source": "user"
+        }
+      ],
+      "experiment": {
+        "mode": "primary_with_baseline",
+        "runCount": 6,
+        "seeds": [11, 23, 47],
+        "rationale": "评估主题稳定性"
+      },
+      "preprocessing": ["语言识别", "重复文本过滤"],
+      "evaluation": ["主题一致性", "跨随机种子稳定性"],
+      "visualizations": ["主题占比", "时间趋势"],
+      "expectedOutputs": ["主题关键词", "文档主题分配"],
+      "resources": {
+        "estimatedMinutes": 18,
+        "cpuCores": 4,
+        "memoryGb": 8,
+        "accelerator": "CPU",
+        "notes": ["基于 24600 篇文本估算"]
+      },
+      "alternatives": [
+        {
+          "modelId": "lda-gensim",
+          "displayName": "LDA",
+          "tradeoff": "资源较低但跨语言语义能力较弱"
+        }
+      ],
+      "evidence": [
+        {
+          "refId": "evidence_language",
+          "label": "数据语言观察",
+          "summary": "语料包含中文和英文",
+          "type": "dataset_observation"
+        }
+      ],
+      "assumptions": ["来源字段可用于分组评价"],
+      "warnings": ["跨语言主题标签需要人工抽查"],
+      "validation": {
+        "valid": true,
+        "receiptHash": "sha256:plan-validation-v2",
+        "issues": []
+      }
+    },
+    "capabilities": {
+      "canSendMessage": true,
+      "canConfirmCheckpoint": false,
+      "canRejectCheckpoint": true,
+      "canApprovePlan": true,
+      "canApproveTraining": false,
+      "canCancelAgentWork": false,
+      "canCancelTraining": false,
+      "canRetry": false,
+      "canResume": false,
+      "canDeleteRun": true,
+      "canViewTechnicalEvents": true
+    },
+    "links": {
+      "messages": "/api/v3/runs/run_plan_checkpoint_1/messages",
+      "events": "/api/v3/runs/run_plan_checkpoint_1/events/stream",
+      "timeline": "/api/v3/runs/run_plan_checkpoint_1/timeline",
+      "checkpoint": "/api/v3/runs/run_plan_checkpoint_1/checkpoints/current",
+      "plan": "/api/v3/runs/run_plan_checkpoint_1/plan"
+    }
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_plan_checkpoint_1",
+    "serverTime": "2026-08-14T09:20:00.000Z",
+    "runRevision": 12
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "ok": true,
+  "data": {
+    "runId": "run_research_checkpoint_1",
+    "revision": 7,
+    "createdAt": "2026-08-14T09:00:00.000Z",
+    "updatedAt": "2026-08-14T09:08:00.000Z",
+    "lifecycle": "waiting_user",
+    "phase": "research_dialogue",
+    "activity": {
+      "kind": "waiting_user",
+      "label": "等待确认研究理解"
+    },
+    "interaction": {
+      "kind": "checkpoint",
+      "prompt": "可继续提问或修改；只有点击确认按钮才会批准当前研究版本。",
+      "checkpointId": "checkpoint_research_1",
+      "expectsUserInput": true
+    },
+    "progress": {
+      "scope": "phase",
+      "stageId": "research_checkpoint",
+      "label": "研究理解",
+      "percent": null,
+      "indeterminate": true
+    },
+    "research": {
+      "workspaceHash": "sha256:research-workspace-v2",
+      "narrative": "比较不同媒体对人工智能监管议题的关注重点，并限定最近三个月。",
+      "statements": [
+        {
+          "id": "statement_goal",
+          "text": "比较中文和英文媒体的人工智能监管议题",
+          "status": "confirmed"
+        },
+        {
+          "id": "statement_unit",
+          "text": "以单篇报道为分析单位",
+          "status": "inferred"
+        }
+      ],
+      "assumptions": ["媒体来源字段可用于分组比较"],
+      "contradictions": []
+    },
+    "checkpoint": {
+      "checkpointId": "checkpoint_research_1",
+      "kind": "research",
+      "revision": 2,
+      "contentHash": "sha256:research-checkpoint-v2",
+      "mandatory": false,
+      "status": "proposed",
+      "requestedBy": "minimax",
+      "title": "研究理解确认",
+      "summary": "Agent 已将对话整理为研究叙事，请确认当前理解或直接说明修改内容。",
+      "sections": [],
+      "assumptions": ["媒体来源字段可用于分组比较"],
+      "warnings": [],
+      "allowedActions": ["ask", "revise", "confirm", "return_previous"],
+      "createdAt": "2026-08-14T09:08:00.000Z"
+    },
+    "capabilities": {
+      "canSendMessage": true,
+      "canConfirmCheckpoint": true,
+      "canRejectCheckpoint": true,
+      "canApprovePlan": false,
+      "canApproveTraining": false,
+      "canCancelAgentWork": false,
+      "canCancelTraining": false,
+      "canRetry": false,
+      "canResume": false,
+      "canDeleteRun": true,
+      "canViewTechnicalEvents": true
+    },
+    "links": {
+      "messages": "/api/v3/runs/run_research_checkpoint_1/messages",
+      "events": "/api/v3/runs/run_research_checkpoint_1/events/stream",
+      "timeline": "/api/v3/runs/run_research_checkpoint_1/timeline",
+      "checkpoint": "/api/v3/runs/run_research_checkpoint_1/checkpoints/current"
+    }
+  },
+  "meta": {
+    "apiVersion": "3.0.0",
+    "requestId": "request_research_checkpoint_1",
+    "serverTime": "2026-08-14T09:08:00.000Z",
+    "runRevision": 7
+  }
+}
