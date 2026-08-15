@@ -6,12 +6,13 @@ import {
   stat,
 } from 'node:fs/promises';
 import path from 'node:path';
-import { ThetaWorkflowService } from './theta-workflow-service.js';
-import { createThetaWorkflowRuntime } from './theta-workflow-runtime.js';
-import { runThetaModelCatalog } from './tools/hypha-runner.js';
+import { ThetaAgentApplicationService } from './application/theta-agent-application-service.js';
+import { createThetaRuntimeComposition } from './persistence/runtime-composition.js';
+import { callThetaBridge } from './tools/bridge.js';
 import { createMiniMaxProviderFromEnv } from './providers/minimax.js';
 import { probeThetaPythonModules } from './tools/bridge.js';
 import { CapabilityRegistry } from './capabilities/registry.js';
+import type { CapabilityCatalogModel } from './capabilities/contracts.js';
 import { getKnowledgeIndexStatus } from './rag/service.js';
 
 export type DoctorCheckStatus = 'PASS' | 'WARN' | 'FAIL';
@@ -136,7 +137,7 @@ export class DoctorService {
 
   private domainPackCheck(): DoctorCheck {
     try {
-      const summary = new ThetaWorkflowService().compileSummary();
+      const summary = new ThetaAgentApplicationService().compileSummary();
       return pass(
         'domain.pack',
         `Compiled ${String(summary.domainPack)} with ${String(summary.stateCount)} states.`,
@@ -155,7 +156,7 @@ export class DoctorService {
     const filename = path.join(directory, `doctor-${randomUUID()}.sqlite`);
     try {
       await mkdir(directory, { recursive: true });
-      const runtime = await createThetaWorkflowRuntime({ filename });
+      const runtime = await createThetaRuntimeComposition(filename);
       runtime.close();
       await cleanupSqlite(filename);
       return pass(
@@ -233,15 +234,7 @@ export class DoctorService {
 
   private async pythonAndModelCheck(): Promise<DoctorCheck> {
     try {
-      const result = await runThetaModelCatalog();
-      const models = result.output?.models ?? [];
-      if (result.status !== 'completed' || models.length === 0) {
-        throw new Error(
-          typeof result.error === 'string'
-            ? result.error
-            : (result.error?.message ?? `status=${result.status}`),
-        );
-      }
+      const models = await modelCatalog();
       return pass(
         'python.models',
         `Governed Python Bridge loaded ${models.length} THETA models.`,
@@ -257,15 +250,7 @@ export class DoctorService {
 
   private async capabilityRegistryCheck(): Promise<DoctorCheck> {
     try {
-      const result = await runThetaModelCatalog();
-      const models = result.output?.models ?? [];
-      if (result.status !== 'completed' || models.length === 0) {
-        throw new Error(
-          typeof result.error === 'string'
-            ? result.error
-            : (result.error?.message ?? `status=${result.status}`),
-        );
-      }
+      const models = await modelCatalog();
       const registry = new CapabilityRegistry({ agentRoot: this.agentRoot });
       const audit = registry.auditCatalog(models);
       if (audit.status === 'fail') {
@@ -470,3 +455,16 @@ const fail = (
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const modelCatalog = async (): Promise<CapabilityCatalogModel[]> => {
+  const response = await callThetaBridge('model.catalog', {}, {
+    runId: 'theta-v6-doctor',
+    stepId: 'model-catalog',
+  });
+  if (response.status !== 'ok' || !response.data || typeof response.data !== 'object') {
+    throw new Error(response.error?.message ?? 'Model catalog bridge call failed.');
+  }
+  const models = (response.data as { models?: unknown }).models;
+  if (!Array.isArray(models) || models.length === 0) throw new Error('Model catalog is empty.');
+  return models as CapabilityCatalogModel[];
+};

@@ -5,7 +5,9 @@ from .bridge import handle_request
 
 
 def main() -> None:
-    raw = sys.stdin.read()
+    # Windows PowerShell may prefix redirected UTF-8 text with a BOM. Treat it
+    # as transport encoding metadata, not as part of the JSON document.
+    raw = sys.stdin.read().lstrip("\ufeff")
     try:
         request = json.loads(raw) if raw.strip() else {}
         response = handle_request(request)

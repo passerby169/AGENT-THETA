@@ -87,6 +87,7 @@ export const modelCapabilityCardSchema = z
         "dynamic_neural",
         "structural_covariate",
         "embedding_clustering",
+        "contextual_neural",
         "llm_embedding_neural",
       ]),
       language: z.enum(["python", "python_r_optional"]),

@@ -1,32 +1,99 @@
 import { ToolRegistry, type ToolSpec } from "@hypha/tools";
 import {
-  thetaConversationLanguageHandler,
-  thetaConversationLanguageToolSpec,
-} from "./conversation-language-tool.js";
+  thetaDatasetCategoricalProfileHandler,
+  thetaDatasetCategoricalProfileToolSpec,
+  thetaDatasetColumnProfileHandler,
+  thetaDatasetColumnProfileToolSpec,
+  thetaDatasetDuplicatesHandler,
+  thetaDatasetDuplicatesToolSpec,
+  thetaDatasetMissingnessHandler,
+  thetaDatasetMissingnessToolSpec,
+  thetaDatasetOverviewHandler,
+  thetaDatasetOverviewToolSpec,
+  thetaDatasetRelationshipsHandler,
+  thetaDatasetRelationshipsToolSpec,
+  thetaDatasetSampleHandler,
+  thetaDatasetSampleToolSpec,
+  thetaDatasetSubmitUnderstandingHandler,
+  thetaDatasetSubmitUnderstandingToolSpec,
+  thetaDatasetTextProfileHandler,
+  thetaDatasetTextProfileToolSpec,
+  thetaDatasetTimeProfileHandler,
+  thetaDatasetTimeProfileToolSpec,
+} from './dataset-analysis-tools.js';
 import {
-  thetaDatasetDetectColumnsHandler,
-  thetaDatasetDetectColumnsToolSpec,
-} from "./dataset-detect-columns-tool.js";
+  thetaDatasetApplyUserRevisionHandler,
+  thetaDatasetApplyUserRevisionToolSpec,
+} from './dataset-revision-tool.js';
 import {
-  thetaDatasetInspectHandler,
-  thetaDatasetInspectToolSpec,
-} from "./dataset-inspect-tool.js";
+  thetaResearchReadWorkspaceHandler,
+  thetaResearchReadWorkspaceToolSpec,
+  thetaResearchUpdateUnderstandingHandler,
+  thetaResearchUpdateUnderstandingToolSpec,
+} from './research-understanding-tools.js';
 import {
-  thetaDatasetExploreHandler,
-  thetaDatasetExploreToolSpec,
-} from './dataset-explore-tool.js';
+  thetaModelCompareHandler,
+  thetaModelCompareToolSpec,
+  thetaModelGetCapabilityHandler,
+  thetaModelGetCapabilityToolSpec,
+  thetaModelGetParameterContractHandler,
+  thetaModelGetParameterContractToolSpec,
+  thetaModelListAvailableHandler,
+  thetaModelListAvailableToolSpec,
+} from './model-planning-tools.js';
 import {
-  thetaDatasetUnderstandingLanguageHandler,
-  thetaDatasetUnderstandingLanguageToolSpec,
-} from './dataset-understanding-language-tool.js';
+  thetaRuntimeCheckDependenciesHandler,
+  thetaRuntimeCheckDependenciesToolSpec,
+  thetaRuntimeCheckModelAssetsHandler,
+  thetaRuntimeCheckModelAssetsToolSpec,
+  thetaRuntimeCheckOfflineReadinessHandler,
+  thetaRuntimeCheckOfflineReadinessToolSpec,
+  thetaRuntimeEstimateCandidateHandler,
+  thetaRuntimeEstimateCandidateToolSpec,
+  thetaRuntimeProfileHardwareHandler,
+  thetaRuntimeProfileHardwareToolSpec,
+} from './runtime-planning-tools.js';
+import {
+  thetaRagCheckClaimSupportHandler,
+  thetaRagCheckClaimSupportToolSpec,
+  thetaRagCompareModelsHandler,
+  thetaRagCompareModelsToolSpec,
+  thetaRagFindConflictsHandler,
+  thetaRagFindConflictsToolSpec,
+  thetaRagGetEvidenceHandler,
+  thetaRagGetEvidenceToolSpec,
+} from './rag-planning-tools.js';
+import {
+  thetaPlannerCompareCandidatesHandler,
+  thetaPlannerCompareCandidatesToolSpec,
+  thetaPlannerCreateCandidateHandler,
+  thetaPlannerCreateCandidateToolSpec,
+  thetaPlannerEstimateProtocolHandler,
+  thetaPlannerEstimateProtocolToolSpec,
+  thetaPlannerGetCandidateHandler,
+  thetaPlannerGetCandidateToolSpec,
+  thetaPlannerSelectEvidenceHandler,
+  thetaPlannerSelectEvidenceToolSpec,
+  thetaPlannerSubmitRevisionHandler,
+  thetaPlannerSubmitRevisionToolSpec,
+  thetaPlannerValidatePreviewHandler,
+  thetaPlannerValidatePreviewToolSpec,
+} from './planner-v3-tools.js';
+import { thetaAgentProtocolFeedbackHandler, thetaAgentProtocolFeedbackToolSpec } from './agent-protocol-feedback-tool.js';
+import {
+  thetaModelShortlistHandler,
+  thetaModelShortlistToolSpec,
+  thetaPlannerEvaluateCandidateHandler,
+  thetaPlannerEvaluateCandidateToolSpec,
+  thetaPlannerInspectCaseHandler,
+  thetaPlannerInspectCaseToolSpec,
+  thetaPlannerValidateAlignmentHandler,
+  thetaPlannerValidateAlignmentToolSpec,
+} from './planning-workbench-tools.js';
 import {
   thetaModelCatalogHandler,
   thetaModelCatalogToolSpec,
 } from "./model-catalog-tool.js";
-import {
-  thetaModelRecommendHandler,
-  thetaModelRecommendToolSpec,
-} from "./model-recommend-tool.js";
 import {
   thetaRagIndexHandler,
   thetaRagIndexToolSpec,
@@ -40,41 +107,27 @@ import {
   thetaRagStatusToolSpec,
 } from "./rag-status-tool.js";
 import {
-  thetaPlanApproveHandler,
-  thetaPlanApproveToolSpec,
-} from "./plan-approve-tool.js";
-import {
   thetaPlanCreateHandler,
   thetaPlanCreateToolSpec,
-} from "./plan-create-tool.js";
-import {
-  thetaPlanValidateHandler,
-  thetaPlanValidateToolSpec,
-} from "./plan-validate-tool.js";
-import {
-  thetaPlanProposeHandler,
-  thetaPlanProposeToolSpec,
-} from "./plan-propose-tool.js";
-import {
   thetaTrainingDryRunHandler,
   thetaTrainingDryRunToolSpec,
-} from "./training-dry-run-tool.js";
+} from './execution-preparation-tools.js';
 import {
+  thetaArtifactsVerifyHandler,
+  thetaArtifactsVerifyToolSpec,
+  thetaDatasetVerifyForTrainingHandler,
+  thetaDatasetVerifyForTrainingToolSpec,
+  thetaResultsGetSummaryHandler,
+  thetaResultsGetSummaryToolSpec,
+  thetaResultsListArtifactsHandler,
+  thetaResultsListArtifactsToolSpec,
   thetaTrainingCancelHandler,
   thetaTrainingCancelToolSpec,
-} from "./training-cancel-tool.js";
-import {
   thetaTrainingStartHandler,
   thetaTrainingStartToolSpec,
-} from "./training-start-tool.js";
-import {
   thetaTrainingStatusHandler,
   thetaTrainingStatusToolSpec,
-} from "./training-status-tool.js";
-import {
-  thetaLanguageGenerateHandler,
-  thetaLanguageGenerateToolSpec,
-} from "./language-generate-tool.js";
+} from './training-execution-tools.js';
 
 export const registerThetaModelCatalogTool = (
   registry: ToolRegistry,
@@ -86,51 +139,100 @@ export const registerThetaModelCatalogTool = (
 };
 
 export const thetaHyphaToolSpecs: readonly ToolSpec[] = Object.freeze([
-  thetaDatasetInspectToolSpec,
-  thetaDatasetExploreToolSpec,
-  thetaDatasetUnderstandingLanguageToolSpec,
-  thetaDatasetDetectColumnsToolSpec,
+  thetaAgentProtocolFeedbackToolSpec,
+  thetaDatasetOverviewToolSpec,
+  thetaDatasetSampleToolSpec,
+  thetaDatasetColumnProfileToolSpec,
+  thetaDatasetTextProfileToolSpec,
+  thetaDatasetTimeProfileToolSpec,
+  thetaDatasetCategoricalProfileToolSpec,
+  thetaDatasetMissingnessToolSpec,
+  thetaDatasetDuplicatesToolSpec,
+  thetaDatasetRelationshipsToolSpec,
+  thetaDatasetSubmitUnderstandingToolSpec,
+  thetaDatasetApplyUserRevisionToolSpec,
+  thetaResearchReadWorkspaceToolSpec,
+  thetaResearchUpdateUnderstandingToolSpec,
+  thetaModelListAvailableToolSpec,
+  thetaModelGetCapabilityToolSpec,
+  thetaModelCompareToolSpec,
+  thetaModelGetParameterContractToolSpec,
+  thetaRuntimeProfileHardwareToolSpec,
+  thetaRuntimeCheckDependenciesToolSpec,
+  thetaRuntimeCheckModelAssetsToolSpec,
+  thetaRuntimeCheckOfflineReadinessToolSpec,
+  thetaRuntimeEstimateCandidateToolSpec,
+  thetaRagGetEvidenceToolSpec,
+  thetaRagFindConflictsToolSpec,
+  thetaRagCompareModelsToolSpec,
+  thetaRagCheckClaimSupportToolSpec,
+  thetaPlannerCreateCandidateToolSpec,
+  thetaPlannerGetCandidateToolSpec,
+  thetaPlannerCompareCandidatesToolSpec,
+  thetaPlannerSubmitRevisionToolSpec,
+  thetaPlannerEstimateProtocolToolSpec,
+  thetaPlannerSelectEvidenceToolSpec,
+  thetaPlannerValidatePreviewToolSpec,
+  thetaPlannerInspectCaseToolSpec,
+  thetaModelShortlistToolSpec,
+  thetaPlannerEvaluateCandidateToolSpec,
+  thetaPlannerValidateAlignmentToolSpec,
   thetaModelCatalogToolSpec,
-  thetaModelRecommendToolSpec,
   thetaRagIndexToolSpec,
   thetaRagStatusToolSpec,
   thetaRagSearchToolSpec,
-  thetaPlanProposeToolSpec,
-  thetaPlanValidateToolSpec,
   thetaPlanCreateToolSpec,
-  thetaPlanApproveToolSpec,
   thetaTrainingDryRunToolSpec,
+  thetaDatasetVerifyForTrainingToolSpec,
   thetaTrainingStartToolSpec,
   thetaTrainingStatusToolSpec,
   thetaTrainingCancelToolSpec,
-  thetaLanguageGenerateToolSpec,
-  thetaConversationLanguageToolSpec,
+  thetaArtifactsVerifyToolSpec,
+  thetaResultsListArtifactsToolSpec,
+  thetaResultsGetSummaryToolSpec,
 ]);
 
 export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   const registry = new ToolRegistry();
-  registry.register(thetaDatasetInspectToolSpec, thetaDatasetInspectHandler, {
-    replace: true,
-  });
-  registry.register(thetaDatasetExploreToolSpec, thetaDatasetExploreHandler, {
-    replace: true,
-  });
-  registry.register(
-    thetaDatasetUnderstandingLanguageToolSpec,
-    thetaDatasetUnderstandingLanguageHandler,
-    { replace: true },
-  );
-  registry.register(
-    thetaDatasetDetectColumnsToolSpec,
-    thetaDatasetDetectColumnsHandler,
-    {
-      replace: true,
-    },
-  );
+  registry.register(thetaAgentProtocolFeedbackToolSpec, thetaAgentProtocolFeedbackHandler, { replace: true });
+  registry.register(thetaDatasetOverviewToolSpec, thetaDatasetOverviewHandler, { replace: true });
+  registry.register(thetaDatasetSampleToolSpec, thetaDatasetSampleHandler, { replace: true });
+  registry.register(thetaDatasetColumnProfileToolSpec, thetaDatasetColumnProfileHandler, { replace: true });
+  registry.register(thetaDatasetTextProfileToolSpec, thetaDatasetTextProfileHandler, { replace: true });
+  registry.register(thetaDatasetTimeProfileToolSpec, thetaDatasetTimeProfileHandler, { replace: true });
+  registry.register(thetaDatasetCategoricalProfileToolSpec, thetaDatasetCategoricalProfileHandler, { replace: true });
+  registry.register(thetaDatasetMissingnessToolSpec, thetaDatasetMissingnessHandler, { replace: true });
+  registry.register(thetaDatasetDuplicatesToolSpec, thetaDatasetDuplicatesHandler, { replace: true });
+  registry.register(thetaDatasetRelationshipsToolSpec, thetaDatasetRelationshipsHandler, { replace: true });
+  registry.register(thetaDatasetSubmitUnderstandingToolSpec, thetaDatasetSubmitUnderstandingHandler, { replace: true });
+  registry.register(thetaDatasetApplyUserRevisionToolSpec, thetaDatasetApplyUserRevisionHandler, { replace: true });
+  registry.register(thetaResearchReadWorkspaceToolSpec, thetaResearchReadWorkspaceHandler, { replace: true });
+  registry.register(thetaResearchUpdateUnderstandingToolSpec, thetaResearchUpdateUnderstandingHandler, { replace: true });
+  registry.register(thetaModelListAvailableToolSpec, thetaModelListAvailableHandler, { replace: true });
+  registry.register(thetaModelGetCapabilityToolSpec, thetaModelGetCapabilityHandler, { replace: true });
+  registry.register(thetaModelCompareToolSpec, thetaModelCompareHandler, { replace: true });
+  registry.register(thetaModelGetParameterContractToolSpec, thetaModelGetParameterContractHandler, { replace: true });
+  registry.register(thetaRuntimeProfileHardwareToolSpec, thetaRuntimeProfileHardwareHandler, { replace: true });
+  registry.register(thetaRuntimeCheckDependenciesToolSpec, thetaRuntimeCheckDependenciesHandler, { replace: true });
+  registry.register(thetaRuntimeCheckModelAssetsToolSpec, thetaRuntimeCheckModelAssetsHandler, { replace: true });
+  registry.register(thetaRuntimeCheckOfflineReadinessToolSpec, thetaRuntimeCheckOfflineReadinessHandler, { replace: true });
+  registry.register(thetaRuntimeEstimateCandidateToolSpec, thetaRuntimeEstimateCandidateHandler, { replace: true });
+  registry.register(thetaRagGetEvidenceToolSpec, thetaRagGetEvidenceHandler, { replace: true });
+  registry.register(thetaRagFindConflictsToolSpec, thetaRagFindConflictsHandler, { replace: true });
+  registry.register(thetaRagCompareModelsToolSpec, thetaRagCompareModelsHandler, { replace: true });
+  registry.register(thetaRagCheckClaimSupportToolSpec, thetaRagCheckClaimSupportHandler, { replace: true });
+  registry.register(thetaPlannerCreateCandidateToolSpec, thetaPlannerCreateCandidateHandler, { replace: true });
+  registry.register(thetaPlannerGetCandidateToolSpec, thetaPlannerGetCandidateHandler, { replace: true });
+  registry.register(thetaPlannerCompareCandidatesToolSpec, thetaPlannerCompareCandidatesHandler, { replace: true });
+  registry.register(thetaPlannerSubmitRevisionToolSpec, thetaPlannerSubmitRevisionHandler, { replace: true });
+  registry.register(thetaPlannerEstimateProtocolToolSpec, thetaPlannerEstimateProtocolHandler, { replace: true });
+  registry.register(thetaPlannerSelectEvidenceToolSpec, thetaPlannerSelectEvidenceHandler, { replace: true });
+  registry.register(thetaPlannerValidatePreviewToolSpec, thetaPlannerValidatePreviewHandler, { replace: true });
+  registry.register(thetaPlannerInspectCaseToolSpec, thetaPlannerInspectCaseHandler, { replace: true });
+  registry.register(thetaModelShortlistToolSpec, thetaModelShortlistHandler, { replace: true });
+  registry.register(thetaPlannerEvaluateCandidateToolSpec, thetaPlannerEvaluateCandidateHandler, { replace: true });
+  registry.register(thetaPlannerValidateAlignmentToolSpec, thetaPlannerValidateAlignmentHandler, { replace: true });
   registerThetaModelCatalogTool(registry);
-  registry.register(thetaModelRecommendToolSpec, thetaModelRecommendHandler, {
-    replace: true,
-  });
   registry.register(thetaRagIndexToolSpec, thetaRagIndexHandler, {
     replace: true,
   });
@@ -140,37 +242,14 @@ export const createThetaHyphaToolRegistry = (): ToolRegistry => {
   registry.register(thetaRagSearchToolSpec, thetaRagSearchHandler, {
     replace: true,
   });
-  registry.register(thetaPlanValidateToolSpec, thetaPlanValidateHandler, {
-    replace: true,
-  });
-  registry.register(thetaPlanCreateToolSpec, thetaPlanCreateHandler, {
-    replace: true,
-  });
-  registry.register(thetaPlanApproveToolSpec, thetaPlanApproveHandler, {
-    replace: true,
-  });
-  registry.register(thetaTrainingDryRunToolSpec, thetaTrainingDryRunHandler, {
-    replace: true,
-  });
-  registry.register(thetaTrainingStartToolSpec, thetaTrainingStartHandler, {
-    replace: true,
-  });
-  registry.register(thetaTrainingStatusToolSpec, thetaTrainingStatusHandler, {
-    replace: true,
-  });
-  registry.register(thetaTrainingCancelToolSpec, thetaTrainingCancelHandler, {
-    replace: true,
-  });
-  registry.register(thetaLanguageGenerateToolSpec, thetaLanguageGenerateHandler, {
-    replace: true,
-  });
-  registry.register(thetaPlanProposeToolSpec, thetaPlanProposeHandler, {
-    replace: true,
-  });
-  registry.register(
-    thetaConversationLanguageToolSpec,
-    thetaConversationLanguageHandler,
-    { replace: true },
-  );
+  registry.register(thetaPlanCreateToolSpec, thetaPlanCreateHandler, { replace: true });
+  registry.register(thetaTrainingDryRunToolSpec, thetaTrainingDryRunHandler, { replace: true });
+  registry.register(thetaDatasetVerifyForTrainingToolSpec, thetaDatasetVerifyForTrainingHandler, { replace: true });
+  registry.register(thetaTrainingStartToolSpec, thetaTrainingStartHandler, { replace: true });
+  registry.register(thetaTrainingStatusToolSpec, thetaTrainingStatusHandler, { replace: true });
+  registry.register(thetaTrainingCancelToolSpec, thetaTrainingCancelHandler, { replace: true });
+  registry.register(thetaArtifactsVerifyToolSpec, thetaArtifactsVerifyHandler, { replace: true });
+  registry.register(thetaResultsListArtifactsToolSpec, thetaResultsListArtifactsHandler, { replace: true });
+  registry.register(thetaResultsGetSummaryToolSpec, thetaResultsGetSummaryHandler, { replace: true });
   return registry;
 };

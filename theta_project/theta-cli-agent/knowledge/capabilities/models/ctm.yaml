@@ -1,0 +1,133 @@
+schemaVersion: 1.0.0
+modelId: ctm
+displayName: Contextualized Topic Model
+maturity: experimental
+audit:
+  status: audited
+  auditedAt: 2026-08-14
+  sourceRefs:
+    - ../THETA/src/models/models_config/models.yaml
+    - ../THETA/src/models/model/baseline/ctm.py
+    - ../THETA/src/models/model/baseline_trainer.py
+    - ../THETA/src/models/run_pipeline.py
+    - ../theta_agent_bridge/bridge.py
+planner:
+  eligible: true
+  reason: CTM 的固定主题数、epochs 与 batchSize 已进入 Canonical Plan；其 SBERT 资产仍须由 DryRun 独立验证。
+catalog:
+  requires: [bow, sbert]
+  autoTopics: false
+implementation:
+  family: contextual_neural
+  language: python
+  modulePath: ../THETA/src/models/model/baseline/ctm.py
+  trainerEntry: BaselineTrainer.train_ctm
+  prepareMode: baseline
+  runtimePackages: [numpy, scipy, torch, sentence-transformers]
+  actualInputs: [bow_matrix, vocabulary, sbert_embeddings]
+capabilities:
+  temporalTopics: false
+  metadataEffects: false
+  shortTextOptimized: false
+  topicCountMode: fixed
+  offlineExecution: conditional
+  cpuExecution: conditional
+  nativeOutputs: [static_topics, document_topic_distribution, topic_words, training_history]
+parameters:
+  - parameterId: num_topics
+    valueType: integer
+    defaultValue: 20
+    catalogName: num_topics
+    planField: numTopics
+    trainFlag: --num_topics
+    exposure: agent_compiled
+    usedByTraining: true
+    minimum: 2
+    maximum: 200
+    choices: []
+    notes: 固定主题数。
+  - parameterId: epochs
+    valueType: integer
+    defaultValue: 100
+    catalogName: epochs
+    planField: epochs
+    trainFlag: --epochs
+    exposure: agent_compiled
+    usedByTraining: true
+    minimum: 1
+    maximum: null
+    choices: []
+    notes: 神经网络训练轮数。
+  - parameterId: batch_size
+    valueType: integer
+    defaultValue: 64
+    catalogName: batch_size
+    planField: batchSize
+    trainFlag: --batch_size
+    exposure: agent_compiled
+    usedByTraining: true
+    minimum: 1
+    maximum: null
+    choices: []
+    notes: 训练批大小。
+  - parameterId: learning_rate
+    valueType: number
+    defaultValue: 0.002
+    catalogName: learning_rate
+    planField: null
+    trainFlag: null
+    exposure: catalog_only
+    usedByTraining: true
+    minimum: 0
+    maximum: null
+    choices: []
+    notes: pipeline 支持但 Agent 尚未编译。
+  - parameterId: inference_type
+    valueType: string
+    defaultValue: zeroshot
+    catalogName: inference_type
+    planField: null
+    trainFlag: null
+    exposure: catalog_only
+    usedByTraining: true
+    choices: [zeroshot, combined]
+    notes: 当前执行契约使用 pipeline 的 zeroshot 默认值，尚未开放为 Agent 参数。
+  - parameterId: early_stopping_patience
+    valueType: integer
+    defaultValue: 10
+    catalogName: early_stopping_patience
+    planField: null
+    trainFlag: null
+    exposure: catalog_only
+    usedByTraining: true
+    minimum: 1
+    maximum: null
+    choices: []
+    notes: trainer 支持但 run_pipeline 尚未暴露为 Agent 参数。
+artifacts:
+  - artifactId: document_topic_matrix
+    pathPattern: THETA/result/{userId}/{datasetId}/ctm/{run}/ctm_zeroshot/theta_k{numTopics}.npy
+    required: true
+    producedBy: BaselineTrainer.train_ctm
+    description: 文档—主题分布矩阵。
+  - artifactId: topic_word_matrix
+    pathPattern: THETA/result/{userId}/{datasetId}/ctm/{run}/ctm_zeroshot/beta_k{numTopics}.npy
+    required: true
+    producedBy: BaselineTrainer.train_ctm
+    description: 主题—词分布矩阵。
+  - artifactId: topic_words
+    pathPattern: THETA/result/{userId}/{datasetId}/ctm/{run}/ctm_zeroshot/topic_words_k{numTopics}.json
+    required: true
+    producedBy: BaselineTrainer.train_ctm
+    description: 每个主题的高概率词。
+  - artifactId: training_history
+    pathPattern: THETA/result/{userId}/{datasetId}/ctm/{run}/ctm_zeroshot/training_history_k{numTopics}.json
+    required: true
+    producedBy: BaselineTrainer.train_ctm
+    description: CTM 训练损失历史。
+limitations:
+  - 离线执行要求预先存在可用的 SBERT 本地资产。
+  - CPU 可以执行，但较大语料上的训练耗时可能较长。
+  - inference_type、learning_rate 与 early_stopping_patience 尚未开放给 Agent。
+unverifiedClaims:
+  - CTM 当前作为实验性可执行模型开放，仍需独立的科研质量验收。

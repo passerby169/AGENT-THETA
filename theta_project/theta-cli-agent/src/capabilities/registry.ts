@@ -21,6 +21,7 @@ const CORE_MODEL_IDS = [
   "dtm",
   "stm",
   "bertopic",
+  "ctm",
   "theta",
 ] as const;
 

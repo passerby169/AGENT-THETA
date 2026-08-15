@@ -1,12 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { THETA_APPROVAL_KEYS } from "./theta-domain.js";
-import {
-  ThetaWorkflowService,
-  type ThetaWorkflowInput,
-} from "./theta-workflow-service.js";
+import { ThetaAgentApplicationService } from './application/theta-agent-application-service.js';
 import {
   renderUserError,
+  renderActivityLine,
+  renderPlanPresentation,
   renderValue,
 } from "./presentation/terminal-renderer.js";
 
@@ -22,20 +20,35 @@ interface ParsedWorkflowArguments {
 
 export const thetaWorkflowHelp = `THETA workflow commands:
   workflow compile
-      Compile the THETA DomainPack and print the FSM contract summary.
+      Compile the THETA DomainPack V6 and print the FSM contract summary.
 
   workflow run --file <dataset> [--run-id <id>] [--runtime-db <path>]
-      Start the event-first V2 workflow. It registers the local file and uses
-      an opaque dataset reference. Use --workflow-version 1.0.0 only for
-      legacy compatibility.
-      Add --approve-plans for HumanPlanReview. Add
-      --approve-training as well to permit the external training start.
+      Start the V6 LLM-led workflow and enter DatasetDiscovery.
 
-  workflow resume --run-id <id> [--approve | --reject] [--runtime-db <path>]
-      Resume a durable Run and optionally resolve an approval wait.
-      Use --answers <json> for research clarification or --columns <json>
-      for legacy column confirmation. V2 accepts --dataset-confirmation <json>,
-      --decision-answer <text>, or --plan-adjustment <json>.
+  workflow discover --run-id <id> [--runtime-db <path>]
+      Let MiniMax autonomously select governed tools and complete DatasetDiscovery.
+
+  workflow research --run-id <id> [--runtime-db <path>]
+      Continue the same memory-aware Agent through open ResearchDialogue.
+
+  workflow plan --run-id <id> [--runtime-db <path>]
+      Let the same Agent design, ground and validate a candidate plan.
+
+  workflow prepare --run-id <id> [--runtime-db <path>]
+      Compile the approved Canonical Plan and run preflight checks, then stop
+      at the independent TrainingConfirmation checkpoint without training.
+
+  workflow checkpoint --run-id <id> [--runtime-db <path>]
+      Read the current conversational checkpoint.
+
+  workflow message --run-id <id> --text <natural language> [--message-id <id>]
+      Submit one user message to the current checkpoint and continue the Run.
+
+  workflow conversation --run-id <id> [--runtime-db <path>]
+      Read the persisted conversation projection.
+
+  workflow activity --run-id <id> [--runtime-db <path>]
+      Show the current safe Agent activity, recent Tool calls and semantic progress.
 
   workflow status --run-id <id> [--runtime-db <path>]
       Derive the current Run state from canonical Runtime events.
@@ -57,7 +70,7 @@ export const runThetaWorkflowCliCommand = async (
       return 0;
     }
 
-    const service = new ThetaWorkflowService();
+    const service = new ThetaAgentApplicationService();
     const runtimeDb = stringFlag(parsed, "runtime-db");
     const json = flag(parsed, "json");
 
@@ -67,76 +80,19 @@ export const runThetaWorkflowCliCommand = async (
     }
     if (parsed.command === "run") {
       const input = await workflowInput(parsed);
-      const approvalKeys: string[] = [];
-      if (flag(parsed, "approve-plans")) {
-        approvalKeys.push(THETA_APPROVAL_KEYS.planReview);
-      }
-      if (flag(parsed, "approve-training")) {
-        if (!flag(parsed, "approve-plans")) {
-          throw new Error("--approve-training requires --approve-plans.");
-        }
-        approvalKeys.push(THETA_APPROVAL_KEYS.trainingReview);
-      }
-      const result = await service.run({
-        input,
+      const result = await service.createRun({
+        filePath: input.filePath,
+        ...(input.initialMessage ? { initialMessage: input.initialMessage } : {}),
+        allowRemoteSamples: input.allowRemoteSamples,
         ...(stringFlag(parsed, "run-id")
           ? { runId: stringFlag(parsed, "run-id") }
           : {}),
         ...(runtimeDb ? { runtimeDb } : {}),
-        approvalKeys,
-        approvedBy: stringFlag(parsed, "approved-by") ?? "local_user",
+        userId: stringFlag(parsed, 'user-id') ?? 'local_user',
+        workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
       });
       write(result, json, output);
-      return result.disposition === "failed" ? 2 : 0;
-    }
-    if (parsed.command === "resume") {
-      if (flag(parsed, "approve") && flag(parsed, "reject")) {
-        throw new Error("--approve and --reject cannot be used together.");
-      }
-      const researchAnswers = await optionalJsonFlag(parsed, "answers");
-      const columnConfirmation = await optionalJsonFlag(parsed, "columns");
-      const datasetConfirmation = await optionalJsonFlag(
-        parsed,
-        "dataset-confirmation",
-      );
-      const planAdjustment = await optionalJsonFlag(parsed, "plan-adjustment");
-      const decisionAnswer = stringFlag(parsed, "decision-answer");
-      const result = await service.resume({
-        runId: requiredFlag(parsed, "run-id"),
-        ...(runtimeDb ? { runtimeDb } : {}),
-        approve: flag(parsed, "approve"),
-        reject: flag(parsed, "reject"),
-        approvedBy: stringFlag(parsed, "approved-by") ?? "local_user",
-        ...(researchAnswers ? { researchAnswers } : {}),
-        ...(columnConfirmation
-          ? {
-              columnConfirmation: columnConfirmation as {
-                textColumns: string[];
-                timeColumn: string | null;
-                idColumn: string | null;
-                covariateColumns: string[];
-                metadataColumns: string[];
-              },
-            }
-          : {}),
-        ...(datasetConfirmation
-          ? {
-              datasetConfirmation: datasetConfirmation as {
-                status: "confirmed" | "corrected";
-                domainLabel: string;
-                analysisUnit: string;
-                textColumns: string[];
-                timeColumns: string[];
-                idColumns: string[];
-                metadataColumns: string[];
-              },
-            }
-          : {}),
-        ...(decisionAnswer ? { decisionAnswer } : {}),
-        ...(planAdjustment ? { planAdjustment } : {}),
-      });
-      write(result, json, output);
-      return result.disposition === "failed" ? 2 : 0;
+      return 0;
     }
     if (parsed.command === "status") {
       const status = await service.status(
@@ -146,6 +102,64 @@ export const runThetaWorkflowCliCommand = async (
       write(status, json, output);
       return 0;
     }
+    if (parsed.command === 'discover') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const discovered = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runDatasetDiscovery(runId, runtimeDb));
+      write(discovered, json, output);
+      return discovered.disposition === 'recoverable_error' ? 1 : 0;
+    }
+    if (parsed.command === 'research') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runResearchDialogue(runId, runtimeDb));
+      write(result, json, output);
+      return result.disposition === 'recoverable_error' ? 1 : 0;
+    }
+    if (parsed.command === 'plan') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.runPlanDesign(runId, runtimeDb));
+      if (!json && result.planPresentation) output.write(renderPlanPresentation(result.planPresentation));
+      else write(result, json, output);
+      return result.disposition === 'recoverable_error' ? 1 : 0;
+    }
+    if (parsed.command === 'prepare') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, () => service.prepareTraining(runId, runtimeDb));
+      write(result, json, output);
+      return result.disposition === 'ready_for_training_confirmation' ? 0 : 2;
+    }
+    if (parsed.command === 'checkpoint') {
+      write(await service.currentCheckpoint(requiredFlag(parsed, 'run-id'), runtimeDb), json, output);
+      return 0;
+    }
+    if (parsed.command === 'conversation') {
+      write(await service.conversation(requiredFlag(parsed, 'run-id'), runtimeDb), json, output);
+      return 0;
+    }
+    if (parsed.command === 'activity') {
+      write(await service.activities(requiredFlag(parsed, 'run-id'), runtimeDb), json, output);
+      return 0;
+    }
+    if (parsed.command === 'message') {
+      const runId = requiredFlag(parsed, 'run-id');
+      const request = {
+        runId,
+        content: requiredFlag(parsed, 'text'),
+        ...(stringFlag(parsed, 'message-id') ? { messageId: stringFlag(parsed, 'message-id') } : {}),
+        ...(runtimeDb ? { runtimeDb } : {}),
+        userId: stringFlag(parsed, 'user-id') ?? 'local_user',
+        workspaceId: stringFlag(parsed, 'workspace-id') ?? 'local_workspace',
+      };
+      const snapshot = await service.status(runId, runtimeDb);
+      const result = await withActivityUpdates(service, runId, runtimeDb, json, output, async () => snapshot.currentState === 'ResearchDialogue'
+        ? service.submitResearchMessage(request)
+        : snapshot.currentState === 'ResearchCheckpoint'
+          ? service.submitResearchCheckpointMessage(request)
+          : snapshot.currentState === 'PlanConfirmation'
+            ? service.submitPlanConfirmationMessage(request)
+          : service.submitCheckpointMessage(request));
+      write(result, json, output);
+      return 'continuation' in result && result.continuation?.disposition === 'recoverable_error' ? 1 : 0;
+    }
     if (parsed.command === "trace") {
       const evidence = await service.evidence(
         requiredFlag(parsed, "run-id"),
@@ -154,15 +168,6 @@ export const runThetaWorkflowCliCommand = async (
       write(evidence, json, output);
       return 0;
     }
-    if (parsed.command === "replay") {
-      const replay = await service.replay(
-        requiredFlag(parsed, "run-id"),
-        runtimeDb,
-      );
-      write(replay, json, output);
-      return 0;
-    }
-
     throw new Error(`Unknown workflow command: ${parsed.command}`);
   } catch (error) {
     output.writeError(renderUserError(error));
@@ -172,7 +177,7 @@ export const runThetaWorkflowCliCommand = async (
 
 const workflowInput = async (
   parsed: ParsedWorkflowArguments,
-): Promise<ThetaWorkflowInput> => {
+): Promise<{ filePath: string; initialMessage?: string; allowRemoteSamples: boolean }> => {
   const inputFile = stringFlag(parsed, "input");
   if (inputFile) {
     const value = JSON.parse(
@@ -181,58 +186,55 @@ const workflowInput = async (
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("--input must contain a JSON object.");
     }
-    const input = value as ThetaWorkflowInput;
-    const workflowVersion = parseWorkflowVersion(
-      stringFlag(parsed, "workflow-version") ??
-        input.workflowVersion ??
-        "2.0.0",
-    );
+    const input = value as Record<string, unknown>;
+    if (typeof input.filePath !== 'string') throw new Error('--input requires filePath.');
     return {
-      ...input,
       filePath: path.resolve(process.cwd(), input.filePath),
-      workflowVersion,
+      ...(typeof input.initialMessage === 'string' ? { initialMessage: input.initialMessage } : {}),
+      allowRemoteSamples: input.allowRemoteSamples === true,
     };
   }
   return {
     filePath: path.resolve(process.cwd(), requiredFlag(parsed, "file")),
-    workflowVersion: parseWorkflowVersion(
-      stringFlag(parsed, "workflow-version") ?? "2.0.0",
-    ),
-    ...(stringFlag(parsed, "dataset-id")
-      ? { datasetId: stringFlag(parsed, "dataset-id") }
-      : {}),
     ...(stringFlag(parsed, "goal")
-      ? { researchGoal: stringFlag(parsed, "goal") }
+      ? { initialMessage: stringFlag(parsed, "goal") }
       : {}),
-    ...(integerFlag(parsed, "sample-size")
-      ? { sampleSize: integerFlag(parsed, "sample-size") }
-      : {}),
-    ...(stringFlag(parsed, "planner-mode")
-      ? {
-          plannerMode: parsePlannerMode(
-            requiredFlag(parsed, "planner-mode"),
-          ),
-        }
-      : {}),
+    allowRemoteSamples: flag(parsed, 'allow-remote-samples'),
   };
 };
 
-const parseWorkflowVersion = (
-  value: string,
-): "1.0.0" | "2.0.0" => {
-  if (value !== "1.0.0" && value !== "2.0.0") {
-    throw new Error("--workflow-version must be 1.0.0 or 2.0.0.");
+const withActivityUpdates = async <T>(
+  service: ThetaAgentApplicationService,
+  runId: string,
+  runtimeDb: string | undefined,
+  json: boolean,
+  output: WorkflowCliOutput,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  if (json) return operation();
+  const seen = new Set<string>();
+  let reading = false;
+  const renderNew = async (): Promise<void> => {
+    if (reading) return;
+    reading = true;
+    try {
+      const snapshot = await service.activities(runId, runtimeDb);
+      for (const activity of snapshot.recent) {
+        if (seen.has(activity.eventId)) continue;
+        seen.add(activity.eventId);
+        output.write(renderActivityLine(activity));
+      }
+    } finally {
+      reading = false;
+    }
+  };
+  await renderNew();
+  const timer = setInterval(() => { void renderNew(); }, 750);
+  try { return await operation(); }
+  finally {
+    clearInterval(timer);
+    await renderNew();
   }
-  return value;
-};
-
-const parsePlannerMode = (
-  value: string,
-): "deterministic" | "minimax" => {
-  if (value !== "deterministic" && value !== "minimax") {
-    throw new Error("--planner-mode must be deterministic or minimax.");
-  }
-  return value;
 };
 
 const parseWorkflowArguments = (args: string[]): ParsedWorkflowArguments => {

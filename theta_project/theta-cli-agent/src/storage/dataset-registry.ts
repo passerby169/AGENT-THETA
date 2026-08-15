@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { resolveDatasetFile } from '../tools/dataset-path-policy.js';
-import { defaultThetaWorkflowDb } from '../theta-workflow-runtime.js';
+import { resolveDatasetFile, resolveManagedDatasetFile, type ResolvedDatasetFile } from '../tools/dataset-path-policy.js';
+import { defaultThetaV6RuntimeDb } from '../persistence/runtime-composition.js';
 
 export interface DatasetRecord {
   datasetRef: string;
@@ -20,7 +20,7 @@ export interface DatasetRecord {
 export class SQLiteDatasetRegistry {
   private readonly database: DatabaseSync;
 
-  constructor(readonly filename = defaultThetaWorkflowDb()) {
+  constructor(readonly filename = defaultThetaV6RuntimeDb()) {
     const resolved = path.resolve(filename);
     mkdirSync(path.dirname(resolved), { recursive: true });
     this.database = new DatabaseSync(resolved);
@@ -48,6 +48,24 @@ export class SQLiteDatasetRegistry {
     owner: { userId: string; workspaceId: string },
   ): Promise<DatasetRecord> {
     const resolved = await resolveDatasetFile(filePath);
+    return this.registerResolvedFile(resolved, owner);
+  }
+
+  async registerManagedFile(
+    filePath: string,
+    managedRoot: string,
+    owner: { userId: string; workspaceId: string },
+    displayName?: string,
+  ): Promise<DatasetRecord> {
+    const resolved = await resolveManagedDatasetFile(filePath, managedRoot);
+    return this.registerResolvedFile(resolved, owner, displayName);
+  }
+
+  private async registerResolvedFile(
+    resolved: ResolvedDatasetFile,
+    owner: { userId: string; workspaceId: string },
+    displayName?: string,
+  ): Promise<DatasetRecord> {
     const sha256 = await hashFile(resolved.filePath);
     const existing = this.database
       .prepare(
@@ -70,7 +88,7 @@ export class SQLiteDatasetRegistry {
         datasetRef,
         owner.userId,
         owner.workspaceId,
-        path.basename(resolved.filePath),
+        displayName?.trim() || path.basename(resolved.filePath),
         resolved.filePath,
         sha256,
         resolved.sizeBytes,

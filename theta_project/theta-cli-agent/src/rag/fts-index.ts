@@ -316,6 +316,10 @@ export class FtsEvidenceIndex {
     }
   }
 
+  getEvidence(id: string): EvidenceRef | undefined {
+    return this.readEvidence(id.replace(/^ko:/u, ''));
+  }
+
   private readEvidence(id: string): EvidenceRef | undefined {
     const objectRow = this.db.prepare(
       `SELECT object_id, object_type, title, model_ids, parameter_ids, scenario_tags,

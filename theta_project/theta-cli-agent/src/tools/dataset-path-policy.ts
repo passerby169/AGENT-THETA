@@ -2,7 +2,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { delimiter, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const supportedDatasetSuffixes = new Set([
+export const supportedDatasetSuffixes = new Set([
   '.csv',
   '.tsv',
   '.json',
@@ -18,7 +18,7 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const agentRoot = resolve(moduleDirectory, '..', '..');
 const projectRoot = resolve(agentRoot, '..');
 
-const configuredMaxDatasetBytes = (): number => {
+export const configuredMaxDatasetBytes = (): number => {
   const configured = Number.parseInt(process.env.THETA_MAX_DATASET_BYTES ?? '', 10);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : defaultMaxDatasetBytes;
 };
@@ -52,6 +52,19 @@ export interface ResolvedDatasetFile {
 }
 
 export const resolveDatasetFile = async (filePath: string): Promise<ResolvedDatasetFile> => {
+  return resolveDatasetFileAgainstRoots(filePath, configuredAllowedRoots());
+};
+
+export const resolveManagedDatasetFile = async (
+  filePath: string,
+  managedRoot: string,
+): Promise<ResolvedDatasetFile> =>
+  resolveDatasetFileAgainstRoots(filePath, [managedRoot]);
+
+const resolveDatasetFileAgainstRoots = async (
+  filePath: string,
+  configuredRoots: string[],
+): Promise<ResolvedDatasetFile> => {
   const requestedPath = isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath);
   let canonicalPath: string;
   try {
@@ -61,7 +74,7 @@ export const resolveDatasetFile = async (filePath: string): Promise<ResolvedData
   }
 
   const roots = await Promise.all(
-    configuredAllowedRoots().map(async (root) => {
+    configuredRoots.map(async (root) => {
       try {
         return await realpath(root);
       } catch {

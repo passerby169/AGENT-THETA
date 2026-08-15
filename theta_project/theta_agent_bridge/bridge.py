@@ -852,55 +852,370 @@ def parse_run_pipeline_models() -> list[str]:
 
 
 def plan_validate(payload: dict[str, Any]) -> dict[str, Any]:
-    plan = payload.get("plan")
-    if not isinstance(plan, dict):
-        raise ValueError("plan must be an object")
+    """Validate the one executable plan contract accepted by the V3 runtime.
 
-    catalog = model_catalog({})
-    models_by_id = {model["id"]: model for model in catalog["models"]}
+    TypeScript supplies Hypha's canonical JSON bytes and their hash. Python
+    verifies those exact bytes instead of attempting to reproduce JavaScript
+    number serialization. This makes the cross-language hash boundary exact.
+    """
+    plan = payload.get("plan")
     errors: list[str] = []
     warnings: list[str] = []
-    normalized = dict(plan)
+    if not isinstance(plan, dict):
+        return canonical_plan_validation_result(None, errors=["plan must be an object"])
 
-    dataset_id = str(plan.get("datasetId") or "").strip()
-    model_id = str(plan.get("modelId") or "").strip().lower()
-    mode = str(plan.get("mode") or "").strip()
-    num_topics = plan.get("numTopics")
+    canonical_json = payload.get("canonicalJson")
+    canonical_hash = str(payload.get("canonicalPlanHash") or "").strip()
+    if not isinstance(canonical_json, str) or not canonical_json:
+        errors.append("canonicalJson is required; legacy plan payloads are not accepted")
+    else:
+        try:
+            decoded = json.loads(canonical_json)
+            if decoded != plan:
+                errors.append("canonicalJson does not encode the supplied plan")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"canonicalJson is invalid: {exc}")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", canonical_hash):
+        errors.append("canonicalPlanHash must be a prefixed SHA-256 hash")
+    elif isinstance(canonical_json, str):
+        expected_hash = "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+        if canonical_hash != expected_hash:
+            errors.append("canonicalPlanHash does not match canonicalJson")
 
-    if not dataset_id:
-        errors.append("datasetId is required.")
-    if not model_id:
-        errors.append("modelId is required.")
-    elif model_id not in models_by_id:
-        errors.append(f"Unsupported modelId '{model_id}'.")
-    elif not models_by_id[model_id].get("runnable"):
-        warnings.append(f"Model '{model_id}' is configured but not listed in run_pipeline.ALL_MODELS.")
+    allowed_top_level = {
+        "schemaVersion", "runId", "datasetId", "datasetRef", "datasetSha256",
+        "researchIntentSummary", "model", "columns", "preprocessing",
+        "experimentProtocol", "evaluation", "visualizations", "artifactRequirements", "resources",
+        "provenance", "assumptions", "warnings", "rationale",
+    }
+    extra_top_level = sorted(set(plan) - allowed_top_level)
+    missing_top_level = sorted(allowed_top_level - set(plan))
+    if extra_top_level:
+        errors.append(f"Unknown CanonicalPlan fields: {', '.join(extra_top_level)}")
+    if missing_top_level:
+        errors.append(f"Missing CanonicalPlan fields: {', '.join(missing_top_level)}")
+    if plan.get("schemaVersion") != "3.0.0":
+        errors.append("schemaVersion must be 3.0.0")
+    for field in ("runId", "datasetId", "datasetRef", "researchIntentSummary", "rationale"):
+        if not str(plan.get(field) or "").strip():
+            errors.append(f"{field} is required")
+    if not re.fullmatch(r"[a-f0-9]{64}", str(plan.get("datasetSha256") or "")):
+        errors.append("datasetSha256 must be an unprefixed file SHA-256")
 
-    if mode not in {"zero_shot", "finetune", "supervised", "unsupervised"}:
-        errors.append("mode must be one of zero_shot, finetune, supervised, unsupervised.")
+    catalog = model_catalog({})
+    models_by_id = {str(model["id"]).lower(): model for model in catalog["models"]}
+    columns = plan.get("columns")
+    if not isinstance(columns, dict):
+        errors.append("columns must be an object")
+        columns = {}
+    else:
+        validate_v3_exact_fields(
+            columns,
+            "columns",
+            {
+                "textColumns", "timeColumn", "idColumn", "covariateColumns",
+                "metadataColumns", "groupingColumns", "evaluationLabelColumns",
+            },
+            errors,
+        )
+    text_columns = columns.get("textColumns")
+    if not isinstance(text_columns, list) or not text_columns or not all(isinstance(item, str) and item.strip() for item in text_columns):
+        errors.append("columns.textColumns must contain at least one column")
+    covariates = columns.get("covariateColumns")
+    groupings = columns.get("groupingColumns")
+    if not isinstance(covariates, list):
+        errors.append("columns.covariateColumns must be an array")
+        covariates = []
+    if not isinstance(groupings, list):
+        errors.append("columns.groupingColumns must be an array")
+        groupings = []
+    for field in (
+        "textColumns", "covariateColumns", "metadataColumns",
+        "groupingColumns", "evaluationLabelColumns",
+    ):
+        validate_v3_string_array(columns.get(field), f"columns.{field}", errors)
+    for field in ("timeColumn", "idColumn"):
+        value = columns.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"columns.{field} must be null or a non-empty string")
+    overlap = sorted(set(map(str, covariates)) & set(map(str, groupings)))
+    if overlap:
+        errors.append(f"Training covariates and display groups overlap: {', '.join(overlap)}")
 
-    try:
-        num_topics_int = int(num_topics)
-        normalized["numTopics"] = num_topics_int
-        if num_topics_int < 2 or num_topics_int > 200:
-            errors.append("numTopics must be between 2 and 200.")
-    except (TypeError, ValueError):
-        errors.append("numTopics must be an integer.")
+    primary = plan.get("model")
+    validate_v3_executable_model(primary, "model", columns, models_by_id, errors, warnings)
+    protocol = plan.get("experimentProtocol")
+    if not isinstance(protocol, dict):
+        errors.append("experimentProtocol must be an object")
+        protocol = {}
+    else:
+        validate_v3_exact_fields(
+            protocol,
+            "experimentProtocol",
+            {
+                "mode", "primarySeeds", "baselines", "estimatedTrainingRuns",
+                "rationale", "evidenceRefs", "confidence",
+            },
+            errors,
+        )
+    primary_seeds = validate_v3_seeds(protocol.get("primarySeeds"), "experimentProtocol.primarySeeds", errors)
+    baselines = protocol.get("baselines")
+    if not isinstance(baselines, list):
+        errors.append("experimentProtocol.baselines must be an array")
+        baselines = []
+    baseline_ids: list[str] = []
+    baseline_run_count = 0
+    for index, baseline in enumerate(baselines):
+        if not isinstance(baseline, dict):
+            errors.append(f"experimentProtocol.baselines.{index} must be an object")
+            continue
+        validate_v3_exact_fields(
+            baseline,
+            f"experimentProtocol.baselines.{index}",
+            {"model", "seeds"},
+            errors,
+        )
+        baseline_model = baseline.get("model")
+        validate_v3_executable_model(
+            baseline_model,
+            f"experimentProtocol.baselines.{index}.model",
+            columns,
+            models_by_id,
+            errors,
+            warnings,
+        )
+        if isinstance(baseline_model, dict):
+            baseline_ids.append(str(baseline_model.get("modelId") or "").lower())
+        baseline_run_count += len(validate_v3_seeds(baseline.get("seeds"), f"experimentProtocol.baselines.{index}.seeds", errors))
+    primary_id = str(primary.get("modelId") or "").lower() if isinstance(primary, dict) else ""
+    if primary_id and primary_id in baseline_ids:
+        errors.append("A baseline model must differ from the primary model")
+    if len(set(baseline_ids)) != len(baseline_ids):
+        errors.append("Baseline model IDs must be unique")
+    expected_runs = len(primary_seeds) + baseline_run_count
+    estimated_runs = protocol.get("estimatedTrainingRuns")
+    if not isinstance(estimated_runs, int) or isinstance(estimated_runs, bool) or estimated_runs != expected_runs:
+        errors.append(f"experimentProtocol.estimatedTrainingRuns must equal {expected_runs}")
+    protocol_mode = str(protocol.get("mode") or "")
+    if protocol_mode != "quick":
+        errors.append("experimentProtocol.mode must be quick; Planner owns one model and one run only")
+    if len(primary_seeds) != 1:
+        errors.append("experimentProtocol.primarySeeds must contain exactly one seed")
+    if baselines:
+        errors.append("experimentProtocol.baselines must be empty; baseline planning is not supported")
+    if estimated_runs != 1:
+        errors.append("experimentProtocol.estimatedTrainingRuns must be 1")
+    if not str(protocol.get("rationale") or "").strip():
+        errors.append("experimentProtocol.rationale is required")
+    validate_v3_string_array(protocol.get("evidenceRefs"), "experimentProtocol.evidenceRefs", errors)
+    if protocol.get("confidence") not in {"low", "medium", "high"}:
+        errors.append("experimentProtocol.confidence is invalid")
 
-    if model_id in {"theta", "ctm", "dtm"}:
-        warnings.append("This model requires embeddings; verify local or cloud embedding settings before training.")
-    if model_id == "stm":
-        warnings.append("STM requires covariates; a dataset without metadata should use another model.")
-    if model_id == "dtm":
-        warnings.append("DTM requires a time column.")
+    provenance = plan.get("provenance")
+    if not isinstance(provenance, dict):
+        errors.append("provenance must be an object")
+    else:
+        validate_v3_exact_fields(
+            provenance,
+            "provenance",
+            {
+                "candidateRef", "candidatePlanHash", "datasetWorkspaceHash",
+                "researchWorkspaceHash", "toolContractSnapshotHash",
+                "evidenceBundleHash", "validationReceiptHash", "planWorkspaceHash",
+                "planApprovalHash", "approvalPrincipalId",
+            },
+            errors,
+        )
+        for field in (
+            "candidatePlanHash", "datasetWorkspaceHash", "researchWorkspaceHash",
+            "toolContractSnapshotHash", "evidenceBundleHash", "validationReceiptHash",
+            "planWorkspaceHash", "planApprovalHash",
+        ):
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", str(provenance.get(field) or "")):
+                errors.append(f"provenance.{field} must be a prefixed SHA-256 hash")
+        for field in ("candidateRef", "approvalPrincipalId"):
+            if not str(provenance.get(field) or "").strip():
+                errors.append(f"provenance.{field} is required")
 
+    resources = plan.get("resources")
+    if not isinstance(resources, dict) or resources.get("device") != "cpu":
+        errors.append("resources.device must be cpu in CanonicalPlan V3")
+    if isinstance(resources, dict):
+        validate_v3_exact_fields(
+            resources,
+            "resources",
+            {"device", "cpuLevel", "memoryLevel", "timeLevel", "networkAllowed"},
+            errors,
+        )
+        if resources.get("cpuLevel") not in {"low", "medium", "high"}:
+            errors.append("resources.cpuLevel is invalid")
+        if resources.get("memoryLevel") not in {"low", "medium", "high"}:
+            errors.append("resources.memoryLevel is invalid")
+        if resources.get("timeLevel") not in {"minutes", "hours", "long_running"}:
+            errors.append("resources.timeLevel is invalid")
+        if not isinstance(resources.get("networkAllowed"), bool):
+            errors.append("resources.networkAllowed must be boolean")
+
+    preprocessing = plan.get("preprocessing")
+    if not isinstance(preprocessing, dict):
+        errors.append("preprocessing must be an object")
+    elif any(not validate_v3_configurable_value(value) for value in preprocessing.values()):
+        errors.append("preprocessing values must be JSON scalars or arrays of scalars")
+    evaluation = plan.get("evaluation")
+    if not isinstance(evaluation, dict):
+        errors.append("evaluation must be an object")
+    else:
+        validate_v3_exact_fields(
+            evaluation,
+            "evaluation",
+            {"metrics", "stabilityChecks", "interpretationProtocol"},
+            errors,
+        )
+        validate_v3_string_array(evaluation.get("metrics"), "evaluation.metrics", errors, non_empty=True)
+        validate_v3_string_array(evaluation.get("stabilityChecks"), "evaluation.stabilityChecks", errors)
+        validate_v3_string_array(evaluation.get("interpretationProtocol"), "evaluation.interpretationProtocol", errors, non_empty=True)
+    validate_v3_string_array(plan.get("visualizations"), "visualizations", errors)
+    artifact_requirements = plan.get("artifactRequirements")
+    if not isinstance(artifact_requirements, list) or not artifact_requirements:
+        errors.append("artifactRequirements must be a non-empty array")
+    else:
+        for index, requirement in enumerate(artifact_requirements):
+            label = f"artifactRequirements.{index}"
+            if not isinstance(requirement, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            validate_v3_exact_fields(
+                requirement,
+                label,
+                {"modelId", "artifactId", "pathPattern", "required", "description"},
+                errors,
+            )
+            for field in ("modelId", "artifactId", "pathPattern", "description"):
+                if not str(requirement.get(field) or "").strip():
+                    errors.append(f"{label}.{field} is required")
+            if not isinstance(requirement.get("required"), bool):
+                errors.append(f"{label}.required must be boolean")
+    validate_v3_string_array(plan.get("assumptions"), "assumptions", errors)
+    validate_v3_string_array(plan.get("warnings"), "warnings", errors)
+
+    return canonical_plan_validation_result(
+        plan,
+        errors=errors,
+        warnings=warnings,
+        canonical_json=canonical_json if isinstance(canonical_json, str) else None,
+        canonical_hash=canonical_hash or None,
+        catalog_source=catalog["source"],
+    )
+
+
+def canonical_plan_validation_result(
+    plan: dict[str, Any] | None,
+    *,
+    errors: list[str],
+    warnings: list[str] | None = None,
+    canonical_json: str | None = None,
+    canonical_hash: str | None = None,
+    catalog_source: str | None = None,
+) -> dict[str, Any]:
     return {
         "valid": not errors,
         "errors": errors,
-        "warnings": warnings,
-        "normalizedPlan": normalized,
-        "catalogSource": catalog["source"],
+        "warnings": warnings or [],
+        "canonicalPlan": plan,
+        "canonicalJson": canonical_json,
+        "canonicalPlanHash": canonical_hash,
+        "catalogSource": catalog_source,
     }
+
+
+def validate_v3_seeds(value: Any, label: str, errors: list[str]) -> list[int]:
+    if not isinstance(value, list) or not value:
+        errors.append(f"{label} must be a non-empty array")
+        return []
+    seeds: list[int] = []
+    for seed in value:
+        if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 2_147_483_647:
+            errors.append(f"{label} contains an invalid seed")
+        else:
+            seeds.append(seed)
+    if len(set(seeds)) != len(seeds):
+        errors.append(f"{label} must contain unique seeds")
+    return seeds
+
+
+def validate_v3_exact_fields(
+    value: dict[str, Any],
+    label: str,
+    required: set[str],
+    errors: list[str],
+) -> None:
+    extra = sorted(set(value) - required)
+    missing = sorted(required - set(value))
+    if extra:
+        errors.append(f"{label} contains unknown fields: {', '.join(extra)}")
+    if missing:
+        errors.append(f"{label} is missing fields: {', '.join(missing)}")
+
+
+def validate_v3_string_array(
+    value: Any,
+    label: str,
+    errors: list[str],
+    *,
+    non_empty: bool = False,
+) -> None:
+    if not isinstance(value, list) or (non_empty and not value):
+        errors.append(f"{label} must be {'a non-empty' if non_empty else 'an'} array")
+        return
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        errors.append(f"{label} must contain only non-empty strings")
+    if len(set(value)) != len(value):
+        errors.append(f"{label} must contain unique values")
+
+
+def validate_v3_configurable_value(value: Any) -> bool:
+    scalar = value is None or isinstance(value, (str, bool)) or (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and not (isinstance(value, float) and (value != value or value in {float('inf'), float('-inf')}))
+    )
+    if scalar:
+        return True
+    return isinstance(value, list) and all(validate_v3_configurable_value(item) and not isinstance(item, list) for item in value)
+
+
+def validate_v3_executable_model(
+    value: Any,
+    label: str,
+    columns: dict[str, Any],
+    models_by_id: dict[str, dict[str, Any]],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return
+    validate_v3_exact_fields(
+        value,
+        label,
+        {"modelId", "mode", "topicCountMode", "numTopics", "maxTopics", "parameters"},
+        errors,
+    )
+    model_id = str(value.get("modelId") or "").strip().lower()
+    if model_id not in models_by_id:
+        errors.append(f"Unsupported {label}.modelId '{model_id}'")
+    elif not models_by_id[model_id].get("runnable"):
+        errors.append(f"Model '{model_id}' is not runnable")
+    try:
+        validate_canonical_model_semantics(value, require_mapping(value.get("parameters") or {}, f"{label}.parameters"))
+    except (TypeError, ValueError) as exc:
+        errors.append(f"{label}: {exc}")
+    if model_id == "dtm" and not str(columns.get("timeColumn") or "").strip():
+        errors.append(f"{label}: DTM requires a time column")
+    if model_id == "stm" and not columns.get("covariateColumns"):
+        errors.append(f"{label}: STM requires at least one training covariate")
+    if model_id in {"theta", "dtm", "bertopic"}:
+        warnings.append(f"{label}: model '{model_id}' requires DryRun verification of local embedding assets")
 
 
 def plan_create(payload: dict[str, Any]) -> dict[str, Any]:
@@ -909,10 +1224,12 @@ def plan_create(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("plan must be an object")
 
     rationale = str(payload.get("rationale") or "").strip()
-    validation = plan_validate({"plan": plan, "dataProfile": payload.get("dataProfile")})
-    normalized_plan = validation["normalizedPlan"]
-    plan_hash = sha256_json(normalized_plan)
-    plan_id = f"plan_{plan_hash[:12]}"
+    validation = plan_validate(payload)
+    if not validation["valid"]:
+        raise ValueError("Canonical Plan validation failed: " + "; ".join(validation["errors"]))
+    canonical_json = str(validation["canonicalJson"])
+    plan_hash = str(validation["canonicalPlanHash"])
+    plan_id = f"plan_{plan_hash.removeprefix('sha256:')[:20]}"
     now = utc_now_iso()
 
     with connect_state_db() as conn:
@@ -931,7 +1248,7 @@ def plan_create(payload: dict[str, Any]) -> dict[str, Any]:
             (
                 plan_id,
                 plan_hash,
-                stable_json(normalized_plan),
+                canonical_json,
                 rationale,
                 1 if validation["valid"] else 0,
                 stable_json(validation),
@@ -957,7 +1274,8 @@ def plan_create(payload: dict[str, Any]) -> dict[str, Any]:
         "valid": validation["valid"],
         "approvalRequired": True,
         "createdAt": now,
-        "normalizedPlan": normalized_plan,
+        "canonicalPlan": plan,
+        "canonicalJson": canonical_json,
         "validation": validation,
         "stateDb": str(STATE_DB_PATH),
     }
@@ -1031,8 +1349,7 @@ def training_dry_run(payload: dict[str, Any]) -> dict[str, Any]:
     plan_id = required_mapping_text(plan_record, "planId", "plan")
     plan_hash = required_mapping_text(plan_record, "planHash", "plan")
     canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
-    if sha256_json(canonical) != plan_hash:
-        raise ValueError("planHash does not match canonicalPlan")
+    validate_plan_record_hash(plan_record)
     if plan_review.get("approvalType") != "human_plan_review":
         raise ValueError("planReview must be a HumanPlanReview receipt")
     if plan_review.get("planId") != plan_id or plan_review.get("planHash") != plan_hash:
@@ -1062,8 +1379,7 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
     plan_id = required_mapping_text(plan_record, "planId", "plan")
     plan_hash = required_mapping_text(plan_record, "planHash", "plan")
     canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
-    if sha256_json(canonical) != plan_hash:
-        raise ValueError("planHash does not match canonicalPlan")
+    validate_plan_record_hash(plan_record)
     plan_review_id = required_mapping_text(plan_review, "approvalId", "planReview")
     training_review_id = required_mapping_text(training_review, "approvalId", "trainingReview")
     dry_run_hash = required_mapping_text(dry_run, "dryRunHash", "dryRun")
@@ -1108,7 +1424,16 @@ def training_start(payload: dict[str, Any]) -> dict[str, Any]:
         "expectedArtifacts": expected_artifacts,
         "notes": dry_run.get("notes"),
     }
-    if sha256_json(dry_run_material) != dry_run_hash:
+    if canonical.get("schemaVersion") == "3.0.0":
+        dry_run_material = {
+            "runId": dry_run.get("runId"),
+            **dry_run_material,
+            "datasetHash": dry_run.get("datasetHash"),
+        }
+    expected_dry_run_hash = sha256_json(dry_run_material)
+    if canonical.get("schemaVersion") == "3.0.0":
+        expected_dry_run_hash = "sha256:" + expected_dry_run_hash
+    if expected_dry_run_hash != dry_run_hash:
         raise ValueError("dryRunHash does not match the dry-run material")
     prepare_commands = [
         item
@@ -2683,6 +3008,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_plan_record_hash(plan_record: dict[str, Any]) -> None:
+    canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
+    plan_hash = required_mapping_text(plan_record, "planHash", "plan")
+    if canonical.get("schemaVersion") == "3.0.0":
+        canonical_json = str(plan_record.get("canonicalJson") or "")
+        if not canonical_json:
+            raise ValueError("CanonicalPlan V3 record requires canonicalJson")
+        try:
+            decoded = json.loads(canonical_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"plan.canonicalJson is invalid: {exc}") from exc
+        if decoded != canonical:
+            raise ValueError("plan.canonicalJson does not encode canonicalPlan")
+        expected = "sha256:" + hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    else:
+        # Internal recovery tests for the pre-V3 training runtime still project
+        # their historical receipts. Public plan.validate/create reject them.
+        expected = sha256_json(canonical)
+    if expected != plan_hash:
+        raise ValueError("planHash does not match canonicalPlan")
+
+
 def legacy_plan_from_record(plan_record: dict[str, Any], dataset_path: Path) -> dict[str, Any]:
     canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
     model = require_mapping(canonical.get("model"), "plan.canonicalPlan.model")
@@ -2728,6 +3075,15 @@ def legacy_plan_from_record(plan_record: dict[str, Any], dataset_path: Path) -> 
         "rawInput": str(dataset_path),
         "gpu": 0 if device == "gpu" else -1,
         "experimentProtocol": experiment_protocol,
+        "primaryModel": model,
+        "executionModelIds": [
+            required_mapping_text(model, "modelId", "plan.canonicalPlan.model"),
+            *[
+                required_mapping_text(require_mapping(item.get("model"), "baseline.model"), "modelId", "baseline.model")
+                for item in experiment_protocol.get("baselines", [])
+                if isinstance(item, dict) and isinstance(item.get("model"), dict)
+            ],
+        ],
         **parameters,
     }
 
@@ -2778,6 +3134,7 @@ def validate_canonical_model_semantics(
         "btm": {"epochs"},
         "hdp": set(),
         "dtm": {"epochs", "batchSize"},
+        "ctm": {"epochs", "batchSize"},
         "stm": set(),
         "bertopic": {
             "nNeighbors",
@@ -2833,6 +3190,11 @@ def training_preflight_checks(
     canonical = require_mapping(plan_record.get("canonicalPlan"), "plan.canonicalPlan")
     resources = require_mapping(canonical.get("resources"), "plan.canonicalPlan.resources")
     model_id = str(plan.get("modelId") or "").lower()
+    execution_model_ids = [
+        str(value).lower()
+        for value in (plan.get("executionModelIds") or [model_id])
+        if str(value).strip()
+    ]
     expected_sha = required_mapping_text(canonical, "datasetSha256", "plan.canonicalPlan")
     actual_sha = sha256_file(dataset_path)
     catalog = model_catalog({})
@@ -2855,22 +3217,32 @@ def training_preflight_checks(
     model_python_modules = {
         "hdp": ("gensim",),
         "bertopic": ("bertopic", "sentence_transformers", "umap", "hdbscan"),
+        "ctm": ("torch", "sentence_transformers"),
+        "dtm": ("torch", "sentence_transformers"),
+        "theta": ("torch", "transformers", "accelerate"),
     }
-    missing_model_modules = [
+    missing_model_modules = sorted({
         name
-        for name in model_python_modules.get(model_id, ())
+        for current_model_id in execution_model_ids
+        for name in model_python_modules.get(current_model_id, ())
         if importlib.util.find_spec(name) is None
-    ]
+    })
+    unavailable_models = sorted({
+        current_model_id
+        for current_model_id in execution_model_ids
+        if not runnable.get(current_model_id, False)
+    })
     offline_assets_ready = True
     offline_assets_detail = "No model-specific offline asset check is required."
-    if model_id == "bertopic" and not resources.get("networkAllowed"):
+    embedding_models = sorted(set(execution_model_ids) & {"bertopic", "ctm", "dtm"})
+    if embedding_models and not resources.get("networkAllowed"):
         configured_sbert = str(os.environ.get("SBERT_MODEL_PATH") or "").strip()
         sbert_path = Path(configured_sbert) if configured_sbert else None
         offline_assets_ready = bool(sbert_path and sbert_path.exists())
         offline_assets_detail = (
-            f"BERTopic will use local SBERT assets at {sbert_path.resolve()}."
+            f"{', '.join(embedding_models)} will use local SBERT assets at {sbert_path.resolve()}."
             if offline_assets_ready and sbert_path is not None
-            else "Offline BERTopic requires SBERT_MODEL_PATH to point to an existing local model directory."
+            else f"Offline {', '.join(embedding_models)} requires SBERT_MODEL_PATH to point to an existing local model directory."
         )
     torch_available = importlib.util.find_spec("torch") is not None
     gpu_available = False
@@ -2881,7 +3253,14 @@ def training_preflight_checks(
             gpu_available = bool(torch.cuda.is_available())
         except Exception:
             gpu_available = False
-    model_data_checks = training_dataset_semantic_checks(plan, dataset_path)
+    model_data_checks: list[dict[str, str]] = []
+    seen_data_checks: set[tuple[str, str]] = set()
+    for current_model_id in execution_model_ids:
+        for check in training_dataset_semantic_checks({**plan, "modelId": current_model_id}, dataset_path):
+            key = (check["code"], check["detail"])
+            if key not in seen_data_checks:
+                seen_data_checks.add(key)
+                model_data_checks.append(check)
     return [
         {
             "code": "DATASET_EXISTS",
@@ -2912,12 +3291,14 @@ def training_preflight_checks(
         {
             "code": "MODEL_DEPENDENCIES",
             "status": "pass"
-            if model_scripts_ready and runnable.get(model_id, False) and not missing_model_modules
+            if model_scripts_ready and not unavailable_models and not missing_model_modules
             else "fail",
             "detail": (
-                "Model is runnable and its Python dependencies are available."
-                if model_scripts_ready and runnable.get(model_id, False) and not missing_model_modules
-                else "Model is unavailable, scripts are missing, or Python modules are absent: "
+                f"All execution models are runnable and dependencies are available: {', '.join(execution_model_ids)}."
+                if model_scripts_ready and not unavailable_models and not missing_model_modules
+                else "Execution models or Python modules are unavailable: models="
+                + ", ".join(unavailable_models)
+                + "; modules="
                 + ", ".join(missing_model_modules)
             ),
         },
@@ -3100,20 +3481,42 @@ def training_dataset_semantic_checks(
 
 def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     dataset_id = str(plan.get("datasetId"))
-    model_id = str(plan.get("modelId")).lower()
-    model_size = str(plan.get("modelSize") or "0.6B")
-    mode = str(plan.get("mode") or "zero_shot")
-    topic_count_mode = str(plan.get("topicCountMode") or "fixed")
-    num_topics_value = plan.get("numTopics")
-    num_topics = str(num_topics_value if num_topics_value is not None else 20)
-    max_topics = str(plan.get("maxTopics") or 150)
-    batch_size = str(plan.get("batchSize") or 64)
-    epochs = str(plan.get("epochs") or 20)
+    primary_model = require_mapping(
+        plan.get("primaryModel") or {
+            "modelId": plan.get("modelId"),
+            "mode": plan.get("mode"),
+            "topicCountMode": plan.get("topicCountMode"),
+            "numTopics": plan.get("numTopics"),
+            "maxTopics": plan.get("maxTopics"),
+            "parameters": {
+                key: plan[key]
+                for key in (
+                    "modelSize", "epochs", "batchSize", "nNeighbors",
+                    "nComponents", "minClusterSize", "minSamples", "topNWords",
+                    "randomState",
+                )
+                if key in plan
+            },
+        },
+        "plan.primaryModel",
+    )
+    model_id = required_mapping_text(primary_model, "modelId", "plan.primaryModel").lower()
+    primary_parameters = require_mapping(primary_model.get("parameters") or {}, "plan.primaryModel.parameters")
+    model_size = str(primary_parameters.get("modelSize") or "0.6B")
+    mode = str(primary_model.get("mode") or "unsupervised")
+    batch_size = str(primary_parameters.get("batchSize") or 64)
     user_id = str(plan.get("userId") or "local_user")
     vocab_size = str(plan.get("vocabSize") or 5000)
     gpu = str(plan.get("gpu", -1))
-    prepare_model = prepare_model_name(model_id)
     experiment_id = str(plan.get("experimentId") or "approved_plan")
+    protocol = normalized_experiment_protocol(plan)
+    execution_models = [primary_model, *[item["model"] for item in protocol["baselines"]]]
+    execution_model_ids = [str(item.get("modelId") or "").lower() for item in execution_models]
+    prepare_model = (
+        "theta" if "theta" in execution_model_ids
+        else "dtm" if "dtm" in execution_model_ids
+        else "baseline"
+    )
 
     prepare_cmd = [
         "python",
@@ -3141,7 +3544,7 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
     if raw_input:
         prepare_cmd.extend(["--clean", "--raw-input", str(raw_input)])
 
-    if model_id in {"lda", "hdp", "stm", "btm"}:
+    if execution_model_ids and all(value in {"lda", "hdp", "stm", "btm"} for value in execution_model_ids):
         prepare_cmd.append("--bow-only")
 
     # Column bindings are analysis inputs, not merely model switches.  Preserve
@@ -3156,11 +3559,20 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
         prepare_cmd.extend(["--covariate_columns", *[str(value) for value in covariates]])
 
     def experiment_command(
-        target_model: str,
+        target: dict[str, Any],
         seed: int,
         suffix: str,
     ) -> dict[str, Any]:
+        target_model = required_mapping_text(target, "modelId", "experiment.model").lower()
+        target_parameters = require_mapping(target.get("parameters") or {}, "experiment.model.parameters")
         target_mode = mode if target_model == "theta" else "unsupervised"
+        target_num_topics_value = target.get("numTopics")
+        target_num_topics = str(target_num_topics_value if target_num_topics_value is not None else 20)
+        target_max_topics = str(target.get("maxTopics") or 150)
+        target_topic_count_mode = str(target.get("topicCountMode") or "fixed")
+        target_batch_size = str(target_parameters.get("batchSize") or batch_size)
+        target_model_size = str(target_parameters.get("modelSize") or model_size)
+        target_epochs = str(target_parameters.get("epochs") or 20)
         argv = [
             "python",
             "run_pipeline.py",
@@ -3173,23 +3585,23 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
             "--vocab_size",
             vocab_size,
             "--batch_size",
-            batch_size,
+            target_batch_size,
             "--gpu",
             gpu,
             "--user_id",
             user_id,
             "--model_size",
-            model_size,
+            target_model_size,
             "--force",
             "--task_name",
             f"{experiment_id}__{suffix}",
         ]
         if target_model == "hdp":
-            argv.extend(["--max_topics", max_topics])
-        elif target_model == "bertopic" and topic_count_mode == "auto":
+            argv.extend(["--max_topics", target_max_topics])
+        elif target_model == "bertopic" and target_topic_count_mode == "auto":
             argv.extend(["--num_topics", "0"])
         else:
-            argv.extend(["--num_topics", num_topics])
+            argv.extend(["--num_topics", target_num_topics])
 
         if target_model == "bertopic":
             bertopic_flags = {
@@ -3199,13 +3611,13 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 "topNWords": ("--top_n_words", 10),
             }
             for plan_field, (flag, default) in bertopic_flags.items():
-                argv.extend([flag, str(plan.get(plan_field, default))])
-            if plan.get("minSamples") is not None:
-                argv.extend(["--min_samples", str(plan["minSamples"])])
+                argv.extend([flag, str(target_parameters.get(plan_field, default))])
+            if target_parameters.get("minSamples") is not None:
+                argv.extend(["--min_samples", str(target_parameters["minSamples"])])
         if target_model == "btm":
-            argv.extend(["--n_iter", epochs])
+            argv.extend(["--n_iter", target_epochs])
         elif target_model in {"theta", "dtm", "nvdm", "gsm", "prodlda", "ctm", "etm"}:
-            argv.extend(["--epochs", epochs])
+            argv.extend(["--epochs", target_epochs])
         argv.extend(["--random_state", str(seed)])
         return {
             "step": f"run_pipeline_{suffix}",
@@ -3214,20 +3626,20 @@ def build_training_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
             "sideEffect": "writes an isolated local model experiment",
         }
 
-    protocol = normalized_experiment_protocol(plan)
     experiments: list[dict[str, Any]] = []
-    baseline_model = protocol["baselineModelId"]
-    if baseline_model:
-        for seed in protocol["baselineSeeds"]:
+    for baseline in protocol["baselines"]:
+        baseline_model = baseline["model"]
+        baseline_id = str(baseline_model.get("modelId") or "").lower()
+        for seed in baseline["seeds"]:
             experiments.append(
                 experiment_command(
                     baseline_model,
                     seed,
-                    f"baseline_{baseline_model}_s{seed}",
+                    f"baseline_{baseline_id}_s{seed}",
                 )
             )
     for seed in protocol["primarySeeds"]:
-        experiments.append(experiment_command(model_id, seed, f"primary_{model_id}_s{seed}"))
+        experiments.append(experiment_command(primary_model, seed, f"primary_{model_id}_s{seed}"))
 
     return [{
         "step": "prepare_data",
@@ -3251,45 +3663,70 @@ def normalized_experiment_protocol(plan: dict[str, Any]) -> dict[str, Any]:
         return {
             "mode": "quick",
             "primarySeeds": [42],
-            "baselineModelId": None,
-            "baselineSeeds": [],
+            "baselines": [],
         }
     mode = str(raw.get("mode") or "").strip().lower()
     primary_seeds = raw.get("primarySeeds")
-    baseline_seeds = raw.get("baselineSeeds")
-    baseline_model = normalize_optional_string(raw.get("baselineModelId")) or None
     if mode not in {"quick", "comparative", "stability"}:
         raise ValueError(f"Unsupported experiment protocol mode: {mode}")
     if not isinstance(primary_seeds, list) or not primary_seeds:
         raise ValueError("experimentProtocol.primarySeeds must not be empty")
-    if not isinstance(baseline_seeds, list):
-        raise ValueError("experimentProtocol.baselineSeeds must be an array")
-    for seed in [*primary_seeds, *baseline_seeds]:
+    for seed in primary_seeds:
         if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 2_147_483_647:
             raise ValueError("experiment protocol seeds must be non-negative integers")
-    if len(set(primary_seeds)) != len(primary_seeds) or len(set(baseline_seeds)) != len(baseline_seeds):
-        raise ValueError("experiment protocol seeds must be unique within each run group")
-    if mode == "quick" and (
-        len(primary_seeds) != 1 or baseline_model is not None or baseline_seeds
-    ):
+    if len(set(primary_seeds)) != len(primary_seeds):
+        raise ValueError("experiment protocol primary seeds must be unique")
+
+    baselines: list[dict[str, Any]] = []
+    if isinstance(raw.get("baselines"), list):
+        for index, value in enumerate(raw["baselines"]):
+            baseline = require_mapping(value, f"experimentProtocol.baselines.{index}")
+            model = require_mapping(baseline.get("model"), f"experimentProtocol.baselines.{index}.model")
+            validate_canonical_model_semantics(model, require_mapping(model.get("parameters") or {}, "baseline.model.parameters"))
+            seeds = baseline.get("seeds")
+            if not isinstance(seeds, list) or not seeds:
+                raise ValueError(f"experimentProtocol.baselines.{index}.seeds must not be empty")
+            if any(not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 2_147_483_647 for seed in seeds):
+                raise ValueError("experiment protocol baseline seeds must be non-negative integers")
+            if len(set(seeds)) != len(seeds):
+                raise ValueError("experiment protocol baseline seeds must be unique")
+            baselines.append({"model": model, "seeds": seeds})
+    else:
+        # Historical internal receipts are projected into the V3 run-group
+        # shape; public V3 plan.create never emits this form.
+        baseline_seeds = raw.get("baselineSeeds") or []
+        baseline_model_id = normalize_optional_string(raw.get("baselineModelId")) or None
+        if baseline_model_id:
+            baselines.append({
+                "model": {
+                    "modelId": baseline_model_id.lower(),
+                    "mode": "unsupervised",
+                    "topicCountMode": "fixed",
+                    "numTopics": plan.get("numTopics") or 20,
+                    "maxTopics": None,
+                    "parameters": {},
+                },
+                "seeds": baseline_seeds,
+            })
+
+    baseline_ids = [str(item["model"].get("modelId") or "").lower() for item in baselines]
+    if len(set(baseline_ids)) != len(baseline_ids):
+        raise ValueError("experiment protocol baseline models must be unique")
+    if str(plan.get("modelId") or "").lower() in baseline_ids:
+        raise ValueError("baseline model must differ from the primary model")
+    total_runs = len(primary_seeds) + sum(len(item["seeds"]) for item in baselines)
+    if total_runs > 100:
+        raise ValueError("experiment protocol may run at most 100 experiments")
+    if mode == "quick" and (len(primary_seeds) != 1 or baselines):
         raise ValueError("quick experiment protocol must contain one primary run and no baseline")
-    if mode == "comparative" and baseline_model is None:
-        raise ValueError("comparative experiment protocol requires a baseline model")
+    if mode == "comparative" and not baselines:
+        raise ValueError("comparative experiment protocol requires at least one baseline model")
     if mode == "stability" and len(primary_seeds) < 3:
         raise ValueError("stability experiment protocol requires at least three primary seeds")
-    if baseline_model is None and baseline_seeds:
-        raise ValueError("baseline seeds require a baseline model")
-    if baseline_model is not None and not baseline_seeds:
-        raise ValueError("baseline model requires at least one seed")
-    if baseline_model == str(plan.get("modelId") or "").strip().lower():
-        raise ValueError("baseline model must differ from the primary model")
-    if len(primary_seeds) + len(baseline_seeds) > 6:
-        raise ValueError("experiment protocol may run at most six experiments")
     return {
         "mode": mode,
         "primarySeeds": primary_seeds,
-        "baselineModelId": baseline_model.lower() if baseline_model else None,
-        "baselineSeeds": baseline_seeds,
+        "baselines": baselines,
     }
 
 
@@ -3297,9 +3734,14 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
     dataset_id = str(plan.get("datasetId"))
     model_id = str(plan.get("modelId")).lower()
     user_id = str(plan.get("userId") or "local_user")
+    protocol = normalized_experiment_protocol(plan)
+    execution_model_ids = {
+        model_id,
+        *[str(item["model"].get("modelId") or "").lower() for item in protocol["baselines"]],
+    }
     workspace_path = (
         f"THETA/result/baseline/{dataset_id}/data"
-        if model_id == "dtm"
+        if "dtm" in execution_model_ids
         else f"THETA/data/workspace/{dataset_id}/{user_id}"
     )
     experiment_id = str(plan.get("experimentId") or "approved_plan")
@@ -3308,10 +3750,9 @@ def expected_training_artifacts(plan: dict[str, Any]) -> list[dict[str, str]]:
         "path": workspace_path,
         "description": "Prepared matrices, vocabulary, approved time slices, metadata dimensions and optional embeddings.",
     }]
-    protocol = normalized_experiment_protocol(plan)
-    baseline_model = protocol["baselineModelId"]
-    if baseline_model:
-        for seed in protocol["baselineSeeds"]:
+    for baseline in protocol["baselines"]:
+        baseline_model = str(baseline["model"].get("modelId") or "").lower()
+        for seed in baseline["seeds"]:
             artifacts.append({
                 "kind": "results_baseline",
                 "path": f"THETA/result/{user_id}/{dataset_id}/{baseline_model}/{experiment_id}__baseline_{baseline_model}_s{seed}",

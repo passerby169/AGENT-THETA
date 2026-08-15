@@ -1,9 +1,3 @@
-import { runThetaRagBuild } from '../tools/hypha-runner.js';
+import { buildKnowledgeIndex } from './service.js';
 
-const result = await runThetaRagBuild();
-if (result.status !== 'completed' || result.output === undefined) {
-  throw new Error(
-    `RAG index build failed: ${JSON.stringify(result.error ?? result.status)}`,
-  );
-}
-console.log(JSON.stringify(result.output));
+console.log(JSON.stringify(await buildKnowledgeIndex()));
