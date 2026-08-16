@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AlertCircle,
@@ -14,6 +14,8 @@ import {
   Network,
   Plus,
   RefreshCw,
+  MessageSquareText,
+  SlidersHorizontal,
   Trash2,
   Wrench,
 } from 'lucide-react';
@@ -26,15 +28,44 @@ import { CheckpointCard } from './checkpoint-card';
 import { ConversationPanel } from './conversation-panel';
 import { DatasetUnderstandingComplete } from './dataset-checkpoint-content';
 import { FailureCard } from './failure-card';
+import { ManualProjectStart, ManualWorkbench } from './manual-workbench';
 import { ResultsPanel } from './results-panel';
 import { ResearchWorkspace } from './research-workspace';
 import { TrainingProgress } from './training-progress';
+
+type WorkspaceMode = 'conversation' | 'manual';
 
 export function AgentWorkbench() {
   const router = useRouter();
   const controller = useThetaV3Workbench();
   const [initialMessage, setInitialMessage] = useState('');
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('conversation');
   const view = controller.state.view;
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const requested = url.searchParams.get('mode');
+    const stored = window.localStorage.getItem('theta-workbench-mode');
+    const mode = requested === 'manual' || requested === 'conversation'
+      ? requested
+      : stored === 'manual' || stored === 'conversation'
+        ? stored
+        : 'conversation';
+    setWorkspaceMode(mode);
+    window.localStorage.setItem('theta-workbench-mode', mode);
+    if (requested !== mode) {
+      url.searchParams.set('mode', mode);
+      window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+    }
+  }, []);
+
+  const changeWorkspaceMode = (mode: WorkspaceMode) => {
+    setWorkspaceMode(mode);
+    window.localStorage.setItem('theta-workbench-mode', mode);
+    const url = new URL(window.location.href);
+    url.searchParams.set('mode', mode);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+  };
 
   const createRun = async () => {
     const created = await controller.createRun({ initialMessage });
@@ -49,8 +80,8 @@ export function AgentWorkbench() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-950">
-      <header className="sticky top-0 z-30 h-14 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-full max-w-[1720px] items-center justify-between px-4 sm:px-6">
+      <header className="sticky left-0 top-0 z-30 h-14 w-[100dvw] overflow-hidden border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto grid h-full w-full max-w-[1720px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <img src="/theta-logo.png" alt="THETA" className="h-9 w-auto" />
             <span className="h-5 w-px bg-slate-200" />
@@ -60,17 +91,21 @@ export function AgentWorkbench() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="hidden sm:block"><WorkspaceModeSwitch mode={workspaceMode} onChange={changeWorkspaceMode} /></div>
             <HealthStatus status={controller.health?.status} />
             <EventStatus status={controller.eventStatus} />
-            <Button type="button" variant="ghost" size="icon" title="刷新" disabled={controller.refreshing} onClick={() => void controller.refresh()}>
+            <Button type="button" variant="ghost" size="icon" title="刷新" disabled={controller.refreshing} onClick={() => void controller.refresh()} className="hidden sm:inline-flex">
               <RefreshCw className={`h-4 w-4 ${controller.refreshing ? 'animate-spin' : ''}`} />
             </Button>
-            <Button type="button" variant="ghost" size="icon" title="返回首页" onClick={() => router.push('/')}>
+            <Button type="button" variant="ghost" size="icon" title="返回首页" onClick={() => router.push('/')} className="hidden sm:inline-flex">
               <Home className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </header>
+      <div className="fixed right-3 top-2 z-40 sm:hidden">
+        <WorkspaceModeSwitch mode={workspaceMode} onChange={changeWorkspaceMode} />
+      </div>
 
       <main className="mx-auto w-full max-w-[1720px] px-3 py-3 sm:px-5">
         {controller.error ? (
@@ -95,68 +130,106 @@ export function AgentWorkbench() {
             {controller.loading && !view ? (
               <LoadingWorkspace />
             ) : view ? (
-              <div className="grid min-w-0 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-                <div className="min-w-0 border-b border-slate-200 lg:border-b-0 lg:border-r">
-                  <RunHeader view={view} />
-                  <AgentActivity activity={view.activity} progress={view.progress} />
-                  {view.failure ? (
-                    <FailureCard
-                      failure={view.failure}
-                      busy={controller.commandBusy}
-                      onRecover={(actionId) => void controller.executeRecovery(actionId)}
-                    />
-                  ) : view.checkpoint ? (
-                    <CheckpointCard
-                      checkpoint={view.checkpoint}
-                      dataset={view.dataset}
-                      research={view.research}
-                      plan={view.plan}
-                      capabilities={view.capabilities}
-                      busy={controller.commandBusy}
-                      onConfirm={() => void controller.confirmCheckpoint()}
-                    />
-                  ) : <>
-                    {view.training ? (
-                      <TrainingProgress
-                        training={view.training}
+              workspaceMode === 'conversation' ? (
+                <div className="grid min-w-0 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+                  <div className="min-w-0 border-b border-slate-200 lg:border-b-0 lg:border-r">
+                    <RunHeader view={view} />
+                    <AgentActivity activity={view.activity} progress={view.progress} />
+                    {view.failure ? (
+                      <FailureCard
+                        failure={view.failure}
+                        busy={controller.commandBusy}
+                        onRecover={(actionId) => void controller.executeRecovery(actionId)}
+                      />
+                    ) : view.checkpoint ? (
+                      <CheckpointCard
+                        checkpoint={view.checkpoint}
+                        dataset={view.dataset}
+                        research={view.research}
+                        plan={view.plan}
                         capabilities={view.capabilities}
                         busy={controller.commandBusy}
-                        onApprove={() => void controller.approveTraining()}
+                        onConfirm={() => void controller.confirmCheckpoint()}
                       />
-                    ) : null}
-                    {view.results?.status === 'available' ? (
-                      <ResultsPanel results={view.results} artifacts={controller.resultArtifacts} />
-                    ) : null}
-                    {view.dataset && view.phase === 'research_dialogue' ? (
-                      <DatasetUnderstandingComplete dataset={view.dataset} />
-                    ) : null}
-                    {view.research && view.phase === 'research_dialogue' ? (
-                      <ResearchWorkspace research={view.research} />
-                    ) : null}
-                    {!view.training && view.results?.status !== 'available' ? <RunOverview view={view} /> : null}
-                  </>}
+                    ) : <>
+                      {view.training ? (
+                        <TrainingProgress
+                          training={view.training}
+                          capabilities={view.capabilities}
+                          busy={controller.commandBusy}
+                          onApprove={() => void controller.approveTraining()}
+                        />
+                      ) : null}
+                      {view.results?.status === 'available' ? (
+                        <ResultsPanel results={view.results} artifacts={controller.resultArtifacts} />
+                      ) : null}
+                      {view.dataset && view.phase === 'research_dialogue' ? (
+                        <DatasetUnderstandingComplete dataset={view.dataset} />
+                      ) : null}
+                      {view.research && view.phase === 'research_dialogue' ? (
+                        <ResearchWorkspace research={view.research} />
+                      ) : null}
+                      {!view.training && view.results?.status !== 'available' ? <RunOverview view={view} /> : null}
+                    </>}
+                  </div>
+                  <ConversationPanel
+                    messages={controller.state.messages}
+                    pendingMessages={controller.pendingMessages}
+                    canSend={view.capabilities.canSendMessage}
+                    busy={controller.commandBusy}
+                    prompt={view.interaction.prompt}
+                    onSend={controller.sendMessage}
+                  />
                 </div>
-                <ConversationPanel
-                  messages={controller.state.messages}
-                  pendingMessages={controller.pendingMessages}
-                  canSend={view.capabilities.canSendMessage}
-                  busy={controller.commandBusy}
-                  prompt={view.interaction.prompt}
-                  onSend={controller.sendMessage}
-                />
-              </div>
+              ) : (
+                <div className="min-w-0">
+                  <RunHeader view={view} />
+                  <AgentActivity activity={view.activity} progress={view.progress} />
+                  <ManualWorkbench
+                    view={view}
+                    datasets={controller.datasets}
+                    artifacts={controller.resultArtifacts}
+                    busy={controller.commandBusy}
+                    onSendInstruction={controller.sendMessage}
+                    onConfirmCheckpoint={() => void controller.confirmCheckpoint()}
+                    onApproveTraining={() => void controller.approveTraining()}
+                    onRecover={(actionId) => void controller.executeRecovery(actionId)}
+                  />
+                </div>
+              )
             ) : (
-              <EmptyWorkspace
-                draft={initialMessage}
-                busy={controller.commandBusy}
-                canStart={controller.datasets.some((dataset) => dataset.availability === 'ready')}
-                onDraftChange={setInitialMessage}
-                onCreate={createRun}
-              />
+              workspaceMode === 'conversation' ? (
+                <EmptyWorkspace
+                  draft={initialMessage}
+                  busy={controller.commandBusy}
+                  canStart={controller.datasets.some((dataset) => dataset.availability === 'ready')}
+                  onDraftChange={setInitialMessage}
+                  onCreate={createRun}
+                />
+              ) : (
+                <ManualProjectStart
+                  datasets={controller.datasets}
+                  busy={controller.commandBusy}
+                  onCreate={async (input) => { await controller.createRun(input); }}
+                />
+              )
             )}
           </section>
         </div>
       </main>
+    </div>
+  );
+}
+
+function WorkspaceModeSwitch({ mode, onChange }: { mode: WorkspaceMode; onChange: (mode: WorkspaceMode) => void }) {
+  return (
+    <div className="flex h-9 items-center rounded-md border border-slate-200 bg-slate-100 p-1" aria-label="工作台模式">
+      <button type="button" aria-pressed={mode === 'conversation'} title="对话模式" onClick={() => onChange('conversation')} className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs transition-colors ${mode === 'conversation' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+        <MessageSquareText className="h-3.5 w-3.5" /><span className="hidden md:inline">对话</span>
+      </button>
+      <button type="button" aria-pressed={mode === 'manual'} title="手动模式" onClick={() => onChange('manual')} className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs transition-colors ${mode === 'manual' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+        <SlidersHorizontal className="h-3.5 w-3.5" /><span className="hidden md:inline">手动</span>
+      </button>
     </div>
   );
 }
@@ -259,7 +332,7 @@ function RunGroup({ title, runs, activeRunId, deletingRunId, onOpen, onDelete }:
 function RunHeader({ view }: { view: NonNullable<ReturnType<typeof useThetaV3Workbench>['state']['view']> }) {
   return (
     <div className="px-4 py-4 sm:px-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <p className="text-xs font-medium text-blue-700">{phaseLabel(view.phase)}</p>
           <h1 className="mt-1 truncate text-lg font-semibold text-slate-950">{view.dataset?.fileName ?? 'THETA 研究项目'}</h1>

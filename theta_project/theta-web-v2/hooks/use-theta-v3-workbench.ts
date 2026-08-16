@@ -43,7 +43,7 @@ export interface ThetaV3WorkbenchController {
   confirmCheckpoint: () => Promise<void>;
   approveTraining: () => Promise<void>;
   executeRecovery: (actionId: string) => Promise<void>;
-  createRun: (input: { initialMessage: string }) => Promise<boolean>;
+  createRun: (input: { initialMessage: string; datasetRef?: string }) => Promise<boolean>;
 }
 
 export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
@@ -121,7 +121,7 @@ export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
     try {
       store.reset();
       await loadRun(runId);
-      window.history.replaceState(null, '', `/workbench?run=${encodeURIComponent(runId)}`);
+      replaceWorkbenchUrl(runId);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -135,7 +135,7 @@ export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
     setPendingMessages([]);
     setResultArtifacts([]);
     setError(undefined);
-    window.history.replaceState(null, '', '/workbench');
+    replaceWorkbenchUrl();
   }, [store]);
 
   const deleteRun = useCallback(async (runId: string) => {
@@ -239,8 +239,10 @@ export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
     }
   }, [client, commandBusy, refreshActiveRun, store]);
 
-  const createRun = useCallback(async ({ initialMessage }: { initialMessage: string }) => {
-    const dataset = datasets.find((item) => item.availability === 'ready');
+  const createRun = useCallback(async ({ initialMessage, datasetRef }: { initialMessage: string; datasetRef?: string }) => {
+    const dataset = datasets.find((item) =>
+      item.availability === 'ready' && (!datasetRef || item.datasetRef === datasetRef),
+    );
     if (!dataset) {
       setError('当前没有可用于启动对话的数据集。');
       return false;
@@ -270,7 +272,7 @@ export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
       });
       const messages = await client.listMessages(accepted.runId, { limit: 100 });
       store.mergeMessages(messages.items);
-      window.history.replaceState(null, '', `/workbench?run=${encodeURIComponent(accepted.runId)}`);
+      replaceWorkbenchUrl(accepted.runId);
       return true;
     } catch (cause) {
       setError(errorMessage(cause));
@@ -357,3 +359,10 @@ export const useThetaV3Workbench = (): ThetaV3WorkbenchController => {
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
+
+const replaceWorkbenchUrl = (runId?: string): void => {
+  const url = new URL(window.location.href);
+  if (runId) url.searchParams.set('run', runId);
+  else url.searchParams.delete('run');
+  window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+};
